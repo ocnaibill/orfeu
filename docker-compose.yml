@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # ------------------------------------------------
+  # 1. Banco de Dados (PostgreSQL)
+  # ------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: orfeu_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - orfeu_network
+
+  # ------------------------------------------------
+  # 2. Interface Visual do Banco (PgAdmin) - Opcional
+  # ------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: orfeu_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    networks:
+      - orfeu_network
+
+  # ------------------------------------------------
+  # 3. Soulseek Client (Slskd)
+  # ------------------------------------------------
+  slskd:
+    image: slskd/slskd:latest
+    container_name: orfeu_slskd
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME}
+      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD}
+      - SLSKD_REMOTE_CONFIGURATION=true
+      # Removemos a API Key daqui, pois o Slskd gerencia isso internamente
+    ports:
+      - "5030:5030" # HTTP (Web UI + API) - Ajustado para porta padrão correta
+      - "5031:5031" # HTTPS
+      - "50300:50300/tcp" # P2P
+    volumes:
+      - ./slskd-config/slskd.yml:/app/slskd.yml
+      - ./slskd-config/data:/app/data
+      - ./downloads:/app/downloads
+    networks:
+      - orfeu_network
+
+  # ------------------------------------------------
+  # 4. Backend (Seu Código Python)
+  # ------------------------------------------------
+  backend:
+    build: ./backend
+    container_name: orfeu_backend
+    restart: always
+    # Comando para rodar em desenvolvimento
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app          
+      - ./downloads:/downloads  
+    ports:
+      - "8000:8000"
+    environment:
+      # Note que aqui usamos o nome do serviço "db" e "slskd" como host
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Ajustado para a porta 5030 interna
+      SLSKD_API_URL: http://slskd:5030/api/v0
+      # O Python vai ler a chave do .env
+      SLSKD_API_KEY: ${SLSKD_API_KEY}
+    depends_on:
+      - db
+      - slskd
+    networks:
+      - orfeu_network
+
+volumes:
+  postgres_data:
+  slskd-config:
+
+networks:
+  orfeu_network:
+    driver: bridge

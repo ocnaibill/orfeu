@@ -31,3 +31,5 @@ data/
 *.flac
 *.mp3
 *.log
+# Ignorar configurações sensíveis do Soulseek
+slskd-config/slskd.yml
