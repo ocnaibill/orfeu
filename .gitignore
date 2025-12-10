@@ -1,0 +1,33 @@
+# --- Geral ---
+.DS_Store
+Thumbs.db
+.env
+.venv
+env/
+venv/
+__pycache__/
+*.pyc
+
+# --- IDEs ---
+.vscode/
+.idea/
+
+# --- Python / Backend ---
+backend/.pytest_cache/
+backend/logs/
+
+# --- Flutter / Mobile ---
+mobile-app/.dart_tool/
+mobile-app/.pub/
+mobile-app/build/
+mobile-app/.flutter-plugins
+mobile-app/.flutter-plugins-dependencies
+
+# --- Mídia e Downloads (MUITO IMPORTANTE) ---
+# Ignorar as pastas onde as músicas serão salvas
+downloads/
+music/
+data/
+*.flac
+*.mp3
+*.log
