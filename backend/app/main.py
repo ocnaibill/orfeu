@@ -1,14 +1,14 @@
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 import os
 import subprocess
 import json
 import mutagen
-from mutagen.easyid3 import EasyID3
-from mutagen.flac import FLAC
-from app.services.slskd_client import search_slskd, get_search_results, download_slskd
+import httpx 
+# Importamos a nova função get_transfer_status
+from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
 
 app = FastAPI(title="Orfeu API", version="0.1.0")
 
@@ -32,21 +32,22 @@ class AutoDownloadRequest(BaseModel):
 # --- Helpers ---
 def find_local_file(filename: str) -> str:
     """
-    Localiza o arquivo no sistema de arquivos (Busca Profunda).
+    Localiza o ficheiro no sistema de arquivos (Busca Profunda).
     """
     base_path = "/downloads"
     sanitized_filename = filename.replace("\\", "/").lstrip("/")
     target_file_name = os.path.basename(sanitized_filename)
     
+    # 1. Tenta caminho direto
     for root, dirs, files in os.walk(base_path):
         if target_file_name in files:
             return os.path.join(root, target_file_name)
             
-    raise HTTPException(status_code=404, detail=f"Arquivo '{target_file_name}' não encontrado.")
+    raise HTTPException(status_code=404, detail=f"Ficheiro '{target_file_name}' não encontrado.")
 
 def get_audio_tags(file_path: str) -> dict:
     """
-    Usa Mutagen para ler tags artísticas (Título, Artista, Álbum).
+    Usa Mutagen para ler tags artísticas.
     """
     tags = {
         "title": None,
@@ -55,30 +56,22 @@ def get_audio_tags(file_path: str) -> dict:
         "genre": None,
         "date": None
     }
-    
     try:
         audio = mutagen.File(file_path, easy=True)
-        if not audio:
-            return tags
-            
-        # O EasyID3/Mutagen retorna listas para os campos (ex: ['Pink Floyd'])
-        # Nós pegamos o primeiro item.
-        tags["title"] = audio.get("title", [None])[0]
-        tags["artist"] = audio.get("artist", [None])[0]
-        tags["album"] = audio.get("album", [None])[0]
-        tags["genre"] = audio.get("genre", [None])[0]
-        tags["date"] = audio.get("date", [None])[0] or audio.get("year", [None])[0]
-        
+        if audio:
+            tags["title"] = audio.get("title", [None])[0]
+            tags["artist"] = audio.get("artist", [None])[0]
+            tags["album"] = audio.get("album", [None])[0]
+            tags["genre"] = audio.get("genre", [None])[0]
+            tags["date"] = audio.get("date", [None])[0] or audio.get("year", [None])[0]
     except Exception as e:
-        print(f"⚠️ Erro ao ler tags com Mutagen: {e}")
-    
+        print(f"⚠️ Erro ao ler tags: {e}")
     return tags
 
 def get_audio_metadata(file_path: str) -> dict:
     """
     Combina FFmpeg (Dados Técnicos) + Mutagen (Dados Artísticos).
     """
-    # 1. Dados Técnicos (FFprobe)
     tech_data = {}
     try:
         cmd = [
@@ -108,18 +101,13 @@ def get_audio_metadata(file_path: str) -> dict:
                 "tech_label": tech_label,
                 "is_lossless": codec in ['flac', 'wav', 'alac']
             }
-    except Exception as e:
-        print(f"Erro FFprobe: {e}")
+    except Exception:
+        pass
 
-    # 2. Dados Artísticos (Mutagen)
     artistic_data = get_audio_tags(file_path)
-
-    # 3. Fallback: Se não tiver Título na tag, usa o nome do arquivo
     if not artistic_data["title"]:
-        filename_clean = os.path.splitext(os.path.basename(file_path))[0]
-        artistic_data["title"] = filename_clean
+        artistic_data["title"] = os.path.splitext(os.path.basename(file_path))[0]
 
-    # Retorna a fusão dos dois
     return {
         "filename": os.path.basename(file_path),
         **tech_data,
@@ -137,10 +125,9 @@ def transcode_audio(file_path: str, bitrate: str):
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
     )
-    chunk_size = 64 * 1024
     try:
         while True:
-            chunk = process.stdout.read(chunk_size)
+            chunk = process.stdout.read(64 * 1024)
             if not chunk: break
             yield chunk
     finally:
@@ -205,6 +192,23 @@ async def view_results(search_id: str):
 
 @app.post("/download")
 async def queue_download(request: DownloadRequest):
+    """
+    Inicia download manual.
+    Verifica se o ficheiro já existe localmente antes de pedir ao Soulseek.
+    """
+    try:
+        find_local_file(request.filename)
+        # Se encontrou, retorna sucesso imediato sem baixar de novo
+        print(f"✅ Arquivo já existe em disco: {request.filename}")
+        return {
+            "status": "Already downloaded", 
+            "file": request.filename, 
+            "message": "Ficheiro já disponível no servidor"
+        }
+    except HTTPException:
+        # Se não encontrou (404), prossegue com o download normal
+        pass
+
     return await download_slskd(request.username, request.filename, request.size)
 
 @app.post("/download/auto")
@@ -239,72 +243,177 @@ async def auto_download_best(request: AutoDownloadRequest):
                     }
 
     if not best_candidate:
-        raise HTTPException(status_code=404, detail="Nenhum arquivo válido encontrado para download automático.")
+        raise HTTPException(status_code=404, detail="Nenhum ficheiro válido encontrado para download automático.")
     
+    # Verifica se o Vencedor já existe no disco
+    try:
+        find_local_file(best_candidate['filename'])
+        print(f"✅ Vencedor já existe em disco: {best_candidate['filename']}")
+        return {
+            "status": "Already downloaded", 
+            "file": best_candidate['filename'], 
+            "message": "Ficheiro já disponível no servidor"
+        }
+    except HTTPException:
+        pass
+
     return await download_slskd(
         best_candidate['username'], 
         best_candidate['filename'], 
         best_candidate['size']
     )
 
-# --- Metadados e Tags (ATUALIZADO) ---
+# --- NOVA ROTA: Status do Download (Simplificada) ---
+@app.get("/download/status")
+async def check_download_status(filename: str):
+    """
+    Verifica se o download está em andamento ou concluído.
+    Nota: Removemos o 'username', pois a busca agora é global no Slskd.
+    """
+    # 1. Verifica se já está no disco (Completo)
+    try:
+        find_local_file(filename)
+        return {
+            "state": "Completed",
+            "progress": 100.0,
+            "speed": 0,
+            "message": "Pronto para tocar"
+        }
+    except HTTPException:
+        pass # Não achou localmente, continua para checar no Slskd
+
+    # 2. Se não está no disco, pergunta ao Soulseek (Busca Global)
+    status = await get_transfer_status(filename)
+    
+    if status:
+        return status
+    
+    # 3. Se não está no disco nem na lista ativa do Slskd
+    return {
+        "state": "Unknown",
+        "progress": 0.0,
+        "message": "Não encontrado (Iniciando ou Falhou)"
+    }
+
 @app.get("/metadata")
 async def get_track_details(filename: str):
-    """
-    Retorna metadados completos:
-    - Artísticos (Mutagen): Título, Artista, Álbum
-    - Técnicos (FFprobe): Bitrate, Frequência, Formato
-    """
     full_path = find_local_file(filename)
-    # Aqui, futuramente, chamaremos a função para salvar no BD:
-    # update_database_with_metadata(full_path, data)
     return get_audio_metadata(full_path)
 
 @app.get("/cover")
 async def get_cover_art(filename: str):
+    """
+    Busca capa do álbum (Local ou iTunes).
+    """
     full_path = find_local_file(filename)
-    cmd = [
-        "ffmpeg", "-i", full_path, "-an", "-c:v", "mjpeg",
-        "-f", "mjpeg", "-v", "error", "-"
-    ]
-    def iterfile():
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
-        )
-        try:
-            while True:
-                chunk = process.stdout.read(64 * 1024)
-                if not chunk: break
-                yield chunk
-        finally:
-            process.kill()
-    return StreamingResponse(iterfile(), media_type="image/jpeg")
+    
+    # 1. Capa Embutida
+    has_embedded_art = False
+    try:
+        check_cmd = ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=index", "-of", "csv=p=0", full_path]
+        res = subprocess.run(check_cmd, capture_output=True, text=True)
+        has_embedded_art = bool(res.stdout.strip())
+    except Exception:
+        pass
 
+    if has_embedded_art:
+        cmd = ["ffmpeg", "-i", full_path, "-an", "-c:v", "mjpeg", "-f", "mjpeg", "-v", "error", "-"]
+        def iterfile():
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
+            try:
+                while True:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk: break
+                    yield chunk
+            finally:
+                process.kill()
+        return StreamingResponse(iterfile(), media_type="image/jpeg")
+    
+    # 2. Busca Online (iTunes)
+    print(f"🖼️ Sem capa embutida para '{filename}'. Buscando no iTunes...")
+    tags = get_audio_tags(full_path)
+    if tags['artist'] and tags['title']:
+        term = f"{tags['artist']} {tags['title']}"
+    else:
+        # CORREÇÃO: Usamos o nome limpo do arquivo real no disco, 
+        # ignorando a bagunça de pastas do filename original.
+        clean_name = os.path.splitext(os.path.basename(full_path))[0]
+        term = clean_name.replace("_", " ").replace("-", " ").strip()
+
+    try:
+        async with httpx.AsyncClient() as client:
+            url = "https://itunes.apple.com/search"
+            params = {"term": term, "media": "music", "entity": "song", "limit": 1}
+            resp = await client.get(url, params=params, timeout=5.0)
+            data = resp.json()
+            if data['resultCount'] > 0:
+                artwork_url = data['results'][0].get('artworkUrl100')
+                if artwork_url:
+                    high_res_url = artwork_url.replace("100x100bb", "600x600bb")
+                    return RedirectResponse(high_res_url)
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Capa não encontrada")
+
+# --- STREAMING COM SUPORTE A RANGE (CRÍTICO PARA iOS) ---
 @app.get("/stream")
 async def stream_music(
+    request: Request,
     filename: str, 
     quality: str = Query("lossless", enum=["low", "medium", "high", "lossless"])
 ):
+    """
+    Endpoint de Streaming inteligente:
+    1. Se qualidade != lossless: Transcodifica para MP3 on-the-fly.
+    2. Se qualidade == lossless:
+       - Suporta HTTP Range Requests (206 Partial Content).
+       - Permite que o iOS/AVPlayer faça seek e buffer corretamente.
+    """
     full_path = find_local_file(filename)
-    if quality == "lossless":
-        print(f"🎧 Streaming Original (Lossless/Direct): {full_path}")
-        def iterfile():
-            with open(full_path, mode="rb") as file_like:
-                yield from file_like
-        media_type = "audio/flac" if full_path.lower().endswith(".flac") else "audio/mpeg"
-        return StreamingResponse(iterfile(), media_type=media_type)
     
-    target_bitrate = TIERS.get(quality, "128k")
-    metadata = get_audio_metadata(full_path)
-    original_bitrate = metadata.get('bitrate', 999999)
-    target_bitrate_int = int(target_bitrate.replace('k', '')) * 1000
-    
-    if metadata.get('format') == 'mp3' and original_bitrate < target_bitrate_int:
-         print(f"⚠️ Original < Alvo. Enviando original.")
-         def iterfile():
-            with open(full_path, mode="rb") as file_like:
-                yield from file_like
-         return StreamingResponse(iterfile(), media_type="audio/mpeg")
+    if quality != "lossless":
+        target_bitrate = TIERS.get(quality, "128k")
+        print(f"🎧 Transcoding para {quality} ({target_bitrate}): {full_path}")
+        return StreamingResponse(
+            transcode_audio(full_path, target_bitrate),
+            media_type="audio/mpeg"
+        )
 
-    print(f"🎧 Transcoding para {quality}: {full_path}")
-    return StreamingResponse(transcode_audio(full_path, target_bitrate), media_type="audio/mpeg")
+    file_size = os.path.getsize(full_path)
+    range_header = request.headers.get("range")
+
+    if range_header:
+        byte_range = range_header.replace("bytes=", "").split("-")
+        start = int(byte_range[0])
+        end = int(byte_range[1]) if byte_range[1] else file_size - 1
+        
+        if start >= file_size:
+             return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+             
+        chunk_size = (end - start) + 1
+        
+        with open(full_path, "rb") as f:
+            f.seek(start)
+            data = f.read(chunk_size)
+            
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(chunk_size),
+            "Content-Type": "audio/flac" if full_path.lower().endswith(".flac") else "audio/mpeg",
+        }
+        
+        return Response(data, status_code=206, headers=headers)
+
+    headers = {
+        "Content-Length": str(file_size),
+        "Accept-Ranges": "bytes",
+        "Content-Type": "audio/flac" if full_path.lower().endswith(".flac") else "audio/mpeg",
+    }
+    
+    def iterfile():
+        with open(full_path, "rb") as f:
+            yield from f
+
+    return StreamingResponse(iterfile(), headers=headers)

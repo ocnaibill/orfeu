@@ -7,7 +7,7 @@ import 'package:just_audio/just_audio.dart'; // Importando o Player
 // --- Configuração de Rede ---
 // ⚠️ ATENÇÃO: Se for rodar no Mac (com backend no Mac), use '127.0.0.1'.
 // Se o backend continuar no PC e o app no iPhone físico, use o IP da rede.
-const String serverIp = '127.0.0.1'; 
+const String serverIp = '127.0.0.1';
 const String baseUrl = 'http://$serverIp:8000';
 
 // --- Provedores (Estado & Lógica) ---
@@ -23,9 +23,11 @@ final dioProvider = Provider((ref) {
 final searchResultsProvider = StateProvider<List<dynamic>>((ref) => []);
 final isLoadingProvider = StateProvider<bool>((ref) => false);
 final hasSearchedProvider = StateProvider<bool>((ref) => false);
-
-// NOVO: Guarda o ID da busca atual para permitir "Refresh" manual
 final currentSearchIdProvider = StateProvider<String?>((ref) => null);
+
+// NOVO: Mapa de Status de Downloads
+// Chave: filename, Valor: Objeto JSON do status vindo do backend
+final downloadStatusProvider = StateProvider<Map<String, dynamic>>((ref) => {});
 
 final searchControllerProvider = Provider((ref) {
   return SearchController(ref);
@@ -38,7 +40,7 @@ class SearchController {
   // Inicia uma NOVA busca
   Future<void> search(String query) async {
     if (query.isEmpty) return;
-    
+
     final dio = ref.read(dioProvider);
     final notifier = ref.read(searchResultsProvider.notifier);
     final loading = ref.read(isLoadingProvider.notifier);
@@ -47,20 +49,16 @@ class SearchController {
 
     try {
       loading.state = true;
-      hasSearched.state = true; 
-      notifier.state = []; 
+      hasSearched.state = true;
+      notifier.state = [];
 
-      // 1. Inicia busca
       print('🔍 Iniciando busca por: $query');
       final searchResp = await dio.post('/search/$query');
       final searchId = searchResp.data['search_id'];
-      
-      // Salva o ID para podermos dar refresh depois
+
       currentId.state = searchId;
 
-      // 2. Inicia o Polling Automático
       await _pollResults(searchId);
-      
     } catch (e) {
       print('❌ Erro na busca: $e');
       rethrow;
@@ -69,7 +67,6 @@ class SearchController {
     }
   }
 
-  // Consulta novamente o ID existente (Manual Refresh)
   Future<void> refresh() async {
     final searchId = ref.read(currentSearchIdProvider);
     if (searchId == null) return;
@@ -78,7 +75,7 @@ class SearchController {
     try {
       loading.state = true;
       print('🔄 Atualizando resultados para ID: $searchId');
-      await _pollResults(searchId, attempts: 1); // Apenas uma checagem rápida
+      await _pollResults(searchId, attempts: 1);
     } catch (e) {
       print('❌ Erro no refresh: $e');
     } finally {
@@ -86,25 +83,22 @@ class SearchController {
     }
   }
 
-  // Lógica de Polling reutilizável
   Future<void> _pollResults(String searchId, {int attempts = 20}) async {
     final dio = ref.read(dioProvider);
     final notifier = ref.read(searchResultsProvider.notifier);
 
-    // Aumentamos para 20 tentativas de 2s (Total ~40s de busca automática)
     for (int i = 1; i <= attempts; i++) {
       await Future.delayed(const Duration(seconds: 2));
 
       try {
         final resultsResp = await dio.get('/results/$searchId');
         final List<dynamic> data = resultsResp.data;
-        
-        // Se a lista mudou ou cresceu, atualizamos a tela
+
         if (data.isNotEmpty) {
-           print('📦 [Poller] Recebidos: ${data.length} itens (Tentativa $i)');
-           notifier.state = data;
+          print('📦 [Poller] Recebidos: ${data.length} itens (Tentativa $i)');
+          notifier.state = data;
         } else {
-           print('📦 [Poller] Nenhum resultado ainda (Tentativa $i)...');
+          print('📦 [Poller] Nenhum resultado ainda (Tentativa $i)...');
         }
       } catch (e) {
         print('⚠️ Erro polling: $e');
@@ -114,16 +108,60 @@ class SearchController {
 
   Future<void> download(Map<String, dynamic> item) async {
     final dio = ref.read(dioProvider);
+    final filename = item['filename'];
+
     try {
+      // 1. Solicita Download
       await dio.post('/download', data: {
         "username": item['username'],
-        "filename": item['filename'],
+        "filename": filename,
         "size": item['size']
       });
       print('⬇️ Download solicitado: ${item['display_name']}');
+
+      // 2. Inicia monitoramento do progresso
+      _pollDownloadStatus(filename);
     } catch (e) {
       print('❌ Erro no download: $e');
       rethrow;
+    }
+  }
+
+  // Monitora o status de um arquivo específico até completar
+  void _pollDownloadStatus(String filename) async {
+    final dio = ref.read(dioProvider);
+    final statusNotifier = ref.read(downloadStatusProvider.notifier);
+
+    bool isFinished = false;
+    int attempts = 0;
+    const maxAttempts = 600; // 10 minutos de timeout
+
+    while (!isFinished && attempts < maxAttempts) {
+      await Future.delayed(const Duration(seconds: 1));
+      attempts++;
+
+      try {
+        final encodedName = Uri.encodeComponent(filename);
+        final resp = await dio.get('/download/status?filename=$encodedName');
+        final data = resp.data;
+
+        statusNotifier.update((state) {
+          final newState = Map<String, dynamic>.from(state);
+          newState[filename] = data;
+          return newState;
+        });
+
+        final state = data['state'];
+        if (state == 'Completed') {
+          isFinished = true;
+          print("✅ Download concluído: $filename");
+        } else if (state == 'Aborted' || state == 'Cancelled') {
+          isFinished = true;
+          print("❌ Download cancelado/falhou: $filename");
+        }
+      } catch (e) {
+        print("⚠️ Erro polling download status: $e");
+      }
     }
   }
 }
@@ -202,11 +240,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             const Icon(Icons.music_note, color: Color(0xFFD4AF37)),
             const SizedBox(width: 10),
-            Text('Orfeu', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+            Text('Orfeu',
+                style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
           ],
         ),
         actions: [
-          // Botão de Refresh Manual (Só aparece se já tivermos buscado algo)
           if (currentSearchId != null)
             IconButton(
               icon: const Icon(Icons.refresh),
@@ -236,14 +274,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 hintText: 'O que você quer ouvir?',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: IconButton(
-                  icon: const Icon(Icons.arrow_forward, color: Color(0xFFD4AF37)),
+                  icon:
+                      const Icon(Icons.arrow_forward, color: Color(0xFFD4AF37)),
                   onPressed: _handleSearch,
                 ),
               ),
               onSubmitted: (_) => _handleSearch(),
             ),
           ),
-
           Expanded(
             child: (isLoading && results.isEmpty)
                 ? const Center(
@@ -253,7 +291,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         CircularProgressIndicator(color: Color(0xFFD4AF37)),
                         SizedBox(height: 20),
                         Text("Consultando o submundo..."),
-                        Text("(Isso pode levar alguns segundos)", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        Text("(Isso pode levar alguns segundos)",
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
                       ],
                     ),
                   )
@@ -263,19 +302,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ? Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.search_off, size: 60, color: Colors.white.withOpacity(0.3)),
+                                  Icon(Icons.search_off,
+                                      size: 60,
+                                      color: Colors.white.withOpacity(0.3)),
                                   const SizedBox(height: 16),
-                                  Text("Nenhum resultado ainda.", style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 16)),
+                                  Text("Nenhum resultado ainda.",
+                                      style: TextStyle(
+                                          color: Colors.white.withOpacity(0.5),
+                                          fontSize: 16)),
                                   const SizedBox(height: 10),
-                                  // Dica para o usuário
                                   TextButton.icon(
-                                    onPressed: () => ref.read(searchControllerProvider).refresh(),
-                                    icon: const Icon(Icons.refresh, color: Color(0xFFD4AF37)),
-                                    label: const Text("Tentar novamente", style: TextStyle(color: Color(0xFFD4AF37))),
+                                    onPressed: () => ref
+                                        .read(searchControllerProvider)
+                                        .refresh(),
+                                    icon: const Icon(Icons.refresh,
+                                        color: Color(0xFFD4AF37)),
+                                    label: const Text("Tentar novamente",
+                                        style: TextStyle(
+                                            color: Color(0xFFD4AF37))),
                                   )
                                 ],
                               )
-                            : Text("Busque por Artista ou Música", style: TextStyle(color: Colors.white.withOpacity(0.3))),
+                            : Text("Busque por Artista ou Música",
+                                style: TextStyle(
+                                    color: Colors.white.withOpacity(0.3))),
                       )
                     : ListView.builder(
                         itemCount: results.length,
@@ -291,21 +341,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _buildResultCard(Map<String, dynamic> item, BuildContext context, WidgetRef ref) {
+  Widget _buildResultCard(
+      Map<String, dynamic> item, BuildContext context, WidgetRef ref) {
     final isFlac = item['extension'] == 'flac';
-    
+    final filename = item['filename'];
+
+    // Observa o status específico deste arquivo
+    final downloadState = ref.watch(downloadStatusProvider)[filename];
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       color: Colors.white.withOpacity(0.05),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
-          color: isFlac ? const Color(0xFFD4AF37).withOpacity(0.3) : Colors.transparent,
+          color: isFlac
+              ? const Color(0xFFD4AF37).withOpacity(0.3)
+              : Colors.transparent,
         ),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        // AÇÃO DE TOCAR: Abre o PlayerScreen
         onTap: () {
           Navigator.push(
             context,
@@ -318,7 +374,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             width: 50,
             height: 50,
             decoration: BoxDecoration(
-              color: isFlac ? const Color(0xFFD4AF37).withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+              color: isFlac
+                  ? const Color(0xFFD4AF37).withOpacity(0.2)
+                  : Colors.grey.withOpacity(0.2),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Center(
@@ -338,36 +396,146 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            "${(item['size'] / 1024 / 1024).toStringAsFixed(1)} MB • ${item['bitrate']} kbps",
-            style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "${(item['size'] / 1024 / 1024).toStringAsFixed(1)} MB • ${item['bitrate']} kbps",
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.5), fontSize: 12),
+              ),
+              // Mostra status do download (Velocidade e Progresso)
+              if (downloadState != null &&
+                  downloadState['state'] != 'Completed')
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            value: (downloadState['state'] == 'Unknown' ||
+                                    downloadState['progress'] == 0)
+                                ? null // Indeterminado
+                                : (downloadState['progress'] ?? 0) / 100,
+                            color: const Color(0xFFD4AF37),
+                          )),
+                      const SizedBox(width: 8),
+                      Text(
+                        _buildStatusText(downloadState),
+                        style: const TextStyle(
+                            color: Color(0xFFD4AF37),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                )
+            ],
           ),
-          trailing: IconButton(
-            icon: const Icon(Icons.download_rounded),
-            onPressed: () async {
-               try {
-                 await ref.read(searchControllerProvider).download(item);
-                 if (context.mounted) {
-                   ScaffoldMessenger.of(context).showSnackBar(
-                     SnackBar(content: Text('Baixando "${item['display_name']}"...'), backgroundColor: Colors.green),
-                   );
-                 }
-               } catch (e) {
-                 if (context.mounted) {
-                   ScaffoldMessenger.of(context).showSnackBar(
-                     SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red),
-                   );
-                 }
-               }
-            },
-          ),
+          trailing: _buildTrailingIcon(context, ref, item, downloadState),
         ),
       ),
     );
   }
+
+  String _buildStatusText(Map<String, dynamic> status) {
+    final state = status['state'];
+    if (state == 'Unknown' || state == 'Initializing') return "Iniciando...";
+    if (state == 'Queued') return "Na fila...";
+
+    final progress = status['progress']?.toStringAsFixed(0) ?? '0';
+
+    // Formatação de velocidade
+    final speedBytes = status['speed'] ?? 0;
+    String speedStr = "";
+    if (speedBytes > 1024 * 1024) {
+      speedStr = "${(speedBytes / 1024 / 1024).toStringAsFixed(1)} MB/s";
+    } else if (speedBytes > 0) {
+      speedStr = "${(speedBytes / 1024).toStringAsFixed(0)} KB/s";
+    }
+
+    return "$state $progress% ${speedStr.isNotEmpty ? '• $speedStr' : ''}";
+  }
+
+  Widget _buildTrailingIcon(BuildContext context, WidgetRef ref,
+      Map<String, dynamic> item, Map<String, dynamic>? status) {
+    if (status == null) {
+      return IconButton(
+        icon: const Icon(Icons.download_rounded),
+        onPressed: () => _startDownload(context, ref, item),
+      );
+    }
+
+    final state = status['state'];
+
+    if (state == 'Completed') {
+      return IconButton(
+        icon: const Icon(Icons.play_circle_fill, color: Colors.green, size: 32),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => PlayerScreen(item: item)),
+          );
+        },
+      );
+    }
+
+    // Ícone de progresso (Donut)
+    if (state == 'Downloading' ||
+        state == 'Queued' ||
+        state == 'Initializing' ||
+        state == 'Unknown') {
+      final progress = (status['progress'] ?? 0.0) / 100.0;
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            value: (state == 'Unknown' || state == 'Queued') ? null : progress,
+            color: const Color(0xFFD4AF37),
+            backgroundColor: Colors.white10,
+          ),
+          if (state != 'Queued' && state != 'Unknown' && progress > 0)
+            Text("${(progress * 100).toInt()}",
+                style:
+                    const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+        ],
+      );
+    }
+
+    return IconButton(
+      icon: const Icon(Icons.error_outline, color: Colors.red),
+      onPressed: () => _startDownload(context, ref, item),
+    );
+  }
+
+  void _startDownload(
+      BuildContext context, WidgetRef ref, Map<String, dynamic> item) async {
+    try {
+      await ref.read(searchControllerProvider).download(item);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Iniciando download de "${item['display_name']}"...'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
 }
 
-// --- TELA DO PLAYER (ATUALIZADA) ---
+// --- TELA DO PLAYER ---
 class PlayerScreen extends StatefulWidget {
   final Map<String, dynamic> item;
   const PlayerScreen({super.key, required this.item});
@@ -411,7 +579,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final filename = Uri.encodeComponent(widget.item['filename']);
       // Monta URL de stream: /stream?filename=...&quality=...
       final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-      
+
       print("Tentando tocar: $url");
       await _audioPlayer.setUrl(url);
       _audioPlayer.play();
@@ -487,7 +655,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) => Container(
                     color: Colors.white10,
-                    child: const Icon(Icons.music_note, size: 80, color: Colors.white24),
+                    child: const Icon(Icons.music_note,
+                        size: 80, color: Colors.white24),
                   ),
                 ),
               ),
@@ -520,21 +689,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ],
                 ),
               ),
-              
+
               const SizedBox(height: 20),
-              
+
               // --- BADGE DE QUALIDADE ---
               if (_metadata != null)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: const Color(0xFFD4AF37).withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFFD4AF37).withOpacity(0.3)),
+                    border: Border.all(
+                        color: const Color(0xFFD4AF37).withOpacity(0.3)),
                   ),
                   child: Text(
                     _metadata!['tech_label'] ?? "Hi-Res",
-                    style: const TextStyle(color: Color(0xFFD4AF37), fontSize: 12, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                        color: Color(0xFFD4AF37),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold),
                   ),
                 ),
 
@@ -551,11 +725,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       SliderTheme(
                         data: SliderTheme.of(context).copyWith(
                           trackHeight: 2,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6),
                         ),
                         child: Slider(
-                          value: position.inSeconds.toDouble().clamp(0, duration.inSeconds.toDouble()),
-                          max: duration.inSeconds.toDouble() > 0 ? duration.inSeconds.toDouble() : 1,
+                          value: position.inSeconds
+                              .toDouble()
+                              .clamp(0, duration.inSeconds.toDouble()),
+                          max: duration.inSeconds.toDouble() > 0
+                              ? duration.inSeconds.toDouble()
+                              : 1,
                           activeColor: const Color(0xFFD4AF37),
                           inactiveColor: Colors.white10,
                           onChanged: (val) {
@@ -568,8 +747,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(_formatDuration(position), style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                            Text(_formatDuration(duration), style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                            Text(_formatDuration(position),
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 12)),
+                            Text(_formatDuration(duration),
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 12)),
                           ],
                         ),
                       )
@@ -598,7 +781,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                     child: IconButton(
                       icon: Icon(
-                        _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                        _isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
                         color: Colors.black,
                         size: 40,
                       ),
@@ -619,9 +804,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 20),
-              
+
               // --- SELETOR DE QUALIDADE (TRANSCODING) ---
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
