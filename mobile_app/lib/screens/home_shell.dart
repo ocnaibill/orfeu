@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'search_screen.dart';
+import 'library_screen.dart'; // Importa a nova tela
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -15,7 +16,7 @@ class _HomeShellState extends State<HomeShell> {
   final List<Widget> _screens = [
     const PlaceholderHome(), // Aba 0: Início
     const SearchScreen(), // Aba 1: Buscar
-    const PlaceholderLibrary(), // Aba 2: Biblioteca
+    const LibraryScreen(), // Aba 2: Biblioteca (AGORA REAL)
   ];
 
   @override
@@ -67,15 +68,5 @@ class PlaceholderHome extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-class PlaceholderLibrary extends StatelessWidget {
-  const PlaceholderLibrary({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-        child: Text("Sua biblioteca aparecerá aqui",
-            style: TextStyle(color: Colors.white54)));
   }
 }

@@ -26,8 +26,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     return Column(
       children: [
+        // Barra de Busca no Topo
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 60, 16, 16),
+          padding: const EdgeInsets.fromLTRB(
+              16, 60, 16, 16), // Espaço para Status Bar
           child: TextField(
             controller: _queryController,
             style: const TextStyle(color: Colors.white),
@@ -48,6 +50,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             onSubmitted: (_) => _handleSearch(),
           ),
         ),
+
+        // Lista de Resultados
         Expanded(
           child: isLoading && results.isEmpty
               ? const Center(
@@ -82,7 +86,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
 class _ResultItem extends ConsumerWidget {
   final Map<String, dynamic> item;
-  const _ResultItem({required this.item});
+  const _ResultItem({super.key, required this.item});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -122,11 +126,35 @@ class _ResultItem extends ConsumerWidget {
     );
   }
 
+  // --- UI CORRIGIDA: Tratamento de Estados "Unknown" e Formatação ---
   Widget _buildSubtitle(
       Map<String, dynamic> item, Map<String, dynamic>? status) {
     if (status != null && status['state'] != 'Completed') {
-      return Text(
-          "${status['state']} ${(status['progress']?.toStringAsFixed(0))}%",
+      final state = status['state'];
+      final progress = status['progress'] ?? 0;
+
+      // Tratamento para estados iniciais onde o progresso ainda não é relevante
+      if (state == 'Unknown' || state == 'Initializing') {
+        return const Text("Iniciando...",
+            style: TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
+      }
+      if (state == 'Queued') {
+        return const Text("Na fila...",
+            style: TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
+      }
+
+      // Formatação da velocidade (se disponível)
+      String speedStr = "";
+      if (status.containsKey('speed')) {
+        final speed = status['speed'] ?? 0;
+        if (speed > 1024 * 1024) {
+          speedStr = " • ${(speed / 1024 / 1024).toStringAsFixed(1)} MB/s";
+        } else if (speed > 0) {
+          speedStr = " • ${(speed / 1024).toStringAsFixed(0)} KB/s";
+        }
+      }
+
+      return Text("$state ${(progress.toStringAsFixed(0))}%$speedStr",
           style: const TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
     }
     return Text("${(item['size'] / 1024 / 1024).toStringAsFixed(1)} MB",
@@ -146,15 +174,25 @@ class _ResultItem extends ConsumerWidget {
         },
       );
     }
+
     if (status['state'] == 'Completed')
       return const Icon(Icons.check_circle, color: Colors.green);
+
+    // Se for Unknown ou Initializing, mostra spinner indeterminado (sem valor fixo)
+    final state = status['state'];
+    final progress = (status['progress'] ?? 0) / 100.0;
+    final isIndeterminate =
+        state == 'Unknown' || state == 'Initializing' || state == 'Queued';
+
     return SizedBox(
       width: 20,
       height: 20,
       child: CircularProgressIndicator(
-          value: (status['progress'] ?? 0) / 100,
-          strokeWidth: 2,
-          color: const Color(0xFFD4AF37)),
+        value: isIndeterminate ? null : progress,
+        strokeWidth: 2,
+        color: const Color(0xFFD4AF37),
+        backgroundColor: Colors.white10,
+      ),
     );
   }
 }
