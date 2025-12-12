@@ -5,6 +5,9 @@ from typing import Optional, Dict, List
 import os
 import subprocess
 import json
+import mutagen
+from mutagen.easyid3 import EasyID3
+from mutagen.flac import FLAC
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd
 
 app = FastAPI(title="Orfeu API", version="0.1.0")
@@ -35,26 +38,52 @@ def find_local_file(filename: str) -> str:
     sanitized_filename = filename.replace("\\", "/").lstrip("/")
     target_file_name = os.path.basename(sanitized_filename)
     
-    # 1. Tenta caminho direto (se o usuario enviou o caminho relativo correto)
-    # Precisamos varrer porque não sabemos a estrutura exata que o slskd criou
     for root, dirs, files in os.walk(base_path):
         if target_file_name in files:
             return os.path.join(root, target_file_name)
             
     raise HTTPException(status_code=404, detail=f"Arquivo '{target_file_name}' não encontrado.")
 
+def get_audio_tags(file_path: str) -> dict:
+    """
+    Usa Mutagen para ler tags artísticas (Título, Artista, Álbum).
+    """
+    tags = {
+        "title": None,
+        "artist": None,
+        "album": None,
+        "genre": None,
+        "date": None
+    }
+    
+    try:
+        audio = mutagen.File(file_path, easy=True)
+        if not audio:
+            return tags
+            
+        # O EasyID3/Mutagen retorna listas para os campos (ex: ['Pink Floyd'])
+        # Nós pegamos o primeiro item.
+        tags["title"] = audio.get("title", [None])[0]
+        tags["artist"] = audio.get("artist", [None])[0]
+        tags["album"] = audio.get("album", [None])[0]
+        tags["genre"] = audio.get("genre", [None])[0]
+        tags["date"] = audio.get("date", [None])[0] or audio.get("year", [None])[0]
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao ler tags com Mutagen: {e}")
+    
+    return tags
+
 def get_audio_metadata(file_path: str) -> dict:
     """
-    Usa ffprobe para extrair detalhes técnicos do arquivo (Bitrate, Sample Rate, Bit Depth).
+    Combina FFmpeg (Dados Técnicos) + Mutagen (Dados Artísticos).
     """
+    # 1. Dados Técnicos (FFprobe)
+    tech_data = {}
     try:
         cmd = [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            file_path
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", file_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         data = json.loads(result.stdout)
@@ -62,64 +91,57 @@ def get_audio_metadata(file_path: str) -> dict:
         audio_stream = next((s for s in data.get('streams', []) if s['codec_type'] == 'audio'), None)
         format_info = data.get('format', {})
         
-        if not audio_stream:
-            return {"error": "No audio stream found"}
-
-        # Detecta tier original
-        codec = audio_stream.get('codec_name', 'unknown')
-        bit_rate = int(format_info.get('bit_rate', 0))
-        
-        # Lógica visual para o Frontend
-        tech_label = f"{audio_stream.get('sample_rate', '')}Hz"
-        
-        # FLAC geralmente tem bits_per_sample ou sample_fmt
-        bits = audio_stream.get('bits_per_raw_sample') or audio_stream.get('bits_per_sample')
-        if bits:
-             tech_label = f"{bits}bit/{tech_label}"
-        
-        return {
-            "filename": os.path.basename(file_path),
-            "format": codec,
-            "bitrate": bit_rate,
-            "sample_rate": int(audio_stream.get('sample_rate', 0)),
-            "channels": audio_stream.get('channels'),
-            "duration": float(format_info.get('duration', 0)),
-            "tech_label": tech_label, # Ex: "24bit/96000Hz" ou "44100Hz"
-            "is_lossless": codec in ['flac', 'wav', 'alac']
-        }
+        if audio_stream:
+            codec = audio_stream.get('codec_name', 'unknown')
+            sample_rate = int(audio_stream.get('sample_rate', 0))
+            bits = audio_stream.get('bits_per_raw_sample') or audio_stream.get('bits_per_sample')
+            
+            tech_label = f"{sample_rate}Hz"
+            if bits: tech_label = f"{bits}bit/{tech_label}"
+            
+            tech_data = {
+                "format": codec,
+                "bitrate": int(format_info.get('bit_rate', 0)),
+                "sample_rate": sample_rate,
+                "channels": audio_stream.get('channels'),
+                "duration": float(format_info.get('duration', 0)),
+                "tech_label": tech_label,
+                "is_lossless": codec in ['flac', 'wav', 'alac']
+            }
     except Exception as e:
-        print(f"Erro ao ler metadados: {e}")
-        return {"error": str(e)}
+        print(f"Erro FFprobe: {e}")
+
+    # 2. Dados Artísticos (Mutagen)
+    artistic_data = get_audio_tags(file_path)
+
+    # 3. Fallback: Se não tiver Título na tag, usa o nome do arquivo
+    if not artistic_data["title"]:
+        filename_clean = os.path.splitext(os.path.basename(file_path))[0]
+        artistic_data["title"] = filename_clean
+
+    # Retorna a fusão dos dois
+    return {
+        "filename": os.path.basename(file_path),
+        **tech_data,
+        **artistic_data
+    }
 
 def transcode_audio(file_path: str, bitrate: str):
     """
     Gera um stream de áudio transcodificado para MP3 usando FFmpeg.
     """
     cmd = [
-        "ffmpeg",
-        "-i", file_path,
-        "-f", "mp3",           # Força saída MP3
-        "-ab", bitrate,        # Bitrate (ex: 128k, 320k)
-        "-vn",                 # Ignora vídeo (capas de álbum embutidas)
-        "-map", "0:a:0",       # Pega apenas o primeiro stream de áudio
-        "-"                    # Saída para STDOUT (pipe)
+        "ffmpeg", "-i", file_path, "-f", "mp3", "-ab", bitrate,
+        "-vn", "-map", "0:a:0", "-"
     ]
-    
-    # Abre o processo
     process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, # Ignora logs do ffmpeg para não sujar
-        bufsize=10**6 # Buffer de 1MB
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
     )
-    
-    # Lê chunks do stdout e envia
-    chunk_size = 64 * 1024 # 64KB chunks
+    chunk_size = 64 * 1024
     try:
         while True:
             chunk = process.stdout.read(chunk_size)
-            if not chunk:
-                break
+            if not chunk: break
             yield chunk
     finally:
         process.kill()
@@ -130,12 +152,10 @@ def transcode_audio(file_path: str, bitrate: str):
 def read_root():
     return {"status": "Orfeu is alive", "service": "Backend"}
 
-# --- Busca ---
 @app.post("/search/{query}")
 async def start_search(query: str):
     return await search_slskd(query)
 
-# --- Resultados ---
 @app.get("/results/{search_id}")
 async def view_results(search_id: str):
     raw_results = await get_search_results(search_id)
@@ -183,12 +203,10 @@ async def view_results(search_id: str):
     final_list.sort(key=lambda x: x['score'], reverse=True)
     return final_list
 
-# --- Download Manual ---
 @app.post("/download")
 async def queue_download(request: DownloadRequest):
     return await download_slskd(request.username, request.filename, request.size)
 
-# --- Download Automático ---
 @app.post("/download/auto")
 async def auto_download_best(request: AutoDownloadRequest):
     raw_results = await get_search_results(request.search_id)
@@ -229,102 +247,64 @@ async def auto_download_best(request: AutoDownloadRequest):
         best_candidate['size']
     )
 
-# --- Metadados (Informações Técnicas) ---
+# --- Metadados e Tags (ATUALIZADO) ---
 @app.get("/metadata")
 async def get_track_details(filename: str):
     """
-    Retorna detalhes técnicos do arquivo (Bitrate, Sample Rate, se é FLAC real, etc).
-    Útil para mostrar na UI "24bit/96kHz".
+    Retorna metadados completos:
+    - Artísticos (Mutagen): Título, Artista, Álbum
+    - Técnicos (FFprobe): Bitrate, Frequência, Formato
     """
     full_path = find_local_file(filename)
+    # Aqui, futuramente, chamaremos a função para salvar no BD:
+    # update_database_with_metadata(full_path, data)
     return get_audio_metadata(full_path)
 
-# --- Capa do Álbum (Cover Art) ---
 @app.get("/cover")
 async def get_cover_art(filename: str):
-    """
-    Extrai a capa do álbum (embedded art) do arquivo de áudio e retorna como JPEG.
-    """
     full_path = find_local_file(filename)
-    
-    # FFmpeg command to extract raw MJPEG stream
-    # -c:v mjpeg garante que o output seja JPEG mesmo que a fonte seja PNG
     cmd = [
-        "ffmpeg",
-        "-i", full_path,
-        "-an",           # No audio
-        "-c:v", "mjpeg", # Ensure JPEG output
-        "-f", "mjpeg",   # Container format
-        "-v", "error",   # Quiet
-        "-"              # Stdout
+        "ffmpeg", "-i", full_path, "-an", "-c:v", "mjpeg",
+        "-f", "mjpeg", "-v", "error", "-"
     ]
-    
     def iterfile():
-        # Usamos Popen como context manager para garantir limpeza
         process = subprocess.Popen(
-            cmd, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.DEVNULL,
-            bufsize=10**6
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
         )
         try:
             while True:
                 chunk = process.stdout.read(64 * 1024)
-                if not chunk:
-                    break
+                if not chunk: break
                 yield chunk
         finally:
             process.kill()
-
     return StreamingResponse(iterfile(), media_type="image/jpeg")
 
-# --- Streaming com Transcoding ---
 @app.get("/stream")
 async def stream_music(
     filename: str, 
     quality: str = Query("lossless", enum=["low", "medium", "high", "lossless"])
 ):
-    """
-    Faz o streaming.
-    - quality='lossless': Envia o arquivo original (FLAC/MP3).
-    - quality='high': MP3 320k.
-    - quality='medium': MP3 192k.
-    - quality='low': MP3 128k.
-    """
     full_path = find_local_file(filename)
-    
-    # Se o usuário pedir Lossless, entregamos o arquivo bruto
     if quality == "lossless":
         print(f"🎧 Streaming Original (Lossless/Direct): {full_path}")
         def iterfile():
             with open(full_path, mode="rb") as file_like:
                 yield from file_like
-        
         media_type = "audio/flac" if full_path.lower().endswith(".flac") else "audio/mpeg"
         return StreamingResponse(iterfile(), media_type=media_type)
     
-    # Se pedir Transcoding
     target_bitrate = TIERS.get(quality, "128k")
-    
-    # Verificação inteligente: Não fazer "Upscale" de MP3 ruim
-    # Se o arquivo original já for MP3 e tiver bitrate menor que o alvo, mandamos o original
     metadata = get_audio_metadata(full_path)
-    original_bitrate = metadata.get('bitrate', 999999) # Default alto para FLAC
-    
-    # Converter '128k' string para 128000 int
+    original_bitrate = metadata.get('bitrate', 999999)
     target_bitrate_int = int(target_bitrate.replace('k', '')) * 1000
     
     if metadata.get('format') == 'mp3' and original_bitrate < target_bitrate_int:
-         print(f"⚠️ O arquivo original é pior que a qualidade pedida ({original_bitrate} < {target_bitrate_int}). Enviando original.")
+         print(f"⚠️ Original < Alvo. Enviando original.")
          def iterfile():
             with open(full_path, mode="rb") as file_like:
                 yield from file_like
          return StreamingResponse(iterfile(), media_type="audio/mpeg")
 
-    print(f"🎧 Transcoding para {quality} ({target_bitrate}): {full_path}")
-    
-    # Inicia o FFmpeg via pipe
-    return StreamingResponse(
-        transcode_audio(full_path, target_bitrate),
-        media_type="audio/mpeg"
-    )
+    print(f"🎧 Transcoding para {quality}: {full_path}")
+    return StreamingResponse(transcode_audio(full_path, target_bitrate), media_type="audio/mpeg")

@@ -5,3 +5,5 @@ psycopg2-binary
 httpx
 requests
 python-dotenv
+aiofiles
+mutagen
