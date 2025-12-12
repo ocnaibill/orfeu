@@ -1,6 +1,7 @@
 import os
 import httpx
 import uuid
+from urllib.parse import quote # Importante para nomes de usuário com espaços/[brackets]
 from fastapi import HTTPException
 
 # Pega as configs das variáveis de ambiente
@@ -73,28 +74,38 @@ async def download_slskd(username: str, filename: str, size: int = None):
         file_obj["size"] = size
 
     payload = [file_obj]
-    endpoint = f"{SLSKD_URL}/transfers/downloads/{username}"
+    
+    # CORREÇÃO: URL Encode no username para evitar erros com caracteres especiais
+    safe_username = quote(username) 
+    endpoint = f"{SLSKD_URL}/transfers/downloads/{safe_username}"
 
     print(f"⬇️ Solicitando download em: {endpoint}")
 
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(endpoint, json=payload, headers=headers)
+            
+            # TRATAMENTO ESPECIAL PARA PEER OFFLINE (500 do Slskd)
+            if response.status_code == 500:
+                 print(f"❌ Slskd 500 (Provavelmente Peer Offline): {response.text}")
+                 raise HTTPException(status_code=503, detail="O usuário não está disponível (Peer Offline/Unreachable). Tente outro arquivo.")
+
             if response.status_code not in [200, 201, 204]:
                  print(f"❌ Erro Slskd ({response.status_code}): {response.text}")
+                 # Retorna o erro detalhado do Slskd para o Flutter entender
                  raise HTTPException(status_code=response.status_code, detail=f"Slskd Error: {response.text}")
+            
             return {"status": "Download queued", "file": filename}
+            
         except httpx.HTTPStatusError as e:
+            print(f"❌ Erro HTTP Slskd: {e}")
             raise HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
+            if isinstance(e, HTTPException): raise e # Re-raise se já for nosso
+            print(f"❌ Erro Interno Download: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-# --- STATUS GLOBAL MELHORADO ---
 async def get_transfer_status(filename: str):
-    """
-    Busca na lista GLOBAL de downloads ativos do Slskd.
-    Lógica de comparação melhorada para encontrar o arquivo mesmo se as pastas diferirem.
-    """
     if not API_KEY: return None
 
     headers = {"X-API-KEY": API_KEY}
@@ -106,36 +117,50 @@ async def get_transfer_status(filename: str):
             if response.status_code == 200:
                 downloads = response.json()
                 
-                # Normalização do alvo (O que o usuário quer)
-                # Ex: "Musica\Artist\Song.mp3" -> "song.mp3"
-                target_clean = filename.replace("\\", "/").lower()
-                target_simple = os.path.basename(target_clean) 
+                target = filename.replace("\\", "/").lower()
+                target_simple = os.path.basename(target) 
                 
                 for item in downloads:
-                    # Normalização do remoto (O que está baixando)
                     remote_file = item.get('filename', '').replace("\\", "/").lower()
                     remote_simple = os.path.basename(remote_file)
                     
-                    # CORREÇÃO: Comparação mais permissiva
-                    # 1. Se o nome do arquivo final for idêntico.
-                    # 2. Ou se o caminho completo contiver o nome do arquivo.
-                    is_match = (target_simple == remote_simple) or (target_clean in remote_file)
+                    is_match = (target_simple == remote_simple) or (target in remote_file) or (remote_file in target)
                     
                     if is_match:
-                        # Cálculo de progresso mais seguro
                         total = item.get('size', 1)
                         transferred = item.get('bytesTransferred', 0)
-                        # Slskd às vezes retorna percentual, às vezes não. Calculamos nós mesmos.
                         percent = (transferred / total) * 100 if total > 0 else 0.0
                         
+                        # --- TRADUÇÃO DE ESTADOS ---
+                        raw_state = item.get('state', 'Unknown')
+                        friendly_state = raw_state
+
+                        # Mapeia os estados do Slskd para os que o App espera
+                        if 'Completed, Succeeded' in raw_state:
+                            friendly_state = 'Completed'
+                        elif 'Completed' in raw_state: # Cancelled, TimedOut, Errored
+                            friendly_state = 'Aborted'
+                        elif 'InProgress' in raw_state:
+                            friendly_state = 'Downloading'
+                        elif any(s in raw_state for s in ['Queued', 'Requested', 'Initializing']):
+                            friendly_state = 'Queued'
+
                         return {
-                            "state": item.get('state'),      # Queued, Initializing, Downloading...
+                            "state": friendly_state,
+                            "raw_state": raw_state, # Útil para debug
                             "bytes_transferred": transferred,
                             "total_bytes": total,
-                            "speed": item.get('speed', 0),   # Bytes por segundo
+                            "speed": item.get('speed', 0),
                             "percent": percent,
                             "username": item.get('username')
                         }
+            
+            # Se chegou aqui, não achou na lista.
+            # Debug para entender por que não achou:
+            if len(downloads) > 0:
+                print(f"⚠️ Status não encontrado para: {target_simple}")
+                # print(f"   Arquivos ativos no Slskd: {[d.get('filename') for d in downloads[:3]]}...")
+            
             return None 
         except Exception as e:
             print(f"⚠️ Erro ao checar status global: {e}")

@@ -149,7 +149,13 @@ async def view_results(search_id: str):
     grouped_songs: Dict[str, dict] = {}
 
     for response in raw_results:
+        # Ignora bloqueados
         if response.get('locked', False): continue
+        
+        # Pega dados de disponibilidade do Peer
+        slots_free = response.get('slotsFree', False)
+        queue_length = response.get('queueLength', 0)
+
         if 'files' in response:
             for file in response['files']:
                 full_filename = file['filename']
@@ -161,9 +167,23 @@ async def view_results(search_id: str):
                 
                 if ext not in ['flac', 'mp3']: continue
 
+                # --- ALGORITMO DE SCORE MELHORADO v2 ---
                 score = 0
+                
+                # 1. Disponibilidade (Peso Máximo)
+                # Se tem slot livre, ganha +50.000 pontos (fura a fila de qualquer FLAC lento)
+                if slots_free:
+                    score += 50000
+                else:
+                    # Se tem fila, perde 1000 pontos por pessoa na frente
+                    # Ex: Fila de 257 pessoas = -257.000 pontos (vai pro fim da lista)
+                    score -= (queue_length * 1000)
+
+                # 2. Formato
                 if ext == 'flac': score += 10000
                 elif ext == 'mp3': score += 1000
+                
+                # 3. Bitrate e Velocidade (Desempate)
                 bitrate = file.get('bitRate') or 0
                 score += bitrate
                 speed = response.get('uploadSpeed', 0)
@@ -177,6 +197,8 @@ async def view_results(search_id: str):
                     'bitrate': bitrate,
                     'speed': speed,
                     'username': response.get('username'),
+                    'slots_free': slots_free, # Útil para debug na UI
+                    'queue': queue_length,    # Útil para debug na UI
                     'score': score
                 }
 
@@ -198,7 +220,6 @@ async def queue_download(request: DownloadRequest):
     """
     try:
         find_local_file(request.filename)
-        # Se encontrou, retorna sucesso imediato sem baixar de novo
         print(f"✅ Arquivo já existe em disco: {request.filename}")
         return {
             "status": "Already downloaded", 
@@ -206,7 +227,6 @@ async def queue_download(request: DownloadRequest):
             "message": "Ficheiro já disponível no servidor"
         }
     except HTTPException:
-        # Se não encontrou (404), prossegue com o download normal
         pass
 
     return await download_slskd(request.username, request.filename, request.size)
@@ -215,10 +235,15 @@ async def queue_download(request: DownloadRequest):
 async def auto_download_best(request: AutoDownloadRequest):
     raw_results = await get_search_results(request.search_id)
     best_candidate = None
-    highest_score = -1
+    highest_score = float('-inf') # Começa muito baixo para aceitar scores negativos (filas longas)
 
     for response in raw_results:
         if response.get('locked', False): continue
+        
+        # Dados do Peer
+        slots_free = response.get('slotsFree', False)
+        queue_length = response.get('queueLength', 0)
+
         if 'files' in response:
             for file in response['files']:
                 filename = file['filename']
@@ -226,9 +251,14 @@ async def auto_download_best(request: AutoDownloadRequest):
                 ext = filename.split('.')[-1].lower()
                 if ext not in ['flac', 'mp3']: continue
 
+                # --- Mesma lógica de Score do view_results ---
                 score = 0
+                if slots_free: score += 50000
+                else: score -= (queue_length * 1000)
+
                 if ext == 'flac': score += 10000
                 elif ext == 'mp3': score += 1000
+                
                 bitrate = file.get('bitRate') or 0
                 score += bitrate
                 speed = response.get('uploadSpeed', 0)
@@ -245,10 +275,9 @@ async def auto_download_best(request: AutoDownloadRequest):
     if not best_candidate:
         raise HTTPException(status_code=404, detail="Nenhum ficheiro válido encontrado para download automático.")
     
-    # Verifica se o Vencedor já existe no disco
+    # Verifica existência local
     try:
         find_local_file(best_candidate['filename'])
-        print(f"✅ Vencedor já existe em disco: {best_candidate['filename']}")
         return {
             "status": "Already downloaded", 
             "file": best_candidate['filename'], 
@@ -299,6 +328,56 @@ async def check_download_status(filename: str):
 async def get_track_details(filename: str):
     full_path = find_local_file(filename)
     return get_audio_metadata(full_path)
+
+# --- NOVA ROTA: LETRAS (Lyrics) ---
+@app.get("/lyrics")
+async def get_lyrics(filename: str):
+    """
+    Busca letras sincronizadas (LRC) via API pública LRCLIB.
+    """
+    full_path = find_local_file(filename)
+    
+    # 1. Metadados para busca precisa
+    meta = get_audio_metadata(full_path)
+    artist = meta.get('artist')
+    title = meta.get('title')
+    duration = meta.get('duration') # Segundos (float)
+    
+    if not artist or not title:
+        raise HTTPException(404, "Artista/Título desconhecidos, impossível buscar letra.")
+
+    print(f"🎤 Buscando letras para: {artist} - {title}")
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # 2. Busca exata (requer duração para precisão)
+            params = {"artist_name": artist, "track_name": title}
+            if duration:
+                params["duration"] = int(duration)
+
+            resp = await client.get("https://lrclib.net/api/get", params=params, timeout=8.0)
+            
+            # Se não achar exato, tenta busca difusa (search)
+            if resp.status_code == 404:
+                print("⚠️ Letra exata não encontrada, tentando busca aproximada...")
+                search_params = {"q": f"{artist} {title}"}
+                search_resp = await client.get("https://lrclib.net/api/search", params=search_params, timeout=8.0)
+                
+                if search_resp.status_code == 200 and search_resp.json():
+                    # Pega o primeiro resultado
+                    data = search_resp.json()[0]
+                else:
+                    raise HTTPException(404, "Letra não encontrada")
+            else:
+                data = resp.json()
+
+            return {
+                "syncedLyrics": data.get("syncedLyrics"), # String formato LRC [mm:ss.xx]
+                "plainLyrics": data.get("plainLyrics")    # Texto puro
+            }
+        except Exception as e:
+            print(f"❌ Erro ao buscar letras: {e}")
+            raise HTTPException(500, str(e))
 
 @app.get("/cover")
 async def get_cover_art(filename: str):
@@ -417,3 +496,35 @@ async def stream_music(
             yield from f
 
     return StreamingResponse(iterfile(), headers=headers)
+
+# --- BIBLIOTECA ---
+@app.get("/library")
+async def get_library():
+    """
+    Lista todas as músicas já baixadas na pasta /downloads.
+    """
+    base_path = "/downloads"
+    library = []
+    
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.lower().endswith(('.flac', '.mp3', '.m4a', '.wav')):
+                full_path = os.path.join(root, file)
+                try:
+                    tags = get_audio_tags(full_path)
+                    display_name = tags['title'] if tags['title'] else os.path.splitext(file)[0]
+                    artist = tags['artist'] if tags['artist'] else "Artista Desconhecido"
+                    
+                    library.append({
+                        "filename": file, 
+                        "display_name": display_name,
+                        "artist": artist,
+                        "album": tags['album'],
+                        "format": file.split('.')[-1].lower(),
+                        "path": full_path 
+                    })
+                except Exception as e:
+                    print(f"Erro ao indexar {file}: {e}")
+
+    library.sort(key=lambda x: (x.get('artist', ""), x.get('display_name', "")))
+    return library
