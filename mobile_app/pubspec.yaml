@@ -1,0 +1,37 @@
+name: orfeu
+description: "Um player de música de alta fidelidade conectado ao Soulseek."
+publish_to: 'none' # Prevents accidental publishing to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- Arquitetura & Estado ---
+  flutter_riverpod: ^2.5.1   # Gerenciamento de estado moderno e seguro
+  go_router: ^14.2.0         # Navegação entre telas (Login -> Home -> Player)
+  
+  # --- Conectividade ---
+  dio: ^5.5.0                # Cliente HTTP poderoso para falar com o Python
+
+  # --- Multimídia (O Coração do Orfeu) ---
+  just_audio: ^0.9.38        # O Player de áudio robusto (suporta FLAC stream)
+  just_audio_background: ^0.0.1-beta.13 # Para tocar música com o app fechado
+  audio_service: ^0.18.15    # Controles na barra de notificação/tela bloqueada
+  
+  # --- UI & Charme ---
+  google_fonts: ^6.2.1       # Fontes bonitas instantâneas
+  cached_network_image: ^3.3.1 # Cache de capas de álbum para não baixar sempre
+  flutter_animate: ^4.5.0    # Animações fluidas para dar aquele "charme"
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
