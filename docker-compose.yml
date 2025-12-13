@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # ------------------------------------------------
@@ -72,8 +72,8 @@ services:
     # Comando para rodar em desenvolvimento
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - ./backend:/app          
-      - ./downloads:/downloads  
+      - ./backend:/app
+      - ./downloads:/downloads
     ports:
       - "8000:8000"
     environment:
@@ -86,6 +86,19 @@ services:
     depends_on:
       - db
       - slskd
+    networks:
+      - orfeu_network
+
+  # ------------------------------------------------
+  # 5. Cloudflare Tunnel (Acesso Externo Seguro)
+  # ------------------------------------------------
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: orfeu_tunnel
+    restart: always
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - orfeu_network
 
