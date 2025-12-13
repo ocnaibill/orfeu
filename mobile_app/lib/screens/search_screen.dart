@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
 import 'player_screen.dart';
 
@@ -15,7 +16,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   void _handleSearch() {
     FocusScope.of(context).unfocus();
-    ref.read(searchControllerProvider).search(_queryController.text);
+    ref.read(searchControllerProvider).searchCatalog(_queryController.text);
   }
 
   @override
@@ -26,15 +27,14 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     return Column(
       children: [
-        // Barra de Busca no Topo
+        // Barra de Busca
         Padding(
-          padding: const EdgeInsets.fromLTRB(
-              16, 60, 16, 16), // Espaço para Status Bar
+          padding: const EdgeInsets.fromLTRB(16, 60, 16, 16),
           child: TextField(
             controller: _queryController,
             style: const TextStyle(color: Colors.white),
             decoration: InputDecoration(
-              hintText: 'O que você quer ouvir?',
+              hintText: 'Buscar músicas, artistas...',
               hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
               prefixIcon: const Icon(Icons.search, color: Colors.white54),
               suffixIcon: IconButton(
@@ -59,15 +59,16 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               : results.isEmpty
                   ? Center(
                       child: hasSearched
-                          ? const Text("Nenhum resultado encontrado.",
+                          ? const Text("Nenhum resultado no catálogo.",
                               style: TextStyle(color: Colors.white54))
                           : Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                const Icon(Icons.travel_explore,
+                                const Icon(Icons.album,
                                     size: 60, color: Colors.white24),
                                 const SizedBox(height: 10),
-                                const Text("Explore o submundo P2P",
+                                const Text(
+                                    "Digite para buscar no catálogo global",
                                     style: TextStyle(color: Colors.white38)),
                               ],
                             ),
@@ -76,7 +77,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       itemCount: results.length,
                       itemBuilder: (context, index) =>
-                          _ResultItem(item: results[index]),
+                          _CatalogItem(item: results[index]),
                     ),
         ),
       ],
@@ -84,115 +85,230 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 }
 
-class _ResultItem extends ConsumerWidget {
+class _CatalogItem extends ConsumerStatefulWidget {
   final Map<String, dynamic> item;
-  const _ResultItem({super.key, required this.item});
+  const _CatalogItem({super.key, required this.item});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final downloadState = ref.watch(downloadStatusProvider)[item['filename']];
-    final isFlac = item['extension'] == 'flac';
+  ConsumerState<_CatalogItem> createState() => _CatalogItemState();
+}
+
+class _CatalogItemState extends ConsumerState<_CatalogItem> {
+  bool _isAutoPlaying =
+      false; // Estado local para saber se estamos aguardando download para tocar
+  String?
+      _downloadingFilename; // Nome do arquivo sendo baixado (para monitorar progresso)
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final itemId = "${item['artistName']}-${item['trackName']}";
+
+    // Verifica se está processando no backend (buscando P2P)
+    final isNegotiating = ref.watch(processingItemsProvider).contains(itemId);
+
+    // Verifica status do download se já tivermos o filename
+    final downloadState = _downloadingFilename != null
+        ? ref.watch(downloadStatusProvider)[_downloadingFilename]
+        : null;
+
+    final bool isDownloaded = item['isDownloaded'] == true;
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
       color: Colors.white.withOpacity(0.05),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        onTap: () => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => PlayerScreen(item: item))),
-        leading: Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: isFlac
-                ? const Color(0xFFD4AF37).withOpacity(0.2)
-                : Colors.grey.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(8),
+        contentPadding: const EdgeInsets.all(12),
+        // Capa
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            item['artworkUrl'],
+            width: 50,
+            height: 50,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+                width: 50,
+                height: 50,
+                color: Colors.white10,
+                child: const Icon(Icons.music_note, color: Colors.white24)),
           ),
-          alignment: Alignment.center,
-          child: Text(isFlac ? "FLAC" : "MP3",
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: isFlac ? const Color(0xFFD4AF37) : Colors.grey)),
         ),
-        title: Text(item['display_name'],
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white)),
-        subtitle: _buildSubtitle(item, downloadState),
-        trailing: _buildActionIcon(ref, item, downloadState, context),
+
+        // Títulos
+        title: Text(
+          item['trackName'],
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style:
+              const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+        subtitle: Text(
+          "${item['artistName']} • ${item['year']}",
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+
+        // Botão de Ação (Play / Loading)
+        trailing:
+            _buildActionButton(isDownloaded, isNegotiating, downloadState),
+
+        // O toque no card faz a mesma coisa que o botão
+        onTap: () => _handlePlayOrDownload(context, ref),
       ),
     );
   }
 
-  // --- UI CORRIGIDA: Tratamento de Estados "Unknown" e Formatação ---
-  Widget _buildSubtitle(
-      Map<String, dynamic> item, Map<String, dynamic>? status) {
-    if (status != null && status['state'] != 'Completed') {
-      final state = status['state'];
-      final progress = status['progress'] ?? 0;
-
-      // Tratamento para estados iniciais onde o progresso ainda não é relevante
-      if (state == 'Unknown' || state == 'Initializing') {
-        return const Text("Iniciando...",
-            style: TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
-      }
-      if (state == 'Queued') {
-        return const Text("Na fila...",
-            style: TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
-      }
-
-      // Formatação da velocidade (se disponível)
-      String speedStr = "";
-      if (status.containsKey('speed')) {
-        final speed = status['speed'] ?? 0;
-        if (speed > 1024 * 1024) {
-          speedStr = " • ${(speed / 1024 / 1024).toStringAsFixed(1)} MB/s";
-        } else if (speed > 0) {
-          speedStr = " • ${(speed / 1024).toStringAsFixed(0)} KB/s";
-        }
-      }
-
-      return Text("$state ${(progress.toStringAsFixed(0))}%$speedStr",
-          style: const TextStyle(color: Color(0xFFD4AF37), fontSize: 11));
-    }
-    return Text("${(item['size'] / 1024 / 1024).toStringAsFixed(1)} MB",
-        style: const TextStyle(color: Colors.white38, fontSize: 12));
-  }
-
-  Widget _buildActionIcon(WidgetRef ref, Map<String, dynamic> item,
-      Map<String, dynamic>? status, BuildContext context) {
-    if (status == null) {
-      return IconButton(
-        icon: const Icon(Icons.download_rounded, color: Colors.white70),
-        onPressed: () {
-          ref.read(searchControllerProvider).download(item);
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text("Adicionado à fila"),
-              duration: Duration(seconds: 1)));
-        },
+  Widget _buildActionButton(bool isDownloaded, bool isNegotiating,
+      Map<String, dynamic>? downloadState) {
+    // 1. Negociando com Backend (Smart Search em andamento)
+    if (isNegotiating) {
+      return const SizedBox(
+        width: 24,
+        height: 24,
+        child:
+            CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFD4AF37)),
       );
     }
 
-    if (status['state'] == 'Completed')
-      return const Icon(Icons.check_circle, color: Colors.green);
+    // 2. Baixando (Temos status de progresso)
+    if (_isAutoPlaying &&
+        downloadState != null &&
+        downloadState['state'] != 'Completed') {
+      final progress = (downloadState['progress'] ?? 0.0) / 100.0;
+      return SizedBox(
+        width: 28,
+        height: 28,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            CircularProgressIndicator(
+              value: (downloadState['state'] == 'Unknown') ? null : progress,
+              color: const Color(0xFFD4AF37),
+              backgroundColor: Colors.white10,
+              strokeWidth: 3,
+            ),
+            const Icon(Icons.download, size: 14, color: Colors.white70),
+          ],
+        ),
+      );
+    }
 
-    // Se for Unknown ou Initializing, mostra spinner indeterminado (sem valor fixo)
-    final state = status['state'];
-    final progress = (status['progress'] ?? 0) / 100.0;
-    final isIndeterminate =
-        state == 'Unknown' || state == 'Initializing' || state == 'Queued';
-
-    return SizedBox(
-      width: 20,
-      height: 20,
-      child: CircularProgressIndicator(
-        value: isIndeterminate ? null : progress,
-        strokeWidth: 2,
-        color: const Color(0xFFD4AF37),
-        backgroundColor: Colors.white10,
+    // 3. Pronto para tocar (Já baixado ou estado inicial)
+    return IconButton(
+      icon: Icon(
+        Icons.play_arrow_rounded,
+        color: isDownloaded
+            ? const Color(0xFFD4AF37)
+            : Colors.white70, // Dourado se já tem, Branco se vai baixar
+        size: 32,
       ),
+      onPressed: () => _handlePlayOrDownload(context, ref),
+    );
+  }
+
+  Future<void> _handlePlayOrDownload(
+      BuildContext context, WidgetRef ref) async {
+    // 1. Se já está baixado (flag do catálogo), toca direto
+    if (widget.item['isDownloaded'] == true &&
+        widget.item['filename'] != null) {
+      _openPlayer(widget.item['filename']);
+      return;
+    }
+
+    // 2. Se já estamos baixando, não faz nada (ou cancela? por enquanto ignora)
+    if (_isAutoPlaying) return;
+
+    setState(() => _isAutoPlaying = true);
+
+    try {
+      // Feedback visual
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Preparando música..."),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      // Inicia Smart Download
+      final filename =
+          await ref.read(searchControllerProvider).smartDownload(widget.item);
+
+      if (filename == null) throw "Arquivo não encontrado.";
+
+      setState(() => _downloadingFilename = filename);
+
+      // Monitora até completar para abrir o player
+      _waitForDownloadAndPlay(filename);
+    } catch (e) {
+      setState(() {
+        _isAutoPlaying = false;
+        _downloadingFilename = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _waitForDownloadAndPlay(String filename) async {
+    final dio = ref.read(dioProvider);
+
+    bool isReady = false;
+    int attempts = 0;
+    // Timeout de 10 minutos de download
+    while (!isReady && attempts < 600) {
+      if (!mounted) return;
+      await Future.delayed(const Duration(seconds: 1));
+      attempts++;
+
+      try {
+        final encodedName = Uri.encodeComponent(filename);
+        // Consulta status local (Backend já verifica disco e Slskd)
+        final resp = await dio.get('/download/status?filename=$encodedName');
+        final state = resp.data['state'];
+
+        if (state == 'Completed') {
+          isReady = true;
+          _openPlayer(filename);
+          // Atualiza estado visual local (opcional, pois navegou)
+          if (mounted) setState(() => _isAutoPlaying = false);
+        } else if (state == 'Aborted' || state == 'Cancelled') {
+          throw "Download cancelado pelo servidor.";
+        }
+      } catch (e) {
+        // Se der erro, paramos o loop
+        if (mounted) {
+          setState(() => _isAutoPlaying = false);
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text("Erro no download: $e")));
+        }
+        return;
+      }
+    }
+  }
+
+  void _openPlayer(String filename) {
+    if (!mounted) return;
+
+    // Monta o objeto que o PlayerScreen espera
+    final playerItem = {
+      'filename': filename,
+      'display_name': widget.item['trackName'],
+      'artist': widget.item['artistName'],
+      // Adicionamos metadados extras que já temos do iTunes
+      'album': widget.item['collectionName'],
+      'cover_url': widget.item['artworkUrl']
+    };
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => PlayerScreen(item: playerItem)),
     );
   }
 }

@@ -2,7 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 
 // --- Configuração de Rede ---
-// Ajuste o IP conforme necessário (127.0.0.1 para Mac/Simulator, IP da rede para outros)
+// ⚠️ ATENÇÃO: Se for rodar no Mac (com backend no Mac), use '127.0.0.1'.
+// Se o backend continuar no PC e o app no iPhone físico, use o IP da rede.
 const String serverIp = '127.0.0.1';
 const String baseUrl = 'http://$serverIp:8000';
 
@@ -11,7 +12,8 @@ final dioProvider = Provider((ref) {
   return Dio(BaseOptions(
     baseUrl: baseUrl,
     connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 10),
+    // AUMENTADO: De 45s para 60s para evitar timeout quando a rede P2P demora
+    receiveTimeout: const Duration(seconds: 60),
   ));
 });
 
@@ -19,7 +21,12 @@ final dioProvider = Provider((ref) {
 final searchResultsProvider = StateProvider<List<dynamic>>((ref) => []);
 final isLoadingProvider = StateProvider<bool>((ref) => false);
 final hasSearchedProvider = StateProvider<bool>((ref) => false);
-final currentSearchIdProvider = StateProvider<String?>((ref) => null);
+
+// Rastreia quais itens do catálogo estão sendo processados pelo Backend (buscando P2P)
+// Set de IDs (ex: "Artist-Track")
+final processingItemsProvider = StateProvider<Set<String>>((ref) => {});
+
+// Rastreia o status de download por NOME DE ARQUIVO (retornado pelo backend)
 final downloadStatusProvider = StateProvider<Map<String, dynamic>>((ref) => {});
 
 // --- Controller de Busca e Download ---
@@ -29,108 +36,104 @@ class SearchController {
   final Ref ref;
   SearchController(this.ref);
 
-  Future<void> search(String query) async {
+  // 1. Busca no Catálogo (iTunes) - Rápida e Visual
+  Future<void> searchCatalog(String query) async {
     if (query.isEmpty) return;
 
     final dio = ref.read(dioProvider);
     final notifier = ref.read(searchResultsProvider.notifier);
     final loading = ref.read(isLoadingProvider.notifier);
     final hasSearched = ref.read(hasSearchedProvider.notifier);
-    final currentId = ref.read(currentSearchIdProvider.notifier);
 
     try {
       loading.state = true;
       hasSearched.state = true;
       notifier.state = [];
 
-      print('🔍 Iniciando busca por: $query');
-      final searchResp = await dio.post('/search/$query');
-      final searchId = searchResp.data['search_id'];
+      print('🔍 Buscando no catálogo: $query');
+      // Chama a nova rota de catálogo
+      final resp =
+          await dio.get('/search/catalog', queryParameters: {'query': query});
 
-      currentId.state = searchId;
-      await _pollResults(searchId);
+      notifier.state = resp.data;
     } catch (e) {
-      print('❌ Erro na busca: $e');
+      print('❌ Erro na busca de catálogo: $e');
       rethrow;
     } finally {
       loading.state = false;
     }
   }
 
-  Future<void> refresh() async {
-    final searchId = ref.read(currentSearchIdProvider);
-    if (searchId == null) return;
-
-    final loading = ref.read(isLoadingProvider.notifier);
-    try {
-      loading.state = true;
-      await _pollResults(searchId, attempts: 1);
-    } catch (e) {
-      print('❌ Erro no refresh: $e');
-    } finally {
-      loading.state = false;
-    }
-  }
-
-  Future<void> _pollResults(String searchId, {int attempts = 20}) async {
+  // 2. Smart Download - O Backend faz o trabalho sujo
+  Future<String?> smartDownload(Map<String, dynamic> catalogItem) async {
     final dio = ref.read(dioProvider);
-    final notifier = ref.read(searchResultsProvider.notifier);
+    final processing = ref.read(processingItemsProvider.notifier);
 
-    for (int i = 1; i <= attempts; i++) {
-      await Future.delayed(const Duration(seconds: 2));
-      try {
-        final resultsResp = await dio.get('/results/$searchId');
-        final List<dynamic> data = resultsResp.data;
-        if (data.isNotEmpty) {
-          notifier.state = data;
-        }
-      } catch (e) {
-        print('⚠️ Erro polling: $e');
-      }
-    }
-  }
-
-  Future<void> download(Map<String, dynamic> item) async {
-    final dio = ref.read(dioProvider);
-    final filename = item['filename'];
+    // Cria um ID único para o item na lista para mostrar o spinner
+    final itemId = "${catalogItem['artistName']}-${catalogItem['trackName']}";
 
     try {
-      await dio.post('/download', data: {
-        "username": item['username'],
-        "filename": filename,
-        "size": item['size']
+      // Marca como processando (UI mostra spinner "Buscando melhor versão...")
+      processing.update((state) => {...state, itemId});
+      print('🤖 Iniciando Smart Download para: $itemId');
+
+      final resp = await dio.post('/download/smart', data: {
+        "artist": catalogItem['artistName'],
+        "track": catalogItem['trackName'],
+        "album": catalogItem['collectionName']
       });
+
+      // O backend retorna o nome do arquivo que ele escolheu/baixou
+      final filename = resp.data['file'];
+      print('⬇️ Arquivo escolhido pelo Orfeu: $filename');
+
+      // Começa a monitorar o progresso real desse arquivo
       _pollDownloadStatus(filename);
+
+      return filename;
     } catch (e) {
-      print('❌ Erro no download: $e');
+      print('❌ Erro no smart download: $e');
       rethrow;
+    } finally {
+      // Remove do estado de processamento
+      processing.update((state) => {...state}..remove(itemId));
     }
   }
 
+  // Monitora o status de um arquivo específico até completar
   void _pollDownloadStatus(String filename) async {
     final dio = ref.read(dioProvider);
     final statusNotifier = ref.read(downloadStatusProvider.notifier);
 
     bool isFinished = false;
     int attempts = 0;
-    const maxAttempts = 600;
+    const maxAttempts = 600; // 10 minutos de timeout
 
     while (!isFinished && attempts < maxAttempts) {
       await Future.delayed(const Duration(seconds: 1));
       attempts++;
+
       try {
         final encodedName = Uri.encodeComponent(filename);
         final resp = await dio.get('/download/status?filename=$encodedName');
+        final data = resp.data;
+
         statusNotifier.update((state) {
           final newState = Map<String, dynamic>.from(state);
-          newState[filename] = resp.data;
+          newState[filename] = data;
           return newState;
         });
 
-        final state = resp.data['state'];
-        if (state == 'Completed' || state == 'Aborted') isFinished = true;
+        final state = data['state'];
+        if (state == 'Completed') {
+          isFinished = true;
+          print("✅ Download concluído: $filename");
+        } else if (state == 'Aborted' || state == 'Cancelled') {
+          isFinished = true;
+          print("❌ Download cancelado/falhou: $filename");
+        }
       } catch (e) {
-        print("⚠️ Erro polling status: $e");
+        // Silently fail on network glitches during polling
       }
     }
   }

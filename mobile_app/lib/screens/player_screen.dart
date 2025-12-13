@@ -15,7 +15,7 @@ class PlayerScreen extends StatefulWidget {
 
 class LyricLine {
   final Duration startTime;
-  Duration duration; // Duração estimada da frase
+  Duration duration;
   final String text;
 
   LyricLine(this.startTime, this.text,
@@ -69,51 +69,53 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  // --- CORREÇÃO: Lógica de Scroll Precisa ---
+  // --- CORREÇÃO: Scroll Matemático Preciso ---
   void _scrollToCurrentLine() {
     if (!_lyricsScrollController.hasClients || _currentLyricIndex == -1) return;
 
-    // Medidas da tela
     double screenHeight = MediaQuery.of(context).size.height;
     double screenWidth = MediaQuery.of(context).size.width;
     double contentWidth = screenWidth - 48; // Padding horizontal (24*2)
 
-    // Padding vertical inicial da lista (definido no ListView)
-    double listTopPadding = screenHeight * 0.35;
+    // O padding inicial da lista é fundamental para o cálculo
+    // Estamos usando 45% da tela como topo para subir um pouco a visualização
+    double listTopPadding = screenHeight * 0.45;
 
-    // Calcula a altura acumulada de todas as linhas anteriores
+    // Calcula a altura real de todas as linhas anteriores
     double accumulatedHeight = 0;
     for (int i = 0; i < _currentLyricIndex; i++) {
       accumulatedHeight +=
           _measureTextHeight(_lyrics[i].text, false, contentWidth);
     }
 
-    // Calcula a altura da linha atual
+    // Calcula a altura da linha atual (que é maior/bold)
     double currentItemHeight = _measureTextHeight(
         _lyrics[_currentLyricIndex].text, true, contentWidth);
 
-    // Matemática para centralizar:
-    // PosiçãoY = (PaddingTopo + AlturaAcumulada + MetadeDoItemAtual) - MetadeDaTela
+    // Fórmula: (InicioDaLista + AlturaAcumulada + MetadeDoItem) - MetadeDaTela
+    // Isso coloca o centro do item atual no centro da tela.
+    // Adicionei um pequeno ajuste (-20) para subir visualmente.
     double targetOffset =
         (listTopPadding + accumulatedHeight + (currentItemHeight / 2)) -
-            (screenHeight / 2);
+            (screenHeight / 2) +
+            20;
 
     if (targetOffset < 0) targetOffset = 0;
 
     _lyricsScrollController.animateTo(
       targetOffset,
-      duration: const Duration(milliseconds: 800), // Animação suave
+      duration: const Duration(milliseconds: 700),
       curve: Curves.easeInOutCubic,
     );
   }
 
-  // Helper para medir altura real do texto
+  // Helper para medir altura do texto sem renderizar
   double _measureTextHeight(String text, bool isActive, double maxWidth) {
     final span = TextSpan(
       text: text,
       style: GoogleFonts.outfit(
-        fontSize: isActive ? 28 : 22,
-        fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
+        fontSize: isActive ? 28 : 22, // Mesmos tamanhos usados no build
+        fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
         height: 1.3,
       ),
     );
@@ -125,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
 
     tp.layout(maxWidth: maxWidth);
-    return tp.height + 24.0; // + Padding bottom usado no ListView
+    return tp.height + 32.0; // + Padding bottom (24) + margem de segurança (8)
   }
 
   Future<void> _fetchMetadata() async {
@@ -269,8 +271,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       isScrollControlled: true,
       builder: (context) {
         return SingleChildScrollView(
@@ -303,10 +304,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     margin: const EdgeInsets.symmetric(vertical: 16),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.05),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white10),
-                    ),
+                        color: Colors.white.withOpacity(0.05),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white10)),
                     child: Row(
                       children: [
                         const Icon(Icons.info_outline,
@@ -321,12 +321,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold)),
                             Text(
-                              _currentQuality == 'lossless'
-                                  ? "${_metadata!['tech_label']} • Original"
-                                  : "Convertido de ${_metadata!['tech_label']}",
-                              style: const TextStyle(
-                                  color: Colors.white54, fontSize: 12),
-                            ),
+                                _currentQuality == 'lossless'
+                                    ? "${_metadata!['tech_label']} • Original"
+                                    : "Convertido de ${_metadata!['tech_label']}",
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 12)),
                           ],
                         ),
                       ],
@@ -337,12 +336,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   final isSelected = _currentQuality == q;
                   return ListTile(
                     leading: Icon(
-                      isSelected
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_off,
-                      color:
-                          isSelected ? const Color(0xFFD4AF37) : Colors.white24,
-                    ),
+                        isSelected
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: isSelected
+                            ? const Color(0xFFD4AF37)
+                            : Colors.white24),
                     title: Text(_getQualityLabel(q),
                         style: TextStyle(
                             color: isSelected
@@ -533,9 +532,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const SizedBox(
-                    height:
-                        20), // Espaçamento extra no topo para compensar visualmente
+                const SizedBox(height: 20),
                 Container(
                   height: 300,
                   width: 300,
@@ -567,8 +564,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     style: GoogleFonts.outfit(
                         fontSize: 18, color: Colors.white54)),
                 const SizedBox(height: 20),
-
-                // --- BADGE DE QUALIDADE (Clicável) ---
                 GestureDetector(
                   onTap: _showQualitySelector,
                   child: Container(
@@ -586,26 +581,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         const Icon(Icons.tune,
                             size: 14, color: Color(0xFFD4AF37)),
                         const SizedBox(width: 8),
-                        Text(
-                          _getQualityLabel(_currentQuality).toUpperCase(),
-                          style: const TextStyle(
-                              color: Color(0xFFD4AF37),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1),
-                        ),
+                        Text(_getQualityLabel(_currentQuality).toUpperCase(),
+                            style: const TextStyle(
+                                color: Color(0xFFD4AF37),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1)),
                       ],
                     ),
                   ),
                 ),
-
                 if (_metadata != null)
                   Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text(_metadata!['tech_label'] ?? "",
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 10)),
-                  ),
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(_metadata!['tech_label'] ?? "",
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10))),
               ],
             ),
           ),
@@ -615,9 +606,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildLyricsView(String coverUrl) {
+    double screenHeight = MediaQuery.of(context).size.height;
+
     return Column(
       children: [
-        // SafeArea no header evita que a capa invada o notch/status bar
         SafeArea(
           bottom: false,
           child: Padding(
@@ -626,34 +618,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Image.network(
-                    coverUrl,
-                    width: 60,
-                    height: 60,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        Container(color: Colors.white10, width: 60, height: 60),
-                  ),
+                  child: Image.network(coverUrl,
+                      width: 60,
+                      height: 60,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                          color: Colors.white10, width: 60, height: 60)),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _metadata?['title'] ?? widget.item['display_name'],
-                        style: GoogleFonts.outfit(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        _metadata?['artist'] ?? "Artista Desconhecido",
-                        style: GoogleFonts.outfit(
-                            fontSize: 14, color: Colors.white54),
-                      ),
+                      Text(_metadata?['title'] ?? widget.item['display_name'],
+                          style: GoogleFonts.outfit(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                      Text(_metadata?['artist'] ?? "Artista Desconhecido",
+                          style: GoogleFonts.outfit(
+                              fontSize: 14, color: Colors.white54)),
                     ],
                   ),
                 )
@@ -662,7 +648,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
         const Divider(color: Colors.white10, height: 1),
-
         Expanded(
           child: _loadingLyrics
               ? const Center(
@@ -685,28 +670,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       blendMode: BlendMode.dstIn,
                       child: ListView.builder(
                         controller: _lyricsScrollController,
-                        // Padding grande nas pontas para centralizar o primeiro/último item
+                        // Padding calibrado para centralizar com o cálculo matemático
                         padding: EdgeInsets.symmetric(
-                            vertical: MediaQuery.of(context).size.height * 0.35,
-                            horizontal: 24),
+                            vertical: screenHeight * 0.45, horizontal: 24),
                         itemCount: _lyrics.length,
                         itemBuilder: (context, index) {
                           final line = _lyrics[index];
                           final isActive = index == _currentLyricIndex;
-
                           return RepaintBoundary(
-                            // Otimização de performance
                             child: GestureDetector(
-                              // Toque para pular (Seek)
                               onTap: () {
                                 _audioPlayer.seek(line.startTime);
-                                // Feedback visual imediato
                                 setState(() => _currentLyricIndex = index);
                               },
                               child: AnimatedOpacity(
                                 duration: const Duration(milliseconds: 500),
                                 curve: Curves.easeInOut,
-                                // Aumentei a opacidade para 0.5 para melhor leitura
                                 opacity: isActive ? 1.0 : 0.5,
                                 child: Padding(
                                   padding: const EdgeInsets.only(bottom: 24.0),
@@ -716,17 +695,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                           startTime: line.startTime,
                                           duration: line.duration,
                                           playerStream:
-                                              _audioPlayer.positionStream,
-                                        )
-                                      : Text(
-                                          line.text,
+                                              _audioPlayer.positionStream)
+                                      : Text(line.text,
                                           textAlign: TextAlign.center,
                                           style: GoogleFonts.outfit(
-                                            fontSize: 22,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.white,
-                                          ),
-                                        ),
+                                              fontSize: 22,
+                                              fontWeight: FontWeight.w500,
+                                              color: Colors.white)),
                                 ),
                               ),
                             ),
@@ -736,13 +711,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     )
                   : Center(
                       child: Padding(
-                        padding: const EdgeInsets.all(24.0),
-                        child: Text(_plainLyrics ?? "Letra não encontrada.",
-                            style: const TextStyle(
-                                color: Colors.white54, fontSize: 16),
-                            textAlign: TextAlign.center),
-                      ),
-                    ),
+                          padding: const EdgeInsets.all(24.0),
+                          child: Text(_plainLyrics ?? "Letra não encontrada.",
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 16),
+                              textAlign: TextAlign.center))),
         ),
       ],
     );
@@ -752,7 +725,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       "${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 }
 
-// --- WIDGET KARAOKE (EFEITO FADE-IN ORGÂNICO) ---
 class KaraokeText extends StatelessWidget {
   final String text;
   final Duration startTime;
@@ -769,47 +741,32 @@ class KaraokeText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final words = text.split(' ');
-
     return StreamBuilder<Duration>(
       stream: playerStream,
       builder: (context, snapshot) {
         final currentPos = snapshot.data ?? Duration.zero;
-
-        // Calcula progresso global na frase (0.0 a 1.0)
         final lineProgress =
             (currentPos - startTime).inMilliseconds / duration.inMilliseconds;
         final clampedLineProgress = lineProgress.clamp(0.0, 1.0);
-
-        // Mapeia o progresso global para um "cursor" que anda pelas palavras
         final wordCursor = clampedLineProgress * words.length;
 
         return RichText(
           textAlign: TextAlign.center,
           text: TextSpan(
             style: GoogleFonts.outfit(
-              fontSize: 28, // Fonte da frase ativa
-              fontWeight: FontWeight.bold,
-              height: 1.3,
-            ),
+                fontSize: 28, fontWeight: FontWeight.bold, height: 1.3),
             children: List.generate(words.length, (i) {
-              // Calcula o quanto esta palavra específica (i) deve estar "acesa"
               double fade = (wordCursor - i).clamp(0.0, 1.0);
               fade = Curves.easeOut.transform(fade);
-
               final color = Color.lerp(Colors.white30, Colors.white, fade);
               final shadowOpacity = fade * 0.6;
-
               return TextSpan(
                 text: "${words[i]} ",
-                style: TextStyle(
-                  color: color,
-                  shadows: [
-                    Shadow(
+                style: TextStyle(color: color, shadows: [
+                  Shadow(
                       color: const Color(0xFFD4AF37).withOpacity(shadowOpacity),
-                      blurRadius: 15 * fade,
-                    )
-                  ],
-                ),
+                      blurRadius: 15 * fade)
+                ]),
               );
             }),
           ),
