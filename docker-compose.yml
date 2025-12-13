@@ -52,8 +52,8 @@ services:
       - SLSKD_REMOTE_CONFIGURATION=true
       # Removemos a API Key daqui, pois o Slskd gerencia isso internamente
     ports:
-      - "5030:5030" # HTTP (Web UI + API) - Ajustado para porta padrão correta
-      - "5031:5031" # HTTPS
+      - "5030:5030" # HTTP (Web UI + API)
+      - "5032:5031" # HTTPS (ALTERADO: 5032 externa aponta para 5031 interna para evitar conflito)
       - "50300:50300/tcp" # P2P
     volumes:
       - ./slskd-config/slskd.yml:/app/slskd.yml
@@ -75,7 +75,7 @@ services:
       - ./backend:/app
       - ./downloads:/downloads
     ports:
-      - "8000:8000"
+      - "8012:8000"
     environment:
       # Note que aqui usamos o nome do serviço "db" e "slskd" como host
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
