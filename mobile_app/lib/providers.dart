@@ -2,17 +2,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 
 // --- Configuração de Rede ---
-// ⚠️ ATENÇÃO: Se for rodar no Mac (com backend no Mac), use '127.0.0.1'.
-// Se o backend continuar no PC e o app no iPhone físico, use o IP da rede.
-const String serverIp = '127.0.0.1';
-const String baseUrl = 'http://$serverIp:8000';
+// Agora apontamos para o domínio com HTTPS (SSL gerado pela Cloudflare)
+const String baseUrl = 'https://orfeu.ocnaibill.dev';
 
 // --- Cliente HTTP ---
 final dioProvider = Provider((ref) {
   return Dio(BaseOptions(
     baseUrl: baseUrl,
     connectTimeout: const Duration(seconds: 10),
-    // AUMENTADO: De 45s para 60s para evitar timeout quando a rede P2P demora
+    // Timeout ajustado para 60s para suportar buscas P2P mais longas
     receiveTimeout: const Duration(seconds: 60),
   ));
 });
@@ -23,7 +21,6 @@ final isLoadingProvider = StateProvider<bool>((ref) => false);
 final hasSearchedProvider = StateProvider<bool>((ref) => false);
 
 // Rastreia quais itens do catálogo estão sendo processados pelo Backend (buscando P2P)
-// Set de IDs (ex: "Artist-Track")
 final processingItemsProvider = StateProvider<Set<String>>((ref) => {});
 
 // Rastreia o status de download por NOME DE ARQUIVO (retornado pelo backend)
