@@ -1,0 +1,36 @@
+name: Deploy Backend to Homelab
+
+# Gatilho: Roda sempre que houver push na branch main
+# Mas apenas se houver alterações no backend ou na infraestrutura
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'backend/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOMELAB_HOST }}
+          username: ${{ secrets.HOMELAB_USER }}
+          key: ${{ secrets.HOMELAB_SSH_KEY }}
+          port: ${{ secrets.HOMELAB_PORT }}
+          script: |
+            # 1. Navegar até a pasta do projeto (Ajuste se o nome da pasta for diferente no servidor)
+            cd ~/orfeu
+            
+            # 2. Baixar as mudanças do GitHub
+            git pull origin main
+            
+            # 3. Recriar o backend com as novas alterações
+            # Nota: Usamos 'docker-compose' pois foi o comando que funcionou no seu servidor
+            docker-compose up -d --build backend
+            
+            # 4. Limpeza opcional de imagens antigas para economizar espaço
+            docker image prune -f
