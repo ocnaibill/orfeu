@@ -8,7 +8,7 @@
 ![Flutter](https://img.shields.io/badge/mobile-Flutter-02569B)
 
 ## 📖 Sobre o Projeto
-O **Orfeu** é um sistema de streaming de áudio *self-hosted* focado em alta resolução (FLAC). Desenvolvido como Trabalho de Conclusão de Curso (TCC), ele propõe uma arquitetura onde o usuário mantém a soberania sobre seus dados e qualidade de mídia.
+O **Orfeu** é um sistema de streaming de áudio *self-hosted* focado em alta resolução (FLAC). Propõe uma arquitetura onde o usuário mantém diversidade de biblioteca e qualidade de mídia.
 
 O sistema utiliza uma arquitetura cliente-servidor distribuída:
 - **Core (Server-side):** Gerencia conexões P2P (Soulseek), transcodificação de áudio on-the-fly e metadados.
