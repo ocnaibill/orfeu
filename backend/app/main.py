@@ -17,7 +17,7 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.6.1")
+app = FastAPI(title="Orfeu API", version="1.6.2")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -38,8 +38,17 @@ class SmartDownloadRequest(BaseModel):
 
 # --- Helpers ---
 def normalize_text(text: str) -> str:
+    """
+    Limpa o texto para comparação Fuzzy.
+    Substitui separadores comuns por espaços para evitar que palavras fiquem coladas.
+    Ex: "bbno$_lil_freak" -> "bbno$ lil freak"
+    """
     if not text: return ""
-    return unidecode(text).lower().strip()
+    text = unidecode(text).lower()
+    # Substitui caracteres que costumam colar palavras
+    for char in ['_', '-', '.', '[', ']', '(', ')', '+']:
+        text = text.replace(char, ' ')
+    return text.strip()
 
 def find_local_match(artist: str, track: str) -> Optional[str]:
     """
@@ -63,7 +72,7 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.1"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.2"}
 
 # --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
@@ -77,7 +86,6 @@ async def search_catalog(
     
     raw_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
     
-    # Paginação em Memória
     start_index = offset
     end_index = offset + limit
     
@@ -86,7 +94,6 @@ async def search_catalog(
         
     paged_results = raw_results[start_index:end_index]
     
-    # Check local
     for item in paged_results:
         if item['type'] == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
@@ -147,13 +154,13 @@ async def smart_download(request: SmartDownloadRequest):
         if peer_count > 0 and peer_count == last_peer_count:
             stable_checks += 1
         else:
-            stable_checks = 0 # Reseta se mudou o número de peers
+            stable_checks = 0
         
         last_peer_count = peer_count
         
         print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
         
-        # --- 2. Coleta de Candidatos para Debug ---
+        # --- 2. Coleta de Candidatos ---
         candidates_debug = []
 
         for response in raw_results:
@@ -171,9 +178,11 @@ async def smart_download(request: SmartDownloadRequest):
                     remote_clean = normalize_text(file_basename)
                     
                     similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
+                    
+                    # Filtro de similaridade (agora com texto limpo, 85 deve passar FLACs com underline)
                     if similarity < 85: 
-                        # Debug: Logar os quase-matches pode ajudar a ver se o filtro tá muito rígido
-                        # print(f"Ignorado (Low Sim {similarity}%): {file_basename}")
+                        # Debug Opcional: Descomente para ver o que está sendo rejeitado
+                        # if i > 10: print(f"   [SKIP {similarity}%] {file_basename}")
                         continue
 
                     if '.' not in filename: continue
@@ -192,13 +201,11 @@ async def smart_download(request: SmartDownloadRequest):
                     score += similarity * 10 
                     score += (upload_speed / 1_000_000)
 
-                    # Adiciona à lista de debug
                     candidate_obj = {
                         'username': response.get('username'),
                         'filename': filename,
                         'size': file['size'],
                         'score': score,
-                        # Dados extras para log
                         'ext': ext,
                         'slots': slots_free,
                         'queue': queue_length
@@ -212,19 +219,16 @@ async def smart_download(request: SmartDownloadRequest):
         # --- 3. Debug Top 3 ---
         if candidates_debug:
             candidates_debug.sort(key=lambda x: x['score'], reverse=True)
-            if i % 5 == 0: # Loga de vez em quando para não spammar
+            if i % 5 == 0: 
                 print("   --- Top Candidatos Atuais ---")
                 for c in candidates_debug[:3]:
                     print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Queue: {c['queue']} | File: {c['filename'][:40]}...")
 
         # --- 4. Critérios de Saída ---
-        
-        # A. Estabilidade: Se o número de resultados parou de mudar por 3 checks (~6s) e temos resultados
         if stable_checks >= 3 and peer_count > 0 and best_candidate:
              print("⚡ Resultados estabilizados. Encerrando busca.")
              break
 
-        # B. Perfeito: Já achamos o arquivo dos sonhos
         has_perfect = best_candidate and best_candidate['score'] > 50000
         if peer_count > 15 and has_perfect: 
             print("⚡ Candidato perfeito encontrado. Encerrando.")
