@@ -117,34 +117,35 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 @app.get("/")
 def read_root(): return {"status": "Orfeu is alive", "service": "Backend", "version": "1.8.1"}
 
+# --- BUSCA HÍBRIDA (TIDAL -> YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
 async def search_catalog(
-    query: str, limit: int = 20, offset: int = 0, type: str = Query("song", enum=["song", "album"])
+    query: str, 
+    limit: int = 20, 
+    offset: int = 0,
+    type: str = Query("song", enum=["song", "album"])
 ):
     print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
+    
     results = []
-    if type == "song":
-        try:
-            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit)
-            if tidal_results: results = tidal_results
-        except Exception as e: print(f"⚠️ Tidal falhou: {e}")
 
+    # 1. Tenta TIDAL Primeiro (Para Músicas E Álbuns agora!)
+    try:
+        print(f"   Tentando Tidal ({type})...")
+        # Passamos o 'type' para o provider escolher o filtro correto (?s= ou ?al=)
+        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
+        if tidal_results:
+            results = tidal_results
+            print(f"   ✅ Tidal retornou {len(results)} resultados.")
+    except Exception as e:
+        print(f"   ⚠️ Tidal falhou: {e}")
+
+    # 2. Fallback para YouTube Music
     if not results:
+        print("   Tentando YouTube Music (Fallback)...")
         yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
         results = yt_results
 
-    if len(results) > limit:
-         start = offset
-         end = offset + limit
-         if start < len(results): results = results[start:end]
-         else: results = []
-
-    for item in results:
-        if item.get('type') == 'song':
-            local_file = find_local_match(item['artistName'], item['trackName'])
-            item['isDownloaded'] = local_file is not None
-            item['filename'] = local_file
-    return results
 
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):

@@ -3,8 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
 import 'player_screen.dart';
+import 'package:dio/dio.dart';
 
-// Provider temporário para carregar os dados do álbum ao abrir a tela
+// Provider para carregar os dados do álbum
 final albumDetailsProvider =
     FutureProvider.family<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(searchControllerProvider).getAlbumDetails(id);
@@ -12,7 +13,7 @@ final albumDetailsProvider =
 
 class AlbumScreen extends ConsumerWidget {
   final String collectionId;
-  final String heroTag; // Para animação da capa
+  final String heroTag;
 
   const AlbumScreen(
       {super.key, required this.collectionId, required this.heroTag});
@@ -27,25 +28,29 @@ class AlbumScreen extends ConsumerWidget {
         loading: () => const Center(
             child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
         error: (err, stack) => Center(
-            child:
-                Text("Erro: $err", style: const TextStyle(color: Colors.red))),
+            child: Text("Erro: $err",
+                style: const TextStyle(color: Colors.red))),
         data: (albumData) {
           final tracks = albumData['tracks'] as List;
 
+          // Verifica se todas as faixas já estão baixadas
+          final bool allDownloaded =
+              tracks.every((t) => t['isDownloaded'] == true);
+
           return CustomScrollView(
             slivers: [
-              // Cabeçalho Expansível com a Capa
+              // Cabeçalho Expansível
               SliverAppBar(
                 expandedHeight: 300,
                 pinned: true,
                 backgroundColor: const Color(0xFF121212),
                 flexibleSpace: FlexibleSpaceBar(
                   background: Container(
-                    decoration: BoxDecoration(
+                    decoration: const BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Colors.black54, const Color(0xFF121212)],
+                        colors: [Colors.black54, Color(0xFF121212)],
                       ),
                     ),
                     child: Center(
@@ -56,9 +61,10 @@ class AlbumScreen extends ConsumerWidget {
                           child: Container(
                             height: 180,
                             width: 180,
-                            decoration: BoxDecoration(
-                              boxShadow: const [
-                                BoxShadow(color: Colors.black54, blurRadius: 20)
+                            decoration: const BoxDecoration(
+                              boxShadow: [
+                                BoxShadow(
+                                    color: Colors.black54, blurRadius: 20)
                               ],
                             ),
                             child: ClipRRect(
@@ -74,7 +80,7 @@ class AlbumScreen extends ConsumerWidget {
                 ),
               ),
 
-              // Informações do Álbum e Botão "Play All"
+              // Informações e Ação Principal
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -95,19 +101,22 @@ class AlbumScreen extends ConsumerWidget {
                       ),
                       const SizedBox(height: 20),
 
-                      // Botão Play (Por enquanto toca a primeira, futuramente fila)
+                      // Botão Inteligente (Baixar ou Tocar)
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
-                          onPressed: () {
-                            if (tracks.isNotEmpty) {
-                              _handlePlayOrDownload(context, ref, tracks[0]);
-                            }
-                          },
-                          icon:
-                              const Icon(Icons.play_arrow, color: Colors.black),
-                          label: const Text("Tocar Álbum",
-                              style: TextStyle(
+                          onPressed: () => _handleMainAction(
+                              context, ref, tracks, allDownloaded),
+                          icon: Icon(
+                              allDownloaded
+                                  ? Icons.play_arrow_rounded
+                                  : Icons.download_rounded,
+                              color: Colors.black),
+                          label: Text(
+                              allDownloaded
+                                  ? "Tocar Álbum"
+                                  : "Baixar Álbum Completo",
+                              style: const TextStyle(
                                   color: Colors.black,
                                   fontWeight: FontWeight.bold)),
                           style: ElevatedButton.styleFrom(
@@ -142,27 +151,64 @@ class AlbumScreen extends ConsumerWidget {
     );
   }
 
-  void _handlePlayOrDownload(
-      BuildContext context, WidgetRef ref, dynamic item) {
-    // Reutiliza lógica similar à do SearchScreen, mas simplificada para este contexto
-    // Idealmente, extrairíamos isso para um Mixin ou Widget separado
+  Future<void> _handleMainAction(BuildContext context, WidgetRef ref,
+      List tracks, bool allDownloaded) async {
+    // Se tudo baixado, toca a primeira música
+    if (allDownloaded) {
+      if (tracks.isNotEmpty) {
+        _playTrack(context, tracks[0]);
+      }
+      return;
+    }
+
+    // Se não, inicia download em massa
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Adicionando álbum à fila..."),
+        duration: Duration(seconds: 2)));
+
+    int started = 0;
+    for (var track in tracks) {
+      if (track['isDownloaded'] == true) continue;
+
+      try {
+        // Dispara o download sem esperar conclusão (fire and forget)
+        ref.read(searchControllerProvider).smartDownload(track);
+        started++;
+        // Pequeno delay para não sobrecarregar a API
+        await Future.delayed(const Duration(milliseconds: 200));
+      } catch (e) {
+        print("Erro ao enfileirar ${track['trackName']}: $e");
+      }
+    }
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("$started faixas adicionadas à fila!"),
+          backgroundColor: Colors.green));
+    }
+  }
+
+  void _playTrack(BuildContext context, Map<String, dynamic> track) {
+    final playerItem = {
+      'filename': track['filename'],
+      'display_name': track['trackName'],
+      'artist': track['artistName'],
+      'album': track['collectionName'],
+      'cover_url': track['artworkUrl']
+    };
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => PlayerScreen(item: playerItem)));
   }
 }
 
 class _AlbumTrackItem extends ConsumerWidget {
   final Map<String, dynamic> track;
-  const _AlbumTrackItem({required this.track});
+  const _AlbumTrackItem({super.key, required this.track});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Identifica download e processamento
     final itemId = "${track['artistName']}-${track['trackName']}";
     final isNegotiating = ref.watch(processingItemsProvider).contains(itemId);
-
-    // Tentativa de achar o filename se já estiver baixando
-    // (Nota: aqui não temos o filename direto da API de album, então o status bar pode não aparecer
-    // até que o usuário clique e o smartDownload retorne o nome. Melhoria futura.)
-
     final bool isDownloaded = track['isDownloaded'] == true;
 
     return ListTile(
@@ -207,11 +253,13 @@ class _AlbumTrackItem extends ConsumerWidget {
 
     try {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Buscando faixa..."), duration: Duration(seconds: 1)));
+          content: Text("Buscando melhor versão..."),
+          duration: Duration(seconds: 1)));
+
       final filename =
           await ref.read(searchControllerProvider).smartDownload(track);
+
       if (filename != null) {
-        // Monitora download e abre player (Lógica simplificada aqui)
         _waitForDownloadAndPlay(context, ref, filename);
       }
     } catch (e) {
