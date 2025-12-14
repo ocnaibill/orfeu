@@ -16,8 +16,9 @@ from app.services.slskd_client import search_slskd, get_search_results, download
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
+from app.services.tidal_provider import TidalProvider # NOVO
 
-app = FastAPI(title="Orfeu API", version="1.6.5")
+app = FastAPI(title="Orfeu API", version="1.7.0")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -34,7 +35,7 @@ class AutoDownloadRequest(BaseModel):
 class SmartDownloadRequest(BaseModel):
     artist: str
     track: str
-    album: Optional[str] = None # Campo crucial para o novo score
+    album: Optional[str] = None
 
 # --- Helpers ---
 def normalize_text(text: str) -> str:
@@ -63,9 +64,9 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.5"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.7.0"}
 
-# --- BUSCA (YOUTUBE MUSIC) ---
+# --- BUSCA HÍBRIDA (TIDAL -> YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
 async def search_catalog(
     query: str, 
@@ -73,14 +74,50 @@ async def search_catalog(
     offset: int = 0,
     type: str = Query("song", enum=["song", "album"])
 ):
-    print(f"🔎 Buscando no catálogo YTMusic: '{query}' [Type: {type}]")
-    raw_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
-    start_index = offset
-    end_index = offset + limit
-    if start_index >= len(raw_results): return []
-    paged_results = raw_results[start_index:end_index]
+    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
     
-    for item in paged_results:
+    results = []
+
+    # 1. Tenta TIDAL Primeiro (Melhor qualidade de metadados)
+    # Apenas se for busca de música, pois a API do Tidal que temos é focada em tracks
+    if type == "song":
+        try:
+            print("   Tentando Tidal...")
+            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit)
+            if tidal_results:
+                results = tidal_results
+                print(f"   ✅ Tidal retornou {len(results)} resultados.")
+        except Exception as e:
+            print(f"   ⚠️ Tidal falhou: {e}")
+
+    # 2. Fallback para YouTube Music (Se Tidal vazio ou se for busca de Álbum)
+    if not results:
+        print("   Tentando YouTube Music (Fallback)...")
+        yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
+        results = yt_results
+
+    # Paginação (apenas se vier do YTMusic, pois Tidal já paginamos na request)
+    # Se a fonte foi Tidal, results já está limitado, mas o offset do frontend 
+    # pode precisar de ajuste se implementarmos paginação real no TidalProvider depois.
+    # Por enquanto, assumimos que o Tidal retorna a "melhor página".
+    
+    # Se for YTMusic, aplicamos a paginação em memória
+    if not results and type == "song": # Se ambos falharam
+         return []
+
+    # Se veio do YTMusic (que retorna 100 itens), paginamos
+    # Se veio do Tidal (limitado a 25), retornamos tudo o que veio
+    final_page = results
+    if len(results) > limit:
+         start = offset
+         end = offset + limit
+         if start < len(results):
+             final_page = results[start:end]
+         else:
+             final_page = []
+
+    # Check local para todos
+    for item in final_page:
         if item['type'] == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
             item['isDownloaded'] = local_file is not None
@@ -88,18 +125,23 @@ async def search_catalog(
         else:
             item['isDownloaded'] = False
             item['filename'] = None
-    return paged_results
 
-# --- ÁLBUM (YOUTUBE MUSIC) ---
+    return final_page
+
+# --- ÁLBUM (MANTIDO NO YOUTUBE MUSIC) ---
+# Como não temos a rota de álbum do Tidal ainda, mantemos YTMusic
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
-    print(f"💿 Buscando álbum YTMusic ID: {collection_id}")
+    print(f"💿 Buscando álbum ID: {collection_id}")
     try:
+        # Usa YTMusic provider
         album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
+        
         for track in album_data['tracks']:
             local_file = find_local_match(track['artistName'], track['trackName'])
             track['isDownloaded'] = local_file is not None
             track['filename'] = local_file
+            
         return album_data
     except Exception as e:
         print(f"❌ Erro ao buscar álbum: {e}")
@@ -122,10 +164,7 @@ async def smart_download(request: SmartDownloadRequest):
     print("⏳ Aguardando resultados da rede P2P...")
     best_candidate = None
     highest_score = float('-inf')
-    
     target_clean = normalize_text(f"{request.artist} {request.track}")
-    # Prepara o alvo do álbum (se houver) para comparação
-    target_album_clean = normalize_text(request.album) if request.album else None
     
     last_peer_count = -1
     stable_checks = 0
@@ -148,6 +187,7 @@ async def smart_download(request: SmartDownloadRequest):
 
         for response in raw_results:
             if response.get('locked', False): continue
+            
             slots_free = response.get('slotsFree', False)
             queue_length = response.get('queueLength', 0)
             upload_speed = response.get('uploadSpeed', 0)
@@ -156,35 +196,32 @@ async def smart_download(request: SmartDownloadRequest):
                 for file in response['files']:
                     filename = file['filename']
                     
-                    # 1. Filtro de Nome (Música)
-                    full_path_clean = normalize_text(filename)
-                    similarity = fuzz.partial_token_sort_ratio(target_clean, full_path_clean)
+                    file_basename = os.path.basename(filename.replace("\\", "/"))
+                    remote_clean = normalize_text(file_basename)
                     
-                    if similarity < 75: continue
-                    
+                    similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
+                    if similarity < 85: continue
+
                     if '.' not in filename: continue
                     ext = filename.split('.')[-1].lower()
                     if ext not in ['flac', 'mp3', 'm4a']: continue
 
-                    # PONTUAÇÃO
                     score = 0
-                    
-                    # Disponibilidade
                     if slots_free: score += 100_000 
                     else: score -= (queue_length * 1000)
 
-                    # Formato
                     if ext == 'flac': score += 5000
                     elif ext == 'm4a': score += 2000
                     elif ext == 'mp3': score += 1000
                     
-                    # NOVO: Bônus de Álbum (Contexto)
-                    # Se o nome do álbum solicitado aparecer no caminho do arquivo (pasta), dá um boost.
-                    # Isso prioriza "Typical of Me" sobre "Live at Symphony".
-                    if target_album_clean and target_album_clean in full_path_clean:
-                        score += 5000 # Boost significativo, equivalente a ser FLAC
-                    
-                    # Velocidade
+                    # Bônus de Álbum
+                    if request.album:
+                        clean_album = normalize_text(request.album)
+                        clean_path = normalize_text(filename)
+                        if fuzz.partial_ratio(clean_album, clean_path) > 85:
+                            score += 5000
+
+                    score += similarity * 10 
                     score += (upload_speed / 1_000_000)
 
                     candidate_obj = {
@@ -207,14 +244,12 @@ async def smart_download(request: SmartDownloadRequest):
                         if best_flac_debug is None or score > best_flac_debug['score']:
                             best_flac_debug = candidate_obj
 
-        # Debug
         if candidates_debug and i % 5 == 0:
             candidates_debug.sort(key=lambda x: x['score'], reverse=True)
             print("   --- Top Candidatos ---")
             for c in candidates_debug[:3]:
                 print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Sim: {c['sim']}% | File: {c['filename'][:30]}...")
 
-        # Critérios de Saída
         if stable_checks >= 4 and peer_count > 0 and best_candidate:
              print("⚡ Resultados estabilizados. Encerrando busca.")
              break
