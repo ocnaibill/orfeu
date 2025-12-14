@@ -157,7 +157,8 @@ class SearchController {
       final resp = await dio.post('/download/smart', data: {
         "artist": catalogItem['artistName'],
         "track": catalogItem['trackName'],
-        "album": catalogItem['collectionName']
+        "album": catalogItem['collectionName'],
+        "tidalId": catalogItem['tidalId']
       });
 
       final filename = resp.data['file'];

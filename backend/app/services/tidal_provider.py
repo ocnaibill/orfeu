@@ -1,46 +1,34 @@
 import httpx
+import base64
+import json
 
 class TidalProvider:
-    # API descoberta por engenharia reversa do frontend
-    BASE_API = "https://katze.qqdl.site"
+    # APIs descobertas
+    SEARCH_API = "https://katze.qqdl.site/search"
+    TRACK_API = "https://triton.squid.wtf/track"
     CDN_URL = "https://resources.tidal.com/images"
 
     @staticmethod
     def search_catalog(query: str, limit: int = 25):
         """
-        Busca faixas usando o proxy do Tidal.
-        Retorna lista normalizada para o Orfeu.
+        Busca faixas no catálogo do Tidal.
         """
         try:
-            url = f"{TidalProvider.BASE_API}/search/"
-            params = {
-                "s": query,
-                "limit": limit,
-                # offset parece funcionar nesta API se precisarmos no futuro
-                "offset": 0 
-            }
+            params = {"s": query, "limit": limit, "offset": 0}
             
-            # Usamos cliente síncrono para ser compatível com run_in_threadpool do main.py
             with httpx.Client() as client:
-                resp = client.get(url, params=params, timeout=10.0)
-                if resp.status_code != 200:
-                    return []
-                
+                resp = client.get(f"{TidalProvider.SEARCH_API}/", params=params, timeout=10.0)
+                if resp.status_code != 200: return []
                 data = resp.json()
             
-            # Navega no JSON: { version: "2.0", data: { items: [...] } }
             items = data.get('data', {}).get('items', [])
             normalized_results = []
             
             for item in items:
-                # O Tidal retorna a capa como um UUID (ex: f56a738d-d61e...)
-                # A URL real substitui '-' por '/'
                 album_cover_id = item.get('album', {}).get('cover')
                 artwork_url = ""
-                
                 if album_cover_id:
                     path = album_cover_id.replace('-', '/')
-                    # Resoluções disponíveis: 80x80, 160x160, 320x320, 640x640, 1280x1280
                     artwork_url = f"{TidalProvider.CDN_URL}/{path}/640x640.jpg"
 
                 artist_name = item.get('artist', {}).get('name', 'Desconhecido')
@@ -52,14 +40,55 @@ class TidalProvider:
                     "artistName": artist_name,
                     "collectionName": album_name,
                     "artworkUrl": artwork_url,
-                    "previewUrl": None, # Tidal não expõe preview mp3 público facilmente
-                    "year": "", # A busca simples não retorna ano, mas não é crítico
+                    "previewUrl": None,
+                    "year": "",
                     "isLossless": item.get('audioQuality') == 'LOSSLESS',
-                    "source": "Tidal"
+                    "source": "Tidal",
+                    # O ID É CRUCIAL PARA O DOWNLOAD
+                    "tidalId": item.get('id') 
                 })
             
             return normalized_results
 
         except Exception as e:
-            print(f"❌ Erro Tidal Provider: {e}")
+            print(f"❌ Erro Tidal Search: {e}")
             return []
+
+    @staticmethod
+    def get_download_url(track_id: int):
+        """
+        Obtém a URL direta do ficheiro FLAC decodificando o manifesto.
+        """
+        try:
+            # Tenta HI_RES primeiro, depois LOSSLESS
+            qualities = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH"]
+            
+            with httpx.Client() as client:
+                for q in qualities:
+                    params = {"id": track_id, "quality": q}
+                    print(f"🌊 Tentando Tidal Direct ({q})...")
+                    
+                    resp = client.get(f"{TidalProvider.TRACK_API}/", params=params, timeout=10.0)
+                    if resp.status_code != 200: continue
+                    
+                    data = resp.json()
+                    manifest_b64 = data.get('data', {}).get('manifest')
+                    
+                    if manifest_b64:
+                        # Decodifica Base64 -> JSON String -> Dict
+                        decoded_json = base64.b64decode(manifest_b64).decode('utf-8')
+                        manifest = json.loads(decoded_json)
+                        
+                        # Pega a primeira URL da lista
+                        urls = manifest.get('urls', [])
+                        if urls:
+                            return {
+                                "url": urls[0],
+                                "mime": manifest.get('mimeType', 'audio/flac'),
+                                "codec": manifest.get('codecs', 'flac')
+                            }
+            
+            return None
+        except Exception as e:
+            print(f"❌ Erro Tidal Download: {e}")
+            return None
