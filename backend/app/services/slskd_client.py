@@ -1,7 +1,7 @@
 import os
 import httpx
 import uuid
-from urllib.parse import quote # Importante para nomes de usuário com espaços/[brackets]
+from urllib.parse import quote
 from fastapi import HTTPException
 
 # Pega as configs das variáveis de ambiente
@@ -74,8 +74,6 @@ async def download_slskd(username: str, filename: str, size: int = None):
         file_obj["size"] = size
 
     payload = [file_obj]
-    
-    # CORREÇÃO: URL Encode no username para evitar erros com caracteres especiais
     safe_username = quote(username) 
     endpoint = f"{SLSKD_URL}/transfers/downloads/{safe_username}"
 
@@ -85,24 +83,20 @@ async def download_slskd(username: str, filename: str, size: int = None):
         try:
             response = await client.post(endpoint, json=payload, headers=headers)
             
-            # TRATAMENTO ESPECIAL PARA PEER OFFLINE (500 do Slskd)
             if response.status_code == 500:
-                 print(f"❌ Slskd 500 (Provavelmente Peer Offline): {response.text}")
-                 raise HTTPException(status_code=503, detail="O usuário não está disponível (Peer Offline/Unreachable). Tente outro arquivo.")
+                 print(f"❌ Slskd 500: {response.text}")
+                 raise HTTPException(status_code=503, detail="O usuário não está disponível.")
 
             if response.status_code not in [200, 201, 204]:
                  print(f"❌ Erro Slskd ({response.status_code}): {response.text}")
-                 # Retorna o erro detalhado do Slskd para o Flutter entender
                  raise HTTPException(status_code=response.status_code, detail=f"Slskd Error: {response.text}")
             
             return {"status": "Download queued", "file": filename}
             
         except httpx.HTTPStatusError as e:
-            print(f"❌ Erro HTTP Slskd: {e}")
             raise HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
-            if isinstance(e, HTTPException): raise e # Re-raise se já for nosso
-            print(f"❌ Erro Interno Download: {e}")
+            if isinstance(e, HTTPException): raise e
             raise HTTPException(status_code=500, detail=str(e))
 
 async def get_transfer_status(filename: str):
@@ -131,15 +125,15 @@ async def get_transfer_status(filename: str):
                         transferred = item.get('bytesTransferred', 0)
                         percent = (transferred / total) * 100 if total > 0 else 0.0
                         
-                        # --- TRADUÇÃO DE ESTADOS ---
                         raw_state = item.get('state', 'Unknown')
                         friendly_state = raw_state
 
-                        # Mapeia os estados do Slskd para os que o App espera
-                        if 'Completed, Succeeded' in raw_state:
+                        # --- TRADUÇÃO DE ESTADOS ---
+                        if 'Succeeded' in raw_state:
                             friendly_state = 'Completed'
-                        elif 'Completed' in raw_state: # Cancelled, TimedOut, Errored
-                            friendly_state = 'Aborted'
+                        # Captura Rejected, Cancelled, Errored, TimedOut
+                        elif any(x in raw_state for x in ['Rejected', 'Cancelled', 'Errored', 'TimedOut', 'Aborted']):
+                            friendly_state = 'Failed' # Estado unificado de erro
                         elif 'InProgress' in raw_state:
                             friendly_state = 'Downloading'
                         elif any(s in raw_state for s in ['Queued', 'Requested', 'Initializing']):
@@ -147,20 +141,13 @@ async def get_transfer_status(filename: str):
 
                         return {
                             "state": friendly_state,
-                            "raw_state": raw_state, # Útil para debug
+                            "raw_state": raw_state,
                             "bytes_transferred": transferred,
                             "total_bytes": total,
                             "speed": item.get('speed', 0),
                             "percent": percent,
                             "username": item.get('username')
                         }
-            
-            # Se chegou aqui, não achou na lista.
-            # Debug para entender por que não achou:
-            if len(downloads) > 0:
-                print(f"⚠️ Status não encontrado para: {target_simple}")
-                # print(f"   Arquivos ativos no Slskd: {[d.get('filename') for d in downloads[:3]]}...")
-            
             return None 
         except Exception as e:
             print(f"⚠️ Erro ao checar status global: {e}")
