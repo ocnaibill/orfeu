@@ -22,11 +22,16 @@ dependencies:
   just_audio: ^0.9.38        # O Player de áudio robusto (suporta FLAC stream)
   just_audio_background: ^0.0.1-beta.13 # Para tocar música com o app fechado
   audio_service: ^0.18.15    # Controles na barra de notificação/tela bloqueada
+
+  #--- Utilidades ---
+  flutter_discord_rpc: ^1.1.0
+
   
   # --- UI & Charme ---
   google_fonts: ^6.2.1       # Fontes bonitas instantâneas
   cached_network_image: ^3.3.1 # Cache de capas de álbum para não baixar sempre
   flutter_animate: ^4.5.0    # Animações fluidas para dar aquele "charme"
+  just_audio_windows: ^0.2.2
 
 dev_dependencies:
   flutter_test:

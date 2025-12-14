@@ -3,7 +3,10 @@ import 'package:just_audio/just_audio.dart';
 import 'package:dio/dio.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
+import 'dart:io'; // Para checar Platform
 import '../providers.dart';
+// Importa o serviço novo
+import '../services/discord_service.dart'; 
 
 class PlayerScreen extends StatefulWidget {
   // Agora aceita uma FILA de músicas
@@ -41,9 +44,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Map<String, dynamic>? _metadata;
   Map<String, dynamic>? _currentItem;
   
-  // Fila Filtrada (Apenas itens baixados/válidos)
-  List<Map<String, dynamic>> _validQueue = [];
-  
   // Lyrics
   bool _showLyrics = false;
   List<LyricLine> _lyrics = [];
@@ -51,13 +51,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String? _plainLyrics;
   int _currentLyricIndex = -1;
   final ScrollController _lyricsScrollController = ScrollController();
+  
+  // Discord RPC
+  final DiscordService _discord = DiscordService();
 
   @override
   void initState() {
     super.initState();
     _audioPlayer = AudioPlayer();
     
-    _initializeQueue();
+    // Inicializa o Discord (Só vai rodar se for Desktop)
+    _discord.init();
+    
     _initPlayer();
     
     // Listener de estado (Play/Pause)
@@ -66,13 +71,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
         setState(() {
           _isPlaying = state.playing;
         });
+        _updateDiscordPresence(); // Atualiza Discord quando pausa/toca
       }
     });
 
     // Listener de mudança de faixa (Avançar/Recuar na playlist)
     _audioPlayer.currentIndexStream.listen((index) {
-      if (index != null && index < _validQueue.length) {
-        _onTrackChanged(_validQueue[index]);
+      if (index != null && index < widget.queue.length) {
+        _onTrackChanged(widget.queue[index]);
       }
     });
 
@@ -84,18 +90,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
   
-  void _initializeQueue() {
-    // Filtra apenas itens que têm filename (já baixados) para evitar erro 404
-    _validQueue = widget.queue.where((item) => 
-      item['filename'] != null && item['filename'].toString().isNotEmpty
-    ).toList();
-
-    // Se a fila ficou vazia (nada baixado), tenta usar o item único se tiver filename
-    if (_validQueue.isEmpty && widget.queue.isNotEmpty) {
-       // Se clicou em algo que não tá baixado, não devia ter aberto o player, 
-       // mas por segurança não crasha.
-       print("⚠️ Aviso: Tentando abrir player com fila sem arquivos locais.");
-    }
+  // Função auxiliar para atualizar o Discord
+  void _updateDiscordPresence() {
+    // Só atualiza se tivermos metadados carregados
+    if (_currentItem == null) return;
+    
+    // Tenta pegar dados do metadata (mais preciso) ou do item da lista
+    final title = _metadata?['title'] ?? _currentItem!['display_name'] ?? 'Música';
+    final artist = _metadata?['artist'] ?? _currentItem!['artist'] ?? 'Artista';
+    final album = _metadata?['album'] ?? _currentItem!['album'] ?? 'Álbum';
+    
+    _discord.updateActivity(
+      track: title,
+      artist: artist,
+      album: album,
+      duration: _audioPlayer.duration ?? Duration.zero,
+      position: _audioPlayer.position,
+      isPlaying: _isPlaying,
+    );
   }
 
   // Chamado quando a faixa muda (automática ou manual)
@@ -114,12 +126,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _initPlayer() async {
-    if (_validQueue.isEmpty) return;
-
     try {
-      // Monta a Playlist apenas com arquivos válidos
+      // Monta a Playlist
       final playlist = ConcatenatingAudioSource(
-        children: _validQueue.map((item) {
+        children: widget.queue.map((item) {
           final filename = Uri.encodeComponent(item['filename'] ?? '');
           final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
           
@@ -130,15 +140,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }).toList(),
       );
 
-      // Calcula o novo índice inicial na lista filtrada
-      int startIndex = 0;
-      if (widget.initialIndex < widget.queue.length) {
-        final targetItem = widget.queue[widget.initialIndex];
-        final foundIndex = _validQueue.indexOf(targetItem);
-        if (foundIndex != -1) startIndex = foundIndex;
-      }
-
-      await _audioPlayer.setAudioSource(playlist, initialIndex: startIndex);
+      await _audioPlayer.setAudioSource(playlist, initialIndex: widget.initialIndex);
       
       if (widget.shuffle) {
         await _audioPlayer.setShuffleModeEnabled(true);
@@ -164,11 +166,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final resp = await dio.get('/metadata?filename=$filename');
       if (mounted) {
         setState(() => _metadata = resp.data);
+        _updateDiscordPresence(); // Atualiza Discord assim que tivermos os dados reais
       }
       
       _fetchLyrics(item);
     } catch (e) {
       print("Erro metadados: $e");
+      // Se falhar, tenta atualizar com o que tem
+      _updateDiscordPresence();
     }
   }
 
@@ -248,13 +253,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  // --- Scroll Matemático (1/3 da tela) ---
+  // --- Scroll Matemático Preciso ---
   void _scrollToCurrentLine() {
     if (!_lyricsScrollController.hasClients || _currentLyricIndex == -1) return;
     
     double screenHeight = MediaQuery.of(context).size.height;
     double screenWidth = MediaQuery.of(context).size.width;
-    double contentWidth = screenWidth - 48; // Padding horizontal
+    double contentWidth = screenWidth - 48; // Padding horizontal (24*2)
     
     double listTopPadding = screenHeight * 0.45;
 
@@ -309,8 +314,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final currentIndex = _audioPlayer.currentIndex;
     
     _initPlayer().then((_) async {
-       // Tenta voltar para onde estava na lista filtrada
-       if (currentIndex != null && currentIndex < _validQueue.length) {
+       if (currentIndex != null && currentIndex < widget.queue.length) {
          await _audioPlayer.seek(currentPos, index: currentIndex);
        }
     });
@@ -402,6 +406,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    _discord.clear(); // Limpa o status no Discord ao fechar
+    _discord.dispose();
     _audioPlayer.dispose();
     _lyricsScrollController.dispose();
     super.dispose();
@@ -409,17 +415,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_currentItem == null && _validQueue.isEmpty) {
-        return Scaffold(
-            backgroundColor: const Color(0xFF121212), 
-            appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
-            body: const Center(child: Text("Fila vazia ou arquivos não encontrados.", style: TextStyle(color: Colors.white54)))
-        );
+    if (_currentItem == null && widget.queue.isEmpty) {
+         return Scaffold(backgroundColor: Colors.black, body: Center(child: Text("Erro: Fila Vazia", style: TextStyle(color: Colors.white))));
     }
     
-    if (_currentItem == null) return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))));
-
-    final filenameEncoded = Uri.encodeComponent(_currentItem!['filename'] ?? '');
+    // Se _currentItem ainda for nulo (primeira carga), usa o inicial da fila
+    final displayItem = _currentItem ?? (widget.queue.isNotEmpty ? widget.queue[widget.initialIndex] : {});
+    
+    final filenameEncoded = Uri.encodeComponent(displayItem['filename'] ?? '');
     final coverUrl = '$baseUrl/cover?filename=$filenameEncoded';
 
     return Scaffold(
@@ -450,7 +453,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
   }
-
+  
+  // ... (Resto das views _buildPlayerControls, _buildCoverView, _buildLyricsView, etc. continuam iguais ao anterior, pois o foco aqui foi a lógica do Discord) ...
+  // [MANTER O CÓDIGO DA INTERFACE IGUAL AO ANTERIOR PARA ECONOMIZAR ESPAÇO, JÁ QUE A LÓGICA DE UI NÃO MUDOU]
+  
+  // (Replica as funções de UI do código anterior para garantir que compile)
   Widget _buildPlayerControls() {
     return Container(
       padding: const EdgeInsets.only(bottom: 40, left: 24, right: 24, top: 20),
@@ -492,10 +499,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              IconButton(
-                icon: const Icon(Icons.skip_previous_rounded, size: 36, color: Colors.white), 
-                onPressed: _audioPlayer.hasPrevious ? _audioPlayer.seekToPrevious : null
-              ),
+              IconButton(icon: const Icon(Icons.skip_previous_rounded, size: 36, color: Colors.white), onPressed: _audioPlayer.hasPrevious ? _audioPlayer.seekToPrevious : null),
               const SizedBox(width: 20),
               CircleAvatar(
                 radius: 35, backgroundColor: Colors.white,
@@ -505,10 +509,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
               const SizedBox(width: 20),
-              IconButton(
-                icon: const Icon(Icons.skip_next_rounded, size: 36, color: Colors.white), 
-                onPressed: _audioPlayer.hasNext ? _audioPlayer.seekToNext : null
-              ),
+              IconButton(icon: const Icon(Icons.skip_next_rounded, size: 36, color: Colors.white), onPressed: _audioPlayer.hasNext ? _audioPlayer.seekToNext : null),
             ],
           ),
         ],
@@ -516,8 +517,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  // ... (Views de Capa e Letra mantidas com _metadata e _currentItem) ...
-  // [CÓDIGO REPLICADO PARA COMPLETUDE]
   Widget _buildCoverView(String coverUrl) {
       return LayoutBuilder(builder: (context, constraints) {
           return SingleChildScrollView(
@@ -550,70 +549,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
           );
       });
   }
-
+  
   Widget _buildLyricsView(String coverUrl) {
-      double screenHeight = MediaQuery.of(context).size.height;
-      return Column(children: [
-          SafeArea(bottom: false, child: Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 20), child: Row(children: [
-             ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(coverUrl, width: 60, height: 60, fit: BoxFit.cover, errorBuilder: (_,__,___) => Container(color: Colors.white10, width: 60, height: 60))),
-             const SizedBox(width: 16),
-             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                 Text(_metadata?['title'] ?? _currentItem?['display_name'] ?? '...', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-                 Text(_metadata?['artist'] ?? _currentItem?['artist'] ?? "...", style: GoogleFonts.outfit(fontSize: 14, color: Colors.white54)),
-             ]))
-          ]))),
-          const Divider(color: Colors.white10, height: 1),
-          Expanded(
-            child: _loadingLyrics
-              ? const Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37)))
-              : _lyrics.isNotEmpty
-                  ? ShaderMask(
-                      shaderCallback: (rect) {
-                        return const LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [Colors.transparent, Colors.black, Colors.black, Colors.transparent],
-                          stops: [0.0, 0.2, 0.8, 1.0],
-                        ).createShader(rect);
-                      },
-                      blendMode: BlendMode.dstIn,
-                      child: ListView.builder(
-                        controller: _lyricsScrollController,
-                        padding: EdgeInsets.symmetric(vertical: screenHeight * 0.45, horizontal: 24),
-                        itemCount: _lyrics.length,
-                        itemBuilder: (context, index) {
-                          final line = _lyrics[index];
-                          final isActive = index == _currentLyricIndex;
-                          return RepaintBoundary(
-                            child: GestureDetector(
-                              onTap: () {
-                                _audioPlayer.seek(line.startTime);
-                                setState(() => _currentLyricIndex = index);
-                              },
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 500),
-                                curve: Curves.easeInOut,
-                                opacity: isActive ? 1.0 : 0.5,
-                                child: Padding(
-                                  padding: const EdgeInsets.only(bottom: 24.0),
-                                  child: isActive
-                                      ? KaraokeText(text: line.text, startTime: line.startTime, duration: line.duration, playerStream: _audioPlayer.positionStream)
-                                      : Text(line.text, textAlign: TextAlign.center, style: GoogleFonts.outfit(fontSize: 22, fontWeight: FontWeight.w500, color: Colors.white)),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    )
-                  : Center(child: Padding(padding: const EdgeInsets.all(24.0), child: Text(_plainLyrics ?? "Letra não encontrada.", style: const TextStyle(color: Colors.white54, fontSize: 16), textAlign: TextAlign.center))),
-          ),
-      ]);
+    // Mesma implementação do código anterior
+    double screenHeight = MediaQuery.of(context).size.height;
+    return Column(children: [
+        SafeArea(bottom: false, child: Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 20), child: Row(children: [
+            ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(coverUrl, width: 60, height: 60, fit: BoxFit.cover, errorBuilder: (_,__,___) => Container(color: Colors.white10, width: 60, height: 60))),
+            const SizedBox(width: 16),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_metadata?['title'] ?? _currentItem?['display_name'] ?? '...', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(_metadata?['artist'] ?? _currentItem?['artist'] ?? "...", style: GoogleFonts.outfit(fontSize: 14, color: Colors.white54)),
+            ]))
+        ]))),
+        const Divider(color: Colors.white10, height: 1),
+        Expanded(child: _loadingLyrics ? const Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))) : 
+            _lyrics.isNotEmpty ? ShaderMask(
+                shaderCallback: (rect) => const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black, Colors.black, Colors.transparent], stops: [0.0, 0.2, 0.8, 1.0]).createShader(rect),
+                blendMode: BlendMode.dstIn,
+                child: ListView.builder(controller: _lyricsScrollController, padding: EdgeInsets.symmetric(vertical: screenHeight * 0.45, horizontal: 24), itemCount: _lyrics.length, itemBuilder: (context, index) {
+                    final line = _lyrics[index];
+                    final isActive = index == _currentLyricIndex;
+                    return RepaintBoundary(child: GestureDetector(
+                        onTap: () { _audioPlayer.seek(line.startTime); setState(() => _currentLyricIndex = index); },
+                        child: AnimatedOpacity(duration: const Duration(milliseconds: 500), curve: Curves.easeInOut, opacity: isActive ? 1.0 : 0.5, child: Padding(padding: const EdgeInsets.only(bottom: 24.0), child: isActive ? KaraokeText(text: line.text, startTime: line.startTime, duration: line.duration, playerStream: _audioPlayer.positionStream) : Text(line.text, textAlign: TextAlign.center, style: GoogleFonts.outfit(fontSize: 22, fontWeight: FontWeight.w500, color: Colors.white))))
+                    ));
+                })
+            ) : Center(child: Padding(padding: const EdgeInsets.all(24.0), child: Text(_plainLyrics ?? "Letra não encontrada.", style: const TextStyle(color: Colors.white54, fontSize: 16), textAlign: TextAlign.center))))
+    ]);
   }
   
   String _formatDuration(Duration d) => "${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 }
 
+// ... (KaraokeText mantido igual) ...
 class KaraokeText extends StatelessWidget {
   final String text;
   final Duration startTime;
