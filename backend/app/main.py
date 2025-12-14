@@ -19,12 +19,12 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.11.0")
+app = FastAPI(title="Orfeu API", version="1.13.0")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
-# --- Modelos ---
+# --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
     username: str
     filename: str
@@ -62,7 +62,7 @@ async def download_file_background(url: str, dest_path: str, metadata: dict, cov
             except: pass
         
         if os.path.exists(dest_path):
-             os.remove(dest_path) # Garante que sobrescreve se existir versão corrompida
+             os.remove(dest_path)
 
         os.rename(temp_path, dest_path)
         if metadata: await run_in_threadpool(AudioManager.embed_metadata, dest_path, metadata, cover_bytes)
@@ -76,20 +76,14 @@ def normalize_text(text: str) -> str:
     return unidecode(text.lower().replace("$", "s").replace("&", "and")).strip()
 
 def find_local_match(artist: str, track: str) -> Optional[str]:
-    """
-    Busca local usando Fuzzy Matching no (Nome da Pasta + Nome do Arquivo).
-    """
     base_path = "/downloads"
     target_str = normalize_text(f"{artist} {track}")
-    
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
                 
-                # CORREÇÃO: Inclui o nome da pasta pai na comparação
-                # Ex: "oingo_boingo/just_another_day.flac" -> "oingo boingo just another day"
                 parent_folder = os.path.basename(root)
                 candidate_str = normalize_text(f"{parent_folder} {file}")
                 
@@ -97,10 +91,82 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                     return full_path
     return None
 
+# --- Lógica de Auto-Tagging (Background) ---
+async def process_library_auto_tagging():
+    print("🧹 Iniciando Auto-Tagging da Biblioteca...")
+    base_path = "/downloads"
+    count = 0
+    
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
+                full_path = os.path.join(root, file)
+                try:
+                    # Lê tags atuais
+                    current_tags = AudioManager.get_audio_tags(full_path)
+                    
+                    # Se faltar Artista ou Título, é candidato a correção
+                    if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
+                        print(f"📝 Identificando: {file}...")
+                        
+                        # Tenta limpar o nome do arquivo para busca
+                        clean_name = os.path.splitext(file)[0].replace("_", " ").replace("-", " ")
+                        clean_name = normalize_text(clean_name)
+                        
+                        # 1. Busca no Tidal (Prioridade)
+                        results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
+                        
+                        # 2. Fallback YouTube Music
+                        if not results:
+                            results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
+                        
+                        if results:
+                            best_match = results[0]
+                            # Verifica similaridade para não etiquetar errado
+                            match_str = normalize_text(f"{best_match['artistName']} {best_match['trackName']}")
+                            similarity = fuzz.token_set_ratio(clean_name, match_str)
+                            
+                            if similarity > 80:
+                                print(f"   ✅ Match encontrado: {best_match['artistName']} - {best_match['trackName']} ({similarity}%)")
+                                
+                                # Baixa capa se houver
+                                cover_bytes = None
+                                if best_match.get('artworkUrl'):
+                                    try:
+                                        async with httpx.AsyncClient() as client:
+                                            resp = await client.get(best_match['artworkUrl'])
+                                            if resp.status_code == 200: cover_bytes = resp.content
+                                    except: pass
+                                
+                                # Aplica Tags no Arquivo Físico
+                                meta = {
+                                    "title": best_match['trackName'],
+                                    "artist": best_match['artistName'],
+                                    "album": best_match['collectionName']
+                                }
+                                await run_in_threadpool(AudioManager.embed_metadata, full_path, meta, cover_bytes)
+                                count += 1
+                            else:
+                                print(f"   ⚠️ Match fraco ({similarity}%). Ignorando.")
+                except Exception as e:
+                    print(f"❌ Erro ao processar {file}: {e}")
+                    
+    print(f"✨ Auto-Tagging concluído. {count} arquivos atualizados.")
+
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.11.0"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.0"}
+
+# --- NOVA ROTA: ORGANIZAR BIBLIOTECA ---
+@app.post("/library/organize")
+async def organize_library(background_tasks: BackgroundTasks):
+    """
+    Dispara um processo em segundo plano para identificar músicas sem tags
+    na biblioteca e preencher metadados usando Tidal/YouTube.
+    """
+    background_tasks.add_task(process_library_auto_tagging)
+    return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
 
 @app.get("/search/catalog")
 async def search_catalog(
@@ -133,6 +199,7 @@ async def search_catalog(
         else:
             item['isDownloaded'] = False
             item['filename'] = None
+
     return final_page
 
 @app.get("/catalog/album/{collection_id}")
@@ -148,63 +215,29 @@ async def get_album_details(collection_id: str):
         print(f"❌ Erro álbum: {e}")
         raise HTTPException(500, str(e))
 
-# --- SMART DOWNLOAD (FIX RE-DOWNLOAD) ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest, background_tasks: BackgroundTasks):
     print(f"🤖 Smart Download: {request.artist} - {request.track}")
     
-    # 0. Check Local Genérico
     local_match = find_local_match(request.artist, request.track)
     if local_match:
-        print(f"✅ Cache Local (Fuzzy): {local_match}")
+        print(f"✅ Cache Local: {local_match}")
         return {"status": "Already downloaded", "file": local_match, "display_name": request.track}
 
-    # Cross-Reference Tidal (se não tiver ID)
-    target_tidal_id = request.tidalId
-    if not target_tidal_id:
-        try:
-            query = f"{request.artist} {request.track}"
-            cross_results = await run_in_threadpool(TidalProvider.search_catalog, query, 5, "song")
-            if cross_results:
-                top_hit = cross_results[0]
-                req_clean = normalize_text(f"{request.artist} {request.track}")
-                hit_clean = normalize_text(f"{top_hit['artistName']} {top_hit['trackName']}")
-                if fuzz.token_sort_ratio(req_clean, hit_clean) > 85:
-                    target_tidal_id = top_hit['tidalId']
-                    print(f"✅ Match Tidal encontrado: {target_tidal_id}")
-        except: pass
-
-    # 1. TIDAL DIRECT
-    if target_tidal_id:
-        print(f"🌊 Tentando Tidal Direct (ID: {target_tidal_id})...")
-        download_info = await run_in_threadpool(TidalProvider.get_download_url, target_tidal_id)
-        
+    if request.tidalId:
+        print(f"🌊 Tentando download direto do Tidal (ID: {request.tidalId})...")
+        download_info = await run_in_threadpool(TidalProvider.get_download_url, request.tidalId)
         if download_info and download_info.get('url'):
             safe_artist = normalize_text(request.artist).replace(" ", "_")
             safe_track = normalize_text(request.track).replace(" ", "_")
             ext = "flac" if "flac" in download_info['mime'] else "m4a"
-            
             relative_path = os.path.join("Tidal", safe_artist, f"{safe_track}.{ext}")
             full_path = os.path.join("/downloads", relative_path)
-            
-            # --- CORREÇÃO: Check Determinístico ---
-            # Se o arquivo já existe no caminho exato onde vamos baixar, retorna SUCESSO.
-            if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
-                 print(f"✅ Arquivo Tidal já existe no caminho exato: {full_path}")
-                 return {
-                     "status": "Already downloaded", 
-                     "file": relative_path, 
-                     "display_name": request.track,
-                     "message": "Encontrado em cache."
-                 }
-
-            print(f"🚀 Iniciando download HTTP para: {full_path}")
             
             meta = {"title": request.track, "artist": request.artist, "album": request.album or "Single"}
             background_tasks.add_task(download_file_background, download_info['url'], full_path, meta, request.artworkUrl)
             return {"status": "Download started", "file": relative_path, "source": "Tidal"}
 
-    # 2. SOULSEEK
     search_term = unidecode(f"{request.artist} {request.track}")
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
@@ -279,11 +312,7 @@ async def queue_download(request: DownloadRequest):
 async def check_download_status(filename: str):
     try:
         path = AudioManager.find_local_file(filename)
-        size = os.path.getsize(path)
-        if "Tidal" in path and size > 1000000:
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Tidal Download"}
-        if size > 0 and "Tidal" not in path: 
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
+        if os.path.getsize(path) > 0: return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
     except HTTPException: pass
     status = await get_transfer_status(filename)
     if status: return status
@@ -351,11 +380,23 @@ async def get_library():
                 full_path = os.path.join(root, file)
                 try:
                     tags = AudioManager.get_audio_tags(full_path)
+                    
+                    # Se tiver tags, usa. Se não, tenta inferir ou deixa 'Desconhecido'.
+                    title = tags.get('title') or os.path.splitext(file)[0]
+                    artist = tags.get('artist') or "Desconhecido"
+                    album = tags.get('album')
+                    
+                    # Tenta inferência simples de pasta se não tiver tags
+                    if artist == "Desconhecido":
+                        parts = full_path.replace("\\", "/").split("/")
+                        if len(parts) >= 3:
+                            artist = parts[-3] # Assume pasta avó (Artist/Album/File)
+                            
                     library.append({
                         "filename": file, 
-                        "display_name": tags.get('title') or file,
-                        "artist": tags.get('artist') or "Desconhecido",
-                        "album": tags.get('album'),
+                        "display_name": title,
+                        "artist": artist,
+                        "album": album,
                         "format": file.split('.')[-1].lower()
                     })
                 except: pass
