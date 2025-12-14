@@ -10,3 +10,4 @@ mutagen
 unidecode
 thefuzz
 python-levenshtein
+ytmusicapi

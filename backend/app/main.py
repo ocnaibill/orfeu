@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, Dict, List, Tuple
 import os
@@ -15,13 +16,14 @@ from thefuzz import fuzz
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
+from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.5.0")
+app = FastAPI(title="Orfeu API", version="1.6.0")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
-# --- Modelos ---
+# --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
     username: str
     filename: str
@@ -41,165 +43,89 @@ def normalize_text(text: str) -> str:
     return unidecode(text).lower().strip()
 
 def find_local_match(artist: str, track: str) -> Optional[str]:
+    """
+    Busca local usando Fuzzy Matching.
+    """
     base_path = "/downloads"
     target_str = normalize_text(f"{artist} {track}")
+    
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
+
                 clean_file = normalize_text(file)
-                if fuzz.partial_token_sort_ratio(target_str, clean_file) > 90:
+                ratio = fuzz.partial_token_sort_ratio(target_str, clean_file)
+                if ratio > 90:
                     return full_path
     return None
 
-# --- Rotas ---
+# --- Rotas de Sistema ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.4.0"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.0"}
 
-# --- CORREÇÃO: Paginação Manual para iTunes ---
-@app.get("/")
-def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.5.0"}
-
-# --- BUSCA CURADA (ITUNES) COM SUPORTE A TIPO ---
+# --- BUSCA DE CATÁLOGO (MIGRADA PARA YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
 async def search_catalog(
     query: str, 
     limit: int = 20, 
     offset: int = 0,
-    type: str = Query("song", enum=["song", "album"]) # Novo parâmetro
+    type: str = Query("song", enum=["song", "album"])
 ):
     """
-    Busca no catálogo global (iTunes).
-    Suporta 'song' (músicas) ou 'album' (álbuns).
+    Busca no catálogo global usando YouTube Music (via CatalogProvider).
+    Suporta 'song' ou 'album'.
     """
-    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
-    try:
-        async with httpx.AsyncClient() as client:
-            url = "https://itunes.apple.com/search"
-            
-            # Ajusta entidade baseada no tipo
-            entity = "song" if type == "song" else "album"
-            
-            params = {
-                "term": query,
-                "media": "music",
-                "entity": entity,
-                "limit": 200, # Pedimos mais para paginar em memória
-            }
-            
-            resp = await client.get(url, params=params, timeout=10.0)
-            data = resp.json()
-            raw_results = data.get('results', [])
-            
-            # Paginação em Memória
-            start_index = offset
-            end_index = offset + limit
-            if start_index >= len(raw_results): return []
-            paged_results = raw_results[start_index:end_index]
-            
-            final_results = []
-            for item in paged_results:
-                # Tratamento de Imagem
-                artwork = item.get('artworkUrl100', '').replace("100x100bb", "600x600bb")
-                
-                # Se for ÁLBUM
-                if type == "album":
-                    if item.get('collectionType') not in ['Album', 'EP', 'Compilation']: continue
-                    
-                    final_results.append({
-                        "type": "album",
-                        "collectionId": item.get('collectionId'),
-                        "collectionName": item.get('collectionName'),
-                        "artistName": item.get('artistName'),
-                        "artworkUrl": artwork,
-                        "year": item.get('releaseDate', '')[:4],
-                        "trackCount": item.get('trackCount')
-                    })
-                
-                # Se for MÚSICA (Lógica antiga)
-                else:
-                    if item.get('kind') != 'song': continue
-                    artist = item.get('artistName', '')
-                    track = item.get('trackName', '')
-                    local_file = find_local_match(artist, track) # Função helper existente
-                    
-                    final_results.append({
-                        "type": "song",
-                        "trackName": track,
-                        "artistName": artist,
-                        "collectionName": item.get('collectionName'),
-                        "artworkUrl": artwork,
-                        "previewUrl": item.get('previewUrl'),
-                        "year": item.get('releaseDate', '')[:4],
-                        "isDownloaded": local_file is not None,
-                        "filename": local_file
-                    })
-            
-            return final_results
-    except Exception as e:
-        print(f"❌ Erro no catálogo: {e}")
+    print(f"🔎 Buscando no catálogo YTMusic: '{query}' [Type: {type}]")
+    
+    # Executa a busca síncrona do YTMusic em uma thread separada para não travar o async
+    raw_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
+    
+    # Paginação em Memória (YTMusic não tem offset nativo stateless)
+    start_index = offset
+    end_index = offset + limit
+    
+    if start_index >= len(raw_results):
         return []
+        
+    paged_results = raw_results[start_index:end_index]
+    
+    # Enriquecimento com dados locais (Check se já baixou)
+    for item in paged_results:
+        if item['type'] == 'song':
+            local_file = find_local_match(item['artistName'], item['trackName'])
+            item['isDownloaded'] = local_file is not None
+            item['filename'] = local_file
+        else:
+            item['isDownloaded'] = False
+            item['filename'] = None
 
-# --- NOVA ROTA: DETALHES DO ÁLBUM ---
+    return paged_results
+
+# --- DETALHES DO ÁLBUM (MIGRADA PARA YOUTUBE MUSIC) ---
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
     """
-    Busca todas as faixas de um álbum específico no iTunes.
+    Busca faixas de um álbum no YTMusic.
+    collection_id agora é o 'browseId' do YouTube (String), não mais Inteiro do iTunes.
     """
-    print(f"💿 Buscando faixas do álbum ID: {collection_id}")
+    print(f"💿 Buscando álbum YTMusic ID: {collection_id}")
     try:
-        async with httpx.AsyncClient() as client:
-            # Lookup traz o álbum (index 0) e as músicas (index 1..N)
-            url = "https://itunes.apple.com/lookup"
-            params = {"id": collection_id, "entity": "song"}
+        album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
+        
+        # Verifica downloads locais para cada faixa
+        for track in album_data['tracks']:
+            local_file = find_local_match(track['artistName'], track['trackName'])
+            track['isDownloaded'] = local_file is not None
+            track['filename'] = local_file
             
-            resp = await client.get(url, params=params, timeout=10.0)
-            data = resp.json()
-            results = data.get('results', [])
-            
-            if not results: raise HTTPException(404, "Álbum não encontrado")
-            
-            # O primeiro item é sempre os metadados do álbum
-            collection_meta = results[0]
-            tracks = []
-            
-            # Iterar a partir do segundo item (as músicas)
-            for item in results[1:]:
-                if item.get('kind') != 'song': continue
-                
-                artist = item.get('artistName', '')
-                track = item.get('trackName', '')
-                local_file = find_local_match(artist, track) # Helper existente
-                
-                tracks.append({
-                    "trackNumber": item.get('trackNumber'),
-                    "trackName": track,
-                    "artistName": artist,
-                    "collectionName": item.get('collectionName'),
-                    "durationMs": item.get('trackTimeMillis'),
-                    "previewUrl": item.get('previewUrl'),
-                    "isDownloaded": local_file is not None,
-                    "filename": local_file,
-                    # Dados para smart download
-                    "artworkUrl": collection_meta.get('artworkUrl100', '').replace("100x100bb", "600x600bb")
-                })
-            
-            return {
-                "collectionId": collection_meta.get('collectionId'),
-                "collectionName": collection_meta.get('collectionName'),
-                "artistName": collection_meta.get('artistName'),
-                "artworkUrl": collection_meta.get('artworkUrl100', '').replace("100x100bb", "600x600bb"),
-                "year": collection_meta.get('releaseDate', '')[:4],
-                "tracks": tracks
-            }
-            
+        return album_data
+
     except Exception as e:
         print(f"❌ Erro ao buscar álbum: {e}")
-        raise HTTPException(500, str(e))
-
+        raise HTTPException(500, str(e)) 
 
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest):
