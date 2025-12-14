@@ -158,7 +158,8 @@ class SearchController {
         "artist": catalogItem['artistName'],
         "track": catalogItem['trackName'],
         "album": catalogItem['collectionName'],
-        "tidalId": catalogItem['tidalId']
+        "tidalId": catalogItem['tidalId'],
+        "artworkUrl": catalogItem['artworkUrl'] 
       });
 
       final filename = resp.data['file'];

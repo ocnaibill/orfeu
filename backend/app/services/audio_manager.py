@@ -2,6 +2,9 @@ import os
 import json
 import subprocess
 import mutagen
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TYER
+from mutagen.mp4 import MP4, MP4Cover
 from fastapi import HTTPException
 
 # Constantes
@@ -17,9 +20,6 @@ class AudioManager:
 
     @staticmethod
     def find_local_file(filename: str) -> str:
-        """
-        Localiza o ficheiro no sistema de arquivos (Busca Profunda).
-        """
         # Limpeza de segurança
         sanitized_filename = filename.replace("\\", "/").lstrip("/")
         target_file_name = os.path.basename(sanitized_filename)
@@ -89,22 +89,67 @@ class AudioManager:
             **tech_data,
             **artistic_data
         }
+    
+    # --- NOVO: Função para Gravar Tags e Capa ---
+    @staticmethod
+    def embed_metadata(file_path: str, metadata: dict, cover_data: bytes = None):
+        """
+        Escreve tags (Artist, Title, Album) e embuti a capa no arquivo.
+        """
+        try:
+            print(f"🏷️ Aplicando tags em: {os.path.basename(file_path)}")
+            
+            # Detecção via extensão (mais rápido que mutagen.File para escrita especifica)
+            ext = file_path.lower().split('.')[-1]
+            
+            if ext == 'flac':
+                audio = FLAC(file_path)
+                audio['title'] = metadata.get('title', '')
+                audio['artist'] = metadata.get('artist', '')
+                audio['album'] = metadata.get('album', '')
+                
+                if cover_data:
+                    pic = Picture()
+                    pic.type = 3 # Front Cover
+                    pic.mime = 'image/jpeg'
+                    pic.desc = 'Cover'
+                    pic.data = cover_data
+                    audio.clear_pictures()
+                    audio.add_picture(pic)
+                audio.save()
+
+            elif ext == 'mp3':
+                try:
+                    audio = ID3(file_path)
+                except:
+                    audio = ID3() # Cria se não existir
+                
+                audio.add(TIT2(encoding=3, text=metadata.get('title', '')))
+                audio.add(TPE1(encoding=3, text=metadata.get('artist', '')))
+                audio.add(TALB(encoding=3, text=metadata.get('album', '')))
+                
+                if cover_data:
+                    audio.add(APIC(
+                        encoding=3,
+                        mime='image/jpeg',
+                        type=3, 
+                        desc='Cover',
+                        data=cover_data
+                    ))
+                audio.save(file_path)
+            
+            # Adicionar suporte a M4A/MP4 se necessário no futuro (mutagen.mp4)
+            
+            print("✅ Tags aplicadas com sucesso.")
+            
+        except Exception as e:
+            print(f"❌ Erro ao aplicar tags: {e}")
 
     @staticmethod
     def transcode_stream(file_path: str, quality: str):
         target_bitrate = TIERS.get(quality, "128k")
-        
-        cmd = [
-            "ffmpeg", "-i", file_path, 
-            "-f", "mp3", 
-            "-ab", target_bitrate,
-            "-vn", "-map", "0:a:0", "-"
-        ]
-        
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
-        )
-        
+        cmd = ["ffmpeg", "-i", file_path, "-f", "mp3", "-ab", target_bitrate, "-vn", "-map", "0:a:0", "-"]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
         try:
             while True:
                 chunk = process.stdout.read(64 * 1024)
@@ -115,16 +160,8 @@ class AudioManager:
 
     @staticmethod
     def extract_cover_stream(file_path: str):
-        cmd = [
-            "ffmpeg", "-i", file_path, 
-            "-an", "-c:v", "mjpeg", 
-            "-f", "mjpeg", "-v", "error", "-"
-        ]
-        
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
-        )
-        
+        cmd = ["ffmpeg", "-i", file_path, "-an", "-c:v", "mjpeg", "-f", "mjpeg", "-v", "error", "-"]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
         try:
             while True:
                 chunk = process.stdout.read(64 * 1024)

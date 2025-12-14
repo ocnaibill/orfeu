@@ -19,12 +19,12 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.8.0")
+app = FastAPI(title="Orfeu API", version="1.8.1")
 
-# --- Constantes ---
+# ... (Constantes TIERS mantidas) ...
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
-# --- Modelos ---
+# --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
     username: str
     filename: str
@@ -37,18 +37,19 @@ class SmartDownloadRequest(BaseModel):
     artist: str
     track: str
     album: Optional[str] = None
-    tidalId: Optional[int] = None # NOVO: ID para download direto
+    tidalId: Optional[int] = None
+    artworkUrl: Optional[str] = None # NOVO: Frontend pode mandar a capa direta
 
-# --- Helpers de Download HTTP ---
-async def download_file_background(url: str, dest_path: str):
+# --- Helpers de Download HTTP com Tagging ---
+async def download_file_background(url: str, dest_path: str, metadata: dict, cover_url: str = None):
     """
-    Baixa um arquivo HTTP em background e salva no disco.
+    Baixa arquivo, baixa capa e aplica tags (Metadados + Cover Art).
     """
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        # Cria um arquivo temporário primeiro
         temp_path = dest_path + ".tmp"
         
+        # 1. Baixa o Áudio
         async with httpx.AsyncClient() as client:
             async with client.stream('GET', url) as response:
                 response.raise_for_status()
@@ -56,17 +57,44 @@ async def download_file_background(url: str, dest_path: str):
                     async for chunk in response.aiter_bytes():
                         f.write(chunk)
         
-        # Renomeia para o final apenas quando acabar (Atomicidade)
-        os.rename(temp_path, dest_path)
-        print(f"✅ Download HTTP concluído: {dest_path}")
+        # 2. Baixa a Capa (Se disponível)
+        cover_bytes = None
+        target_cover = cover_url
         
-        # Opcional: Tentar baixar capa e embutir tags aqui no futuro
+        # Se o frontend não mandou capa, tentamos achar sozinhos
+        if not target_cover:
+             target_cover = await LyricsProvider.get_online_cover(dest_path) # Usa nome do arquivo para buscar no iTunes
+
+        if target_cover:
+            try:
+                print(f"🖼️ Baixando capa para embutir: {target_cover}")
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(target_cover, timeout=10.0)
+                    if resp.status_code == 200:
+                        cover_bytes = resp.content
+            except Exception as e:
+                print(f"⚠️ Falha ao baixar capa: {e}")
+
+        # 3. Finaliza arquivo e Aplica Tags
+        os.rename(temp_path, dest_path)
+        
+        # Chama o AudioManager para gravar os metadados no arquivo físico
+        if metadata:
+            # Roda em threadpool pois mutagen é síncrono e pode ser lento com imagens grandes
+            await run_in_threadpool(
+                AudioManager.embed_metadata, 
+                dest_path, 
+                metadata, 
+                cover_bytes
+            )
+            
+        print(f"✅ Download HTTP concluído e tagueado: {dest_path}")
+        
     except Exception as e:
-        print(f"❌ Erro no download HTTP de fundo: {e}")
+        print(f"❌ Erro no download/tagging de fundo: {e}")
         if os.path.exists(temp_path): os.remove(temp_path)
 
-
-# --- Helpers Genéricos ---
+# ... (Helpers normalize_text e find_local_match mantidos) ...
 def normalize_text(text: str) -> str:
     if not text: return ""
     text = text.lower().replace("$", "s").replace("&", "and")
@@ -81,15 +109,13 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
                 clean_file = normalize_text(file)
-                # Verifica similaridade, dando peso ao nome do arquivo
                 if fuzz.partial_token_sort_ratio(target_str, clean_file) > 90:
                     return full_path
     return None
 
 # --- Rotas ---
 @app.get("/")
-def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.8.0"}
+def read_root(): return {"status": "Orfeu is alive", "service": "Backend", "version": "1.8.1"}
 
 @app.get("/search/catalog")
 async def search_catalog(
@@ -97,42 +123,31 @@ async def search_catalog(
 ):
     print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
     results = []
-
-    # 1. Tidal (Prioridade para músicas)
     if type == "song":
         try:
             tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit)
             if tidal_results: results = tidal_results
         except Exception as e: print(f"⚠️ Tidal falhou: {e}")
 
-    # 2. YouTube Music (Fallback)
     if not results:
         yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
         results = yt_results
 
-    # Paginação manual para YTMusic (Tidal já vem paginado pelo provider se suportado)
-    # Se a lista for grande (> limit), paginamos aqui
     if len(results) > limit:
          start = offset
          end = offset + limit
-         if start < len(results):
-             results = results[start:end]
-         else:
-             results = []
+         if start < len(results): results = results[start:end]
+         else: results = []
 
-    # Check Local
     for item in results:
         if item.get('type') == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
             item['isDownloaded'] = local_file is not None
             item['filename'] = local_file
-
     return results
 
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
-    # Por enquanto, mantemos YTMusic para álbuns pois a API Tidal 'track' que temos não lista álbuns
-    # Futuramente podemos descobrir a rota /album do Tidal
     try:
         album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
         for track in album_data['tracks']:
@@ -144,48 +159,56 @@ async def get_album_details(collection_id: str):
         print(f"❌ Erro álbum: {e}")
         raise HTTPException(500, str(e))
 
-# --- SMART DOWNLOAD (AGORA COM TIDAL DIRECT) ---
+# --- SMART DOWNLOAD (ATUALIZADO) ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest, background_tasks: BackgroundTasks):
     print(f"🤖 Smart Download: {request.artist} - {request.track}")
     
-    # 0. Check Local
     local_match = find_local_match(request.artist, request.track)
     if local_match:
         print(f"✅ Cache Local: {local_match}")
         return {"status": "Already downloaded", "file": local_match, "display_name": request.track}
 
-    # 1. TENTATIVA TIDAL DIRECT (Prioridade Máxima)
+    # 1. TENTATIVA TIDAL DIRECT
     if request.tidalId:
         print(f"🌊 Tentando download direto do Tidal (ID: {request.tidalId})...")
         download_info = await run_in_threadpool(TidalProvider.get_download_url, request.tidalId)
         
         if download_info and download_info.get('url'):
-            # Define caminho: downloads/Tidal/Artista/Album/Musica.flac
             safe_artist = normalize_text(request.artist).replace(" ", "_")
             safe_track = normalize_text(request.track).replace(" ", "_")
             ext = "flac" if "flac" in download_info['mime'] else "m4a"
             
-            # Pasta organizada
             relative_path = os.path.join("Tidal", safe_artist, f"{safe_track}.{ext}")
             full_path = os.path.join("/downloads", relative_path)
             
             print(f"🚀 Iniciando download HTTP para: {full_path}")
             
-            # Inicia download em background para não travar a resposta
-            background_tasks.add_task(download_file_background, download_info['url'], full_path)
+            # Prepara metadados para injetar
+            meta_to_embed = {
+                "title": request.track,
+                "artist": request.artist,
+                "album": request.album or "Single"
+            }
             
-            # Retorna o nome do arquivo que ESTÁ SENDO baixado
-            # O frontend vai fazer polling em /download/status e ver o progresso (bytes no disco)
+            # Passa a URL da capa (se vier do frontend) ou deixa o background buscar
+            background_tasks.add_task(
+                download_file_background, 
+                download_info['url'], 
+                full_path, 
+                meta_to_embed,
+                request.artworkUrl
+            )
+            
             return {
                 "status": "Download started",
-                "file": relative_path, # Caminho relativo que find_local_file vai achar
+                "file": relative_path,
                 "source": "Tidal"
             }
         else:
             print("⚠️ Falha ao obter link Tidal. Caindo para Soulseek...")
 
-    # 2. TENTATIVA SOULSEEK (Fallback)
+    # 2. TENTATIVA SOULSEEK
     search_term = unidecode(f"{request.artist} {request.track}")
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
@@ -232,19 +255,11 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
 
                     if score > highest_score:
                         highest_score = score
-                        best_candidate = {
-                            'username': response.get('username'),
-                            'filename': fname,
-                            'size': file['size'],
-                            'score': score
-                        }
+                        best_candidate = {'username': response.get('username'), 'filename': fname, 'size': file['size'], 'score': score}
     
-    if not best_candidate:
-        raise HTTPException(404, "Nenhum ficheiro encontrado.")
-
+    if not best_candidate: raise HTTPException(404, "Nenhum ficheiro encontrado.")
     print(f"🏆 Vencedor Soulseek: {best_candidate['filename']}")
     
-    # Check local again just in case
     try:
         if AudioManager.find_local_file(best_candidate['filename']):
              return {"status": "Already downloaded", "file": best_candidate['filename']}
@@ -252,10 +267,10 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
 
     return await download_slskd(best_candidate['username'], best_candidate['filename'], best_candidate['size'])
 
-# ... (Mantenha todas as outras rotas: status, cover, stream, etc. inalteradas) ...
-# ... Copiar o resto do arquivo da versão anterior ...
+# ... (Mantenha o resto das rotas legadas inalteradas abaixo) ...
+# ... start_search_legacy, view_results, queue_download, check_download_status ...
+# ... auto_download_best, get_track_details, get_lyrics, get_cover_art, stream_music, get_library ...
 
-# --- Rotas Legadas e de Mídia ---
 @app.post("/search/{query}")
 async def start_search_legacy(query: str): return await search_slskd(query)
 
@@ -264,39 +279,22 @@ async def view_results(search_id: str): return await get_search_results(search_i
 
 @app.post("/download")
 async def queue_download(request: DownloadRequest):
+    try:
+        path = AudioManager.find_local_file(request.filename)
+        if os.path.getsize(path) > 0: return {"status": "Already downloaded", "file": request.filename}
+        else: os.remove(path)
+    except HTTPException: pass
     return await download_slskd(request.username, request.filename, request.size)
 
 @app.get("/download/status")
 async def check_download_status(filename: str):
-    # 1. Check Local (Se tiver tamanho completo, pronto)
-    # Como não sabemos o tamanho total no download HTTP sem banco, 
-    # assumimos que se existe e não está crescendo há X segundos...
-    # Mas para o MVP: Se existe localmente E não está na lista do Slskd,
-    # pode ser um download HTTP em andamento ou completo.
-    
     try:
         path = AudioManager.find_local_file(filename)
-        size = os.path.getsize(path)
-        
-        # Se for um arquivo da pasta Tidal, assumimos Completed se tiver tamanho razoavel (>1MB)
-        # Melhoria futura: Guardar status de download HTTP em memória/banco.
-        if "Tidal" in path and size > 1000000:
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Tidal Download"}
-             
-        # Se for Soulseek completo
-        if size > 0 and "Tidal" not in path: 
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
-    except HTTPException:
-        pass
-
-    # 2. Check Slskd
+        if os.path.getsize(path) > 0: return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
+    except HTTPException: pass
     status = await get_transfer_status(filename)
     if status: return status
-    
-    # 3. Fallback
-    # Se estamos baixando via HTTP (Tidal), o arquivo existe no disco mas está crescendo.
-    # O AudioManager.find_local_file pode ter achado o arquivo .tmp ou final incompleto.
-    return {"state": "Unknown", "progress": 0.0, "message": "Procurando..."}
+    return {"state": "Unknown", "progress": 0.0, "message": "Iniciando"}
 
 @app.post("/download/auto")
 async def auto_download_best(request: AutoDownloadRequest):
