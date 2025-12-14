@@ -16,7 +16,7 @@ from app.services.slskd_client import search_slskd, get_search_results, download
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 
-app = FastAPI(title="Orfeu API", version="1.4.0")
+app = FastAPI(title="Orfeu API", version="1.5.0")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -59,78 +59,147 @@ def read_root():
     return {"status": "Orfeu is alive", "service": "Backend", "version": "1.4.0"}
 
 # --- CORREÇÃO: Paginação Manual para iTunes ---
+@app.get("/")
+def read_root():
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.5.0"}
+
+# --- BUSCA CURADA (ITUNES) COM SUPORTE A TIPO ---
 @app.get("/search/catalog")
 async def search_catalog(
     query: str, 
     limit: int = 20, 
-    offset: int = 0
+    offset: int = 0,
+    type: str = Query("song", enum=["song", "album"]) # Novo parâmetro
 ):
     """
     Busca no catálogo global (iTunes).
-    Como a API do iTunes NÃO suporta 'offset' nativamente, buscamos um lote maior (200)
-    e fazemos a paginação em memória no Python.
+    Suporta 'song' (músicas) ou 'album' (álbuns).
     """
-    print(f"🔎 Buscando no catálogo: '{query}' (Client pede: Offset {offset}, Limit {limit})")
-    
-    # Cache simples em memória poderia ser adicionado aqui para performance
-    
+    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
     try:
         async with httpx.AsyncClient() as client:
             url = "https://itunes.apple.com/search"
             
-            # Pedimos 200 itens para ter margem de manobra para paginação
-            # O iTunes limita a ~200 por padrão em muitas queries.
-            fetch_limit = 200 
+            # Ajusta entidade baseada no tipo
+            entity = "song" if type == "song" else "album"
             
             params = {
                 "term": query,
                 "media": "music",
-                "limit": fetch_limit,
-                # 'offset': offset # REMOVIDO: iTunes ignora isso
+                "entity": entity,
+                "limit": 200, # Pedimos mais para paginar em memória
             }
             
             resp = await client.get(url, params=params, timeout=10.0)
             data = resp.json()
-            
             raw_results = data.get('results', [])
             
-            # --- PAGINAÇÃO EM MEMÓRIA ---
-            # Fatiamos a lista completa baseada no que o frontend pediu
+            # Paginação em Memória
             start_index = offset
             end_index = offset + limit
-            
-            # Se o offset for maior que o total de resultados, retorna vazio
-            if start_index >= len(raw_results):
-                return []
-                
+            if start_index >= len(raw_results): return []
             paged_results = raw_results[start_index:end_index]
             
             final_results = []
             for item in paged_results:
-                if item.get('kind') != 'song': continue
-
+                # Tratamento de Imagem
                 artwork = item.get('artworkUrl100', '').replace("100x100bb", "600x600bb")
-                artist = item.get('artistName', '')
-                track = item.get('trackName', '')
                 
-                local_file = find_local_match(artist, track)
+                # Se for ÁLBUM
+                if type == "album":
+                    if item.get('collectionType') not in ['Album', 'EP', 'Compilation']: continue
+                    
+                    final_results.append({
+                        "type": "album",
+                        "collectionId": item.get('collectionId'),
+                        "collectionName": item.get('collectionName'),
+                        "artistName": item.get('artistName'),
+                        "artworkUrl": artwork,
+                        "year": item.get('releaseDate', '')[:4],
+                        "trackCount": item.get('trackCount')
+                    })
                 
-                final_results.append({
-                    "trackName": track,
-                    "artistName": artist,
-                    "collectionName": item.get('collectionName'),
-                    "artworkUrl": artwork,
-                    "previewUrl": item.get('previewUrl'),
-                    "year": item.get('releaseDate', '')[:4],
-                    "isDownloaded": local_file is not None,
-                    "filename": local_file
-                })
+                # Se for MÚSICA (Lógica antiga)
+                else:
+                    if item.get('kind') != 'song': continue
+                    artist = item.get('artistName', '')
+                    track = item.get('trackName', '')
+                    local_file = find_local_match(artist, track) # Função helper existente
+                    
+                    final_results.append({
+                        "type": "song",
+                        "trackName": track,
+                        "artistName": artist,
+                        "collectionName": item.get('collectionName'),
+                        "artworkUrl": artwork,
+                        "previewUrl": item.get('previewUrl'),
+                        "year": item.get('releaseDate', '')[:4],
+                        "isDownloaded": local_file is not None,
+                        "filename": local_file
+                    })
             
             return final_results
-
     except Exception as e:
         print(f"❌ Erro no catálogo: {e}")
         return []
+
+# --- NOVA ROTA: DETALHES DO ÁLBUM ---
+@app.get("/catalog/album/{collection_id}")
+async def get_album_details(collection_id: str):
+    """
+    Busca todas as faixas de um álbum específico no iTunes.
+    """
+    print(f"💿 Buscando faixas do álbum ID: {collection_id}")
+    try:
+        async with httpx.AsyncClient() as client:
+            # Lookup traz o álbum (index 0) e as músicas (index 1..N)
+            url = "https://itunes.apple.com/lookup"
+            params = {"id": collection_id, "entity": "song"}
+            
+            resp = await client.get(url, params=params, timeout=10.0)
+            data = resp.json()
+            results = data.get('results', [])
+            
+            if not results: raise HTTPException(404, "Álbum não encontrado")
+            
+            # O primeiro item é sempre os metadados do álbum
+            collection_meta = results[0]
+            tracks = []
+            
+            # Iterar a partir do segundo item (as músicas)
+            for item in results[1:]:
+                if item.get('kind') != 'song': continue
+                
+                artist = item.get('artistName', '')
+                track = item.get('trackName', '')
+                local_file = find_local_match(artist, track) # Helper existente
+                
+                tracks.append({
+                    "trackNumber": item.get('trackNumber'),
+                    "trackName": track,
+                    "artistName": artist,
+                    "collectionName": item.get('collectionName'),
+                    "durationMs": item.get('trackTimeMillis'),
+                    "previewUrl": item.get('previewUrl'),
+                    "isDownloaded": local_file is not None,
+                    "filename": local_file,
+                    # Dados para smart download
+                    "artworkUrl": collection_meta.get('artworkUrl100', '').replace("100x100bb", "600x600bb")
+                })
+            
+            return {
+                "collectionId": collection_meta.get('collectionId'),
+                "collectionName": collection_meta.get('collectionName'),
+                "artistName": collection_meta.get('artistName'),
+                "artworkUrl": collection_meta.get('artworkUrl100', '').replace("100x100bb", "600x600bb"),
+                "year": collection_meta.get('releaseDate', '')[:4],
+                "tracks": tracks
+            }
+            
+    except Exception as e:
+        print(f"❌ Erro ao buscar álbum: {e}")
+        raise HTTPException(500, str(e))
+
 
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest):
