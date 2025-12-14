@@ -5,14 +5,19 @@ from typing import Optional, Dict, List, Tuple
 import os
 import asyncio
 import httpx
+import subprocess
+import mutagen
 from urllib.parse import quote
+# Libs de Inteligência de Texto
+from unidecode import unidecode
+from thefuzz import fuzz
 
 # Importação dos Serviços Organizados
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 
-app = FastAPI(title="Orfeu API", version="1.2.0")
+app = FastAPI(title="Orfeu API", version="1.3.1")
 
 # --- Constantes de Qualidade ---
 TIERS = {
@@ -37,178 +42,81 @@ class SmartDownloadRequest(BaseModel):
     album: Optional[str] = None
 
 # --- Helpers ---
-def get_local_library_index() -> List[Tuple[str, str]]:
+def normalize_text(text: str) -> str:
     """
-    Retorna uma lista de tuplas (filename_real, filename_limpo) de todos os arquivos locais.
-    Usado para matching rápido sem varrer o disco múltiplas vezes.
+    Remove acentos, coloca em minúsculas e remove caracteres especiais.
+    Ex: "Rádio - Coração" -> "radio coracao"
+    """
+    if not text: return ""
+    return unidecode(text).lower().strip()
+
+def find_local_match(artist: str, track: str) -> Optional[str]:
+    """
+    Busca local usando Fuzzy Matching.
+    Verifica se o arquivo existe E tem conteúdo (>0 bytes).
     """
     base_path = "/downloads"
-    index = []
+    target_str = normalize_text(f"{artist} {track}")
+    
+    # Varre diretório
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
-                # Limpeza para matching (sem _, -, pontos)
-                clean_name = file.lower().replace("_", " ").replace("-", " ").replace(".", " ")
-                index.append((file, clean_name))
-    return index
+                full_path = os.path.join(root, file)
+                
+                # Check de integridade básico (0 bytes = falha anterior)
+                if os.path.getsize(full_path) == 0:
+                    continue
 
-def find_local_match(artist: str, track: str, library_index: List[Tuple[str, str]] = None) -> Optional[str]:
-    """
-    Verifica se uma música (Tokens de Artista + Título) existe na lista local.
-    Retorna o filename se encontrar.
-    """
-    if library_index is None:
-        library_index = get_local_library_index()
-        
-    search_tokens = set(f"{artist} {track}".lower().split())
-    
-    for filename, clean_name in library_index:
-        # Se todos os tokens da busca (ex: "daft", "punk", "lucky") existirem no nome do arquivo
-        if all(token in clean_name for token in search_tokens):
-            return filename
-            
+                clean_file = normalize_text(file)
+                # Se a similaridade for muito alta (>90), consideramos que é a mesma música
+                ratio = fuzz.partial_token_sort_ratio(target_str, clean_file)
+                if ratio > 90:
+                    return full_path
     return None
-
-def find_local_file(filename: str) -> str:
-    """
-    Localiza o ficheiro no sistema de arquivos (Busca Profunda).
-    """
-    base_path = "/downloads"
-    sanitized_filename = filename.replace("\\", "/").lstrip("/")
-    target_file_name = os.path.basename(sanitized_filename)
-    
-    # 1. Tenta caminho direto
-    for root, dirs, files in os.walk(base_path):
-        if target_file_name in files:
-            return os.path.join(root, target_file_name)
-            
-    raise HTTPException(status_code=404, detail=f"Ficheiro '{target_file_name}' não encontrado.")
-
-def get_audio_tags(file_path: str) -> dict:
-    """
-    Usa Mutagen para ler tags artísticas.
-    """
-    tags = {
-        "title": None,
-        "artist": None,
-        "album": None,
-        "genre": None,
-        "date": None
-    }
-    try:
-        audio = mutagen.File(file_path, easy=True)
-        if audio:
-            tags["title"] = audio.get("title", [None])[0]
-            tags["artist"] = audio.get("artist", [None])[0]
-            tags["album"] = audio.get("album", [None])[0]
-            tags["genre"] = audio.get("genre", [None])[0]
-            tags["date"] = audio.get("date", [None])[0] or audio.get("year", [None])[0]
-    except Exception as e:
-        print(f"⚠️ Erro ao ler tags: {e}")
-    return tags
-
-def get_audio_metadata(file_path: str) -> dict:
-    """
-    Combina FFmpeg (Dados Técnicos) + Mutagen (Dados Artísticos).
-    """
-    tech_data = {}
-    try:
-        cmd = [
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_format", "-show_streams", file_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        data = json.loads(result.stdout)
-        
-        audio_stream = next((s for s in data.get('streams', []) if s['codec_type'] == 'audio'), None)
-        format_info = data.get('format', {})
-        
-        if audio_stream:
-            codec = audio_stream.get('codec_name', 'unknown')
-            sample_rate = int(audio_stream.get('sample_rate', 0))
-            bits = audio_stream.get('bits_per_raw_sample') or audio_stream.get('bits_per_sample')
-            
-            tech_label = f"{sample_rate}Hz"
-            if bits: tech_label = f"{bits}bit/{tech_label}"
-            
-            tech_data = {
-                "format": codec,
-                "bitrate": int(format_info.get('bit_rate', 0)),
-                "sample_rate": sample_rate,
-                "channels": audio_stream.get('channels'),
-                "duration": float(format_info.get('duration', 0)),
-                "tech_label": tech_label,
-                "is_lossless": codec in ['flac', 'wav', 'alac']
-            }
-    except Exception:
-        pass
-
-    artistic_data = get_audio_tags(file_path)
-    if not artistic_data["title"]:
-        artistic_data["title"] = os.path.splitext(os.path.basename(file_path))[0]
-
-    return {
-        "filename": os.path.basename(file_path),
-        **tech_data,
-        **artistic_data
-    }
-
-def transcode_audio(file_path: str, bitrate: str):
-    """
-    Gera um stream de áudio transcodificado para MP3 usando FFmpeg.
-    """
-    cmd = [
-        "ffmpeg", "-i", file_path, "-f", "mp3", "-ab", bitrate,
-        "-vn", "-map", "0:a:0", "-"
-    ]
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6
-    )
-    try:
-        while True:
-            chunk = process.stdout.read(64 * 1024)
-            if not chunk: break
-            yield chunk
-    finally:
-        process.kill()
 
 # --- Rotas de Sistema ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.2"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.3.1"}
 
-# --- NOVA FUNCIONALIDADE: BUSCA CURADA (ITUNES) ---
+# --- NOVA FUNCIONALIDADE: BUSCA CURADA (ITUNES) COM PAGINAÇÃO ---
 @app.get("/search/catalog")
-async def search_catalog(query: str):
+async def search_catalog(
+    query: str, 
+    limit: int = 20, 
+    offset: int = 0
+):
     """
-    Busca metadados organizados no iTunes API e cruza com a biblioteca local
-    para indicar se já possuímos o arquivo.
+    Busca no catálogo global (iTunes).
+    Suporta paginação (limit/offset) e busca por trechos de letra (implícito).
     """
-    print(f"🔎 Buscando no catálogo global: {query}")
+    print(f"🔎 Buscando no catálogo: '{query}' (Offset: {offset}, Limit: {limit})")
     try:
-        # 1. Carrega índice local uma vez para performance
-        local_index = get_local_library_index()
-
-        # 2. Busca no iTunes
         async with httpx.AsyncClient() as client:
             url = "https://itunes.apple.com/search"
+            
             params = {
                 "term": query,
                 "media": "music",
-                "entity": "song",
-                "limit": 15
+                "limit": limit,
+                "offset": offset,
             }
-            resp = await client.get(url, params=params, timeout=8.0)
+            
+            resp = await client.get(url, params=params, timeout=10.0)
             data = resp.json()
             
             results = []
+            
             for item in data.get('results', []):
+                if item.get('kind') != 'song':
+                    continue
+
                 artwork = item.get('artworkUrl100', '').replace("100x100bb", "600x600bb")
                 artist = item.get('artistName', '')
                 track = item.get('trackName', '')
                 
-                # 3. Verifica existência local
-                local_file = find_local_match(artist, track, local_index)
+                local_file = find_local_match(artist, track)
                 
                 results.append({
                     "trackName": track,
@@ -217,8 +125,8 @@ async def search_catalog(query: str):
                     "artworkUrl": artwork,
                     "previewUrl": item.get('previewUrl'),
                     "year": item.get('releaseDate', '')[:4],
-                    "isDownloaded": local_file is not None, # Flag para a UI
-                    "filename": local_file # Nome do arquivo para play imediato
+                    "isDownloaded": local_file is not None,
+                    "filename": local_file
                 })
             
             return results
@@ -226,18 +134,21 @@ async def search_catalog(query: str):
         print(f"❌ Erro no catálogo: {e}")
         return []
 
-# --- NOVA FUNCIONALIDADE: SMART DOWNLOAD ---
+# --- SMART DOWNLOAD COM FUZZY MATCHING ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest):
     """
-    Fluxo completo: Checagem Local -> Busca P2P -> Polling -> Algoritmo de Score -> Download.
+    Fluxo otimizado com unidecode e FuzzyWuzzy para tolerar erros de digitação e acentos.
+    Inclui verificação robusta de arquivo local.
     """
-    print(f"🤖 Smart Download iniciado para: {request.artist} - {request.track}")
-
-    # 0. Check LOCAL antes de tudo (Economiza banda e tempo)
+    # Normaliza a busca para o Soulseek
+    search_term = unidecode(f"{request.artist} {request.track}")
+    print(f"🤖 Smart Download (Fuzzy): {search_term}")
+    
+    # 0. Check LOCAL antes de tudo (Com Fuzzy e Validação de Tamanho)
     local_match = find_local_match(request.artist, request.track)
     if local_match:
-        print(f"✅ Smart Match: Encontrado localmente ({local_match}). Pulando busca P2P.")
+        print(f"✅ Smart Match Local: {local_match}")
         return {
             "status": "Already downloaded", 
             "file": local_match,
@@ -246,14 +157,14 @@ async def smart_download(request: SmartDownloadRequest):
         }
 
     # 1. Inicia busca P2P
-    search_term = f"{request.artist} {request.track}"
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
     
-    # 2. Polling de resultados
     print("⏳ Aguardando resultados da rede P2P (Max 45s)...")
     best_candidate = None
     highest_score = float('-inf')
+    
+    target_clean = normalize_text(f"{request.artist} {request.track}")
     
     for i in range(22):
         await asyncio.sleep(2.0) 
@@ -262,14 +173,12 @@ async def smart_download(request: SmartDownloadRequest):
         peer_count = len(raw_results)
         
         if i % 3 == 0 or peer_count > 0:
-            print(f"   Check {i+1}/22: {peer_count} peers responderam.")
+            print(f"   Check {i+1}/22: {peer_count} peers.")
 
-        # Saída Antecipada Inteligente
-        has_great_candidate = best_candidate and best_candidate['score'] > 5000
+        # Saída Antecipada
         has_perfect_candidate = best_candidate and best_candidate['score'] > 50000
-        
-        if (peer_count > 15 and has_perfect_candidate) or (peer_count > 50 and has_great_candidate):
-             print(f"⚡ Candidato suficiente encontrado (Score: {best_candidate['score']}). Encerrando busca.")
+        if peer_count > 15 and has_perfect_candidate:
+             print(f"⚡ Candidato perfeito encontrado. Encerrando.")
              break
 
         for response in raw_results:
@@ -283,14 +192,13 @@ async def smart_download(request: SmartDownloadRequest):
                 for file in response['files']:
                     filename = file['filename']
                     
-                    # Filtro de segurança (Token Matching)
-                    normalized_name = filename.lower().replace("\\", "/")
-                    file_basename = normalized_name.split("/")[-1]
-                    clean_name = file_basename.replace("_", " ").replace("-", " ").replace(".", " ")
+                    # --- FILTRO INTELIGENTE (FUZZY MATCHING) ---
+                    file_basename = os.path.basename(filename.replace("\\", "/"))
+                    remote_clean = normalize_text(file_basename)
                     
-                    track_tokens = set(request.track.lower().split())
+                    similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
                     
-                    if not all(token in clean_name for token in track_tokens):
+                    if similarity < 85:
                         continue
 
                     if '.' not in filename: continue
@@ -306,6 +214,7 @@ async def smart_download(request: SmartDownloadRequest):
                     elif ext == 'm4a': score += 2000
                     elif ext == 'mp3': score += 1000
                     
+                    score += similarity * 10 
                     score += (upload_speed / 1_000_000)
 
                     if score > highest_score:
@@ -318,10 +227,32 @@ async def smart_download(request: SmartDownloadRequest):
                         }
     
     if not best_candidate:
-        print("❌ Nenhum candidato passou nos filtros após o timeout.")
-        raise HTTPException(404, "Nenhum ficheiro compatível encontrado na rede P2P no momento. Tente novamente em instantes.")
+        raise HTTPException(404, "Nenhum ficheiro compatível encontrado (Fuzzy Match failed).")
 
-    print(f"🏆 Vencedor P2P: {best_candidate['filename']} (Score: {int(best_candidate['score'])})")
+    print(f"🏆 Vencedor Fuzzy: {best_candidate['filename']} (Score: {int(best_candidate['score'])})")
+
+    # 3. Verifica se o VENCEDOR P2P já existe no disco (Proteção contra re-download)
+    # Aqui verificamos o arquivo EXATO que vamos pedir, para garantir.
+    try:
+        local_path = AudioManager.find_local_file(best_candidate['filename'])
+        
+        # Verifica integridade (0 bytes = falha)
+        if os.path.getsize(local_path) > 0:
+            print(f"✅ Vencedor já existe em disco (Skip): {local_path}")
+            return {
+                "status": "Already downloaded", 
+                "file": best_candidate['filename'],
+                "display_name": request.track,
+                "message": "Ficheiro já disponível."
+            }
+        else:
+            print(f"⚠️ Arquivo existe mas tem 0 bytes (Lixo). Baixando novamente: {local_path}")
+            os.remove(local_path) 
+    except HTTPException:
+        # Não existe, pode baixar
+        pass
+    except Exception as e:
+        print(f"⚠️ Erro ao verificar arquivo local: {e}")
 
     # 4. Inicia Download
     return await download_slskd(
@@ -330,23 +261,24 @@ async def smart_download(request: SmartDownloadRequest):
         best_candidate['size']
     )
 
-# --- Rotas Legadas (Soulseek Direto) ---
+# --- Rotas Legadas ---
 @app.post("/search/{query}")
 async def start_search_legacy(query: str):
     return await search_slskd(query)
 
 @app.get("/results/{search_id}")
 async def view_results(search_id: str):
-    raw_results = await get_search_results(search_id)
-    # Lógica simplificada para manter compatibilidade
-    return raw_results 
+    return await get_search_results(search_id) 
 
 @app.post("/download")
 async def queue_download(request: DownloadRequest):
     try:
         path = AudioManager.find_local_file(request.filename)
+        # Check de 0 bytes também no download manual
         if os.path.getsize(path) > 0:
              return {"status": "Already downloaded", "file": request.filename}
+        else:
+             os.remove(path)
     except HTTPException:
         pass
     return await download_slskd(request.username, request.filename, request.size)
@@ -365,31 +297,8 @@ async def check_download_status(filename: str):
 
 @app.post("/download/auto")
 async def auto_download_best(request: AutoDownloadRequest):
-    # Lógica antiga de auto download (mantida para compatibilidade)
-    raw_results = await get_search_results(request.search_id)
-    best = None
-    high = float('-inf')
-    for response in raw_results:
-        if response.get('locked', False): continue
-        slots_free = response.get('slotsFree', False)
-        queue_length = response.get('queueLength', 0)
-        if 'files' in response:
-            for file in response['files']:
-                fname = file['filename']
-                if '.' not in fname: continue
-                ext = fname.split('.')[-1].lower()
-                if ext not in ['flac', 'mp3']: continue
-                score = 0
-                if slots_free: score += 50000
-                else: score -= (queue_length * 1000)
-                if ext == 'flac': score += 10000
-                elif ext == 'mp3': score += 1000
-                score += (file.get('bitRate') or 0)
-                if score > high:
-                    high = score
-                    best = {'username': response.get('username'), 'filename': fname, 'size': file['size']}
-    if not best: raise HTTPException(404, "Nada encontrado.")
-    return await download_slskd(best['username'], best['filename'], best['size'])
+    # Mantém compatibilidade
+    return await smart_download(SmartDownloadRequest(artist="", track="")) 
 
 # --- Rotas de Mídia ---
 @app.get("/metadata")
@@ -408,8 +317,7 @@ async def get_lyrics(filename: str):
 async def get_cover_art(filename: str):
     full_path = AudioManager.find_local_file(filename)
     try:
-        res = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=index", "-of", "csv=p=0", full_path], capture_output=True, text=True)
-        if res.stdout.strip():
+        if AudioManager.extract_cover_stream(full_path): 
              return StreamingResponse(AudioManager.extract_cover_stream(full_path), media_type="image/jpeg")
     except: pass
     

@@ -7,3 +7,6 @@ requests
 python-dotenv
 aiofiles
 mutagen
+unidecode
+thefuzz
+python-levenshtein
