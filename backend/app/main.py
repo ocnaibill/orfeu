@@ -2,10 +2,9 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict
 import os
 import asyncio
-import httpx
 import subprocess
 import mutagen
 from urllib.parse import quote
@@ -23,7 +22,7 @@ app = FastAPI(title="Orfeu API", version="1.6.0")
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
-# --- Modelos de Dados ---
+# --- Modelos ---
 class DownloadRequest(BaseModel):
     username: str
     filename: str
@@ -61,12 +60,12 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                     return full_path
     return None
 
-# --- Rotas de Sistema ---
+# --- Rotas ---
 @app.get("/")
 def read_root():
     return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.0"}
 
-# --- BUSCA DE CATÁLOGO (MIGRADA PARA YOUTUBE MUSIC) ---
+# --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
 async def search_catalog(
     query: str, 
@@ -74,16 +73,11 @@ async def search_catalog(
     offset: int = 0,
     type: str = Query("song", enum=["song", "album"])
 ):
-    """
-    Busca no catálogo global usando YouTube Music (via CatalogProvider).
-    Suporta 'song' ou 'album'.
-    """
     print(f"🔎 Buscando no catálogo YTMusic: '{query}' [Type: {type}]")
     
-    # Executa a busca síncrona do YTMusic em uma thread separada para não travar o async
     raw_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
     
-    # Paginação em Memória (YTMusic não tem offset nativo stateless)
+    # Paginação em Memória
     start_index = offset
     end_index = offset + limit
     
@@ -92,7 +86,7 @@ async def search_catalog(
         
     paged_results = raw_results[start_index:end_index]
     
-    # Enriquecimento com dados locais (Check se já baixou)
+    # Check local
     for item in paged_results:
         if item['type'] == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
@@ -104,29 +98,24 @@ async def search_catalog(
 
     return paged_results
 
-# --- DETALHES DO ÁLBUM (MIGRADA PARA YOUTUBE MUSIC) ---
+# --- ÁLBUM (YOUTUBE MUSIC) ---
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
-    """
-    Busca faixas de um álbum no YTMusic.
-    collection_id agora é o 'browseId' do YouTube (String), não mais Inteiro do iTunes.
-    """
     print(f"💿 Buscando álbum YTMusic ID: {collection_id}")
     try:
         album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
         
-        # Verifica downloads locais para cada faixa
         for track in album_data['tracks']:
             local_file = find_local_match(track['artistName'], track['trackName'])
             track['isDownloaded'] = local_file is not None
             track['filename'] = local_file
             
         return album_data
-
     except Exception as e:
         print(f"❌ Erro ao buscar álbum: {e}")
-        raise HTTPException(500, str(e)) 
+        raise HTTPException(500, str(e))
 
+# --- DOWNLOAD INTELIGENTE ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest):
     search_term = unidecode(f"{request.artist} {request.track}")
@@ -134,12 +123,13 @@ async def smart_download(request: SmartDownloadRequest):
     
     local_match = find_local_match(request.artist, request.track)
     if local_match:
+        print(f"✅ Smart Match Local: {local_match}")
         return {"status": "Already downloaded", "file": local_match, "display_name": request.track}
 
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
     
-    print("⏳ Aguardando resultados da rede P2P (Max 45s)...")
+    print("⏳ Aguardando resultados da rede P2P...")
     best_candidate = None
     highest_score = float('-inf')
     target_clean = normalize_text(f"{request.artist} {request.track}")
@@ -151,8 +141,8 @@ async def smart_download(request: SmartDownloadRequest):
         
         if i % 3 == 0 or peer_count > 0: print(f"   Check {i+1}/22: {peer_count} peers.")
 
-        has_perfect_candidate = best_candidate and best_candidate['score'] > 50000
-        if peer_count > 15 and has_perfect_candidate: break
+        has_perfect = best_candidate and best_candidate['score'] > 50000
+        if peer_count > 15 and has_perfect: break
 
         for response in raw_results:
             if response.get('locked', False): continue
@@ -194,7 +184,9 @@ async def smart_download(request: SmartDownloadRequest):
                         }
     
     if not best_candidate:
-        raise HTTPException(404, "Nenhum ficheiro compatível encontrado (Fuzzy Match failed).")
+        raise HTTPException(404, "Nenhum ficheiro compatível encontrado.")
+
+    print(f"🏆 Vencedor: {best_candidate['filename']} (Score: {int(best_candidate['score'])})")
 
     try:
         local_path = AudioManager.find_local_file(best_candidate['filename'])
@@ -202,8 +194,7 @@ async def smart_download(request: SmartDownloadRequest):
             return {"status": "Already downloaded", "file": best_candidate['filename']}
         else:
             os.remove(local_path) 
-    except HTTPException: pass
-    except Exception: pass
+    except: pass
 
     return await download_slskd(best_candidate['username'], best_candidate['filename'], best_candidate['size'])
 
