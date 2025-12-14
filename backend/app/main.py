@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, Background
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import os
 import asyncio
 import httpx
@@ -11,6 +11,8 @@ import mutagen
 from urllib.parse import quote
 from unidecode import unidecode
 from thefuzz import fuzz
+import hashlib # <--- Novo Import
+import time # <--- Novo Import
 
 # Importação dos Serviços
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
@@ -19,10 +21,15 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.13.0")
+app = FastAPI(title="Orfeu API", version="1.13.1")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
+
+# --- Cache de Proxy de Imagem ---
+# Armazena mapeamento de hash curto para nome de arquivo longo
+SHORT_URL_MAP: Dict[str, dict] = {} # {hash: {filename: str, expires: float}}
+PROXY_EXPIRY_SECONDS = 3600 # 1 hora de cache (o Discord faz cache pesado de qualquer forma)
 
 # --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
@@ -91,82 +98,47 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                     return full_path
     return None
 
-# --- Lógica de Auto-Tagging (Background) ---
-async def process_library_auto_tagging():
-    print("🧹 Iniciando Auto-Tagging da Biblioteca...")
-    base_path = "/downloads"
-    count = 0
+def get_short_cover_url(filename: str) -> str:
+    # 1. Gera um hash curto do nome do arquivo
+    hash_object = hashlib.sha256(filename.encode())
+    short_hash = hash_object.hexdigest()[:12] # 12 caracteres de hash
     
-    for root, dirs, files in os.walk(base_path):
-        for file in files:
-            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
-                full_path = os.path.join(root, file)
-                try:
-                    # Lê tags atuais
-                    current_tags = AudioManager.get_audio_tags(full_path)
-                    
-                    # Se faltar Artista ou Título, é candidato a correção
-                    if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
-                        print(f"📝 Identificando: {file}...")
-                        
-                        # Tenta limpar o nome do arquivo para busca
-                        clean_name = os.path.splitext(file)[0].replace("_", " ").replace("-", " ")
-                        clean_name = normalize_text(clean_name)
-                        
-                        # 1. Busca no Tidal (Prioridade)
-                        results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
-                        
-                        # 2. Fallback YouTube Music
-                        if not results:
-                            results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
-                        
-                        if results:
-                            best_match = results[0]
-                            # Verifica similaridade para não etiquetar errado
-                            match_str = normalize_text(f"{best_match['artistName']} {best_match['trackName']}")
-                            similarity = fuzz.token_set_ratio(clean_name, match_str)
-                            
-                            if similarity > 80:
-                                print(f"   ✅ Match encontrado: {best_match['artistName']} - {best_match['trackName']} ({similarity}%)")
-                                
-                                # Baixa capa se houver
-                                cover_bytes = None
-                                if best_match.get('artworkUrl'):
-                                    try:
-                                        async with httpx.AsyncClient() as client:
-                                            resp = await client.get(best_match['artworkUrl'])
-                                            if resp.status_code == 200: cover_bytes = resp.content
-                                    except: pass
-                                
-                                # Aplica Tags no Arquivo Físico
-                                meta = {
-                                    "title": best_match['trackName'],
-                                    "artist": best_match['artistName'],
-                                    "album": best_match['collectionName']
-                                }
-                                await run_in_threadpool(AudioManager.embed_metadata, full_path, meta, cover_bytes)
-                                count += 1
-                            else:
-                                print(f"   ⚠️ Match fraco ({similarity}%). Ignorando.")
-                except Exception as e:
-                    print(f"❌ Erro ao processar {file}: {e}")
-                    
-    print(f"✨ Auto-Tagging concluído. {count} arquivos atualizados.")
+    # 2. Armazena o mapeamento e o tempo de expiração
+    SHORT_URL_MAP[short_hash] = {
+        "filename": filename,
+        "expires": time.time() + PROXY_EXPIRY_SECONDS
+    }
+    
+    # 3. Retorna a URL curta do proxy
+    # O Flutter DEVE substituir 'localhost:8000' por 'https://orfeu.ocnaibill.dev' em produção.
+    # Usando o prefixo da rota para ser curto.
+    return f"https://orfeu.ocnaibill.dev/cover/short/{short_hash}"
 
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.0"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.1"}
 
-# --- NOVA ROTA: ORGANIZAR BIBLIOTECA ---
-@app.post("/library/organize")
-async def organize_library(background_tasks: BackgroundTasks):
-    """
-    Dispara um processo em segundo plano para identificar músicas sem tags
-    na biblioteca e preencher metadados usando Tidal/YouTube.
-    """
-    background_tasks.add_task(process_library_auto_tagging)
-    return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
+# --- NOVA ROTA: PROXY DE IMAGEM CURTO ---
+@app.get("/cover/short/{hash_id}")
+async def proxy_cover_art(hash_id: str):
+    item = SHORT_URL_MAP.get(hash_id)
+    
+    if not item:
+        raise HTTPException(404, "Cover hash não encontrado ou expirado.")
+        
+    # Limpeza de cache se expirado
+    if time.time() > item["expires"]:
+        del SHORT_URL_MAP[hash_id]
+        raise HTTPException(404, "Cover hash expirado.")
+        
+    filename = item["filename"]
+    
+    # Redireciona para a rota /cover original que lida com extração/stream
+    # Usamos o 302 (Found) para garantir que o cliente (Discord) segue o redirect.
+    redirect_url = f"/cover?filename={quote(filename)}"
+    return RedirectResponse(redirect_url, status_code=302)
+
 
 @app.get("/search/catalog")
 async def search_catalog(
@@ -325,7 +297,12 @@ async def auto_download_best(request: AutoDownloadRequest):
 @app.get("/metadata")
 async def get_track_details(filename: str):
     full_path = AudioManager.find_local_file(filename)
-    return AudioManager.get_audio_metadata(full_path)
+    meta = AudioManager.get_audio_metadata(full_path)
+    
+    # ADICIONA A URL CURTA AO METADATA PARA O FLUTTER USAR NO DISCORD RPC
+    meta['coverProxyUrl'] = get_short_cover_url(filename)
+    
+    return meta
 
 @app.get("/lyrics")
 async def get_lyrics(filename: str):
@@ -373,7 +350,7 @@ async def stream_music(request: Request, filename: str, quality: str = Query("lo
 @app.get("/library")
 async def get_library():
     base_path = "/downloads"
-    library = []
+    library: List[Dict] = []
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
@@ -381,23 +358,23 @@ async def get_library():
                 try:
                     tags = AudioManager.get_audio_tags(full_path)
                     
-                    # Se tiver tags, usa. Se não, tenta inferir ou deixa 'Desconhecido'.
                     title = tags.get('title') or os.path.splitext(file)[0]
                     artist = tags.get('artist') or "Desconhecido"
                     album = tags.get('album')
                     
-                    # Tenta inferência simples de pasta se não tiver tags
                     if artist == "Desconhecido":
                         parts = full_path.replace("\\", "/").split("/")
                         if len(parts) >= 3:
-                            artist = parts[-3] # Assume pasta avó (Artist/Album/File)
+                            artist = parts[-3]
                             
                     library.append({
                         "filename": file, 
                         "display_name": title,
                         "artist": artist,
                         "album": album,
-                        "format": file.split('.')[-1].lower()
+                        "format": file.split('.')[-1].lower(),
+                        # ADICIONA O PROXY DA CAPA À LISTA DA BIBLIOTECA
+                        "coverProxyUrl": get_short_cover_url(file) 
                     })
                 except: pass
     return library
