@@ -3,15 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
 import 'player_screen.dart';
-import 'package:dio/dio.dart';
 
 // Provider para carregar os dados do álbum
 final albumDetailsProvider =
-    FutureProvider.family<Map<String, dynamic>, String>((ref, id) async {
+    FutureProvider.family.autoDispose<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(searchControllerProvider).getAlbumDetails(id);
 });
 
-class AlbumScreen extends ConsumerWidget {
+class AlbumScreen extends ConsumerStatefulWidget {
   final String collectionId;
   final String heroTag;
 
@@ -19,8 +18,48 @@ class AlbumScreen extends ConsumerWidget {
       {super.key, required this.collectionId, required this.heroTag});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final albumAsync = ref.watch(albumDetailsProvider(collectionId));
+  ConsumerState<AlbumScreen> createState() => _AlbumScreenState();
+}
+
+class _AlbumScreenState extends ConsumerState<AlbumScreen> {
+  // Mapa local para guardar filenames descobertos durante o uso da tela
+  // Chave: "Artist-Track", Valor: "path/to/file.flac"
+  final Map<String, String> _localTrackFilenames = {};
+
+  // Timer para atualizar o estado enquanto baixa
+  void _startRefreshLoop() async {
+    while (mounted) {
+      await Future.delayed(const Duration(seconds: 5));
+      if (!mounted) break;
+      // Atualiza os dados do servidor silenciosamente (sem resetar estado local)
+      ref.invalidate(albumDetailsProvider(widget.collectionId));
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _startRefreshLoop();
+  }
+
+  // Verifica se uma faixa está baixada (Server ou Local Recente)
+  bool _isTrackDownloaded(Map<String, dynamic> track) {
+    if (track['isDownloaded'] == true) return true;
+    
+    final id = "${track['artistName']}-${track['trackName']}";
+    final filename = _localTrackFilenames[id];
+    
+    if (filename != null) {
+      // Se temos um filename local, checamos o status global dele
+      final status = ref.read(downloadStatusProvider)[filename];
+      if (status != null && status['state'] == 'Completed') return true;
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final albumAsync = ref.watch(albumDetailsProvider(widget.collectionId));
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
@@ -28,14 +67,16 @@ class AlbumScreen extends ConsumerWidget {
         loading: () => const Center(
             child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
         error: (err, stack) => Center(
-            child: Text("Erro: $err",
-                style: const TextStyle(color: Colors.red))),
+            child:
+                Text("Erro: $err", style: const TextStyle(color: Colors.red))),
         data: (albumData) {
-          final tracks = albumData['tracks'] as List;
+          final tracks = List<Map<String, dynamic>>.from(albumData['tracks']);
 
-          // Verifica se todas as faixas já estão baixadas
-          final bool allDownloaded =
-              tracks.every((t) => t['isDownloaded'] == true);
+          // Calcula status geral combinando API + Estado Local
+          final int totalTracks = tracks.length;
+          final int downloadedCount = tracks.where(_isTrackDownloaded).length;
+          final bool allDownloaded = downloadedCount == totalTracks;
+          final bool isPartiallyDownloaded = downloadedCount > 0 && !allDownloaded;
 
           return CustomScrollView(
             slivers: [
@@ -44,6 +85,10 @@ class AlbumScreen extends ConsumerWidget {
                 expandedHeight: 300,
                 pinned: true,
                 backgroundColor: const Color(0xFF121212),
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  onPressed: () => Navigator.pop(context),
+                ),
                 flexibleSpace: FlexibleSpaceBar(
                   background: Container(
                     decoration: const BoxDecoration(
@@ -57,14 +102,13 @@ class AlbumScreen extends ConsumerWidget {
                       child: Padding(
                         padding: const EdgeInsets.only(top: 60.0),
                         child: Hero(
-                          tag: heroTag,
+                          tag: widget.heroTag,
                           child: Container(
                             height: 180,
                             width: 180,
                             decoration: const BoxDecoration(
                               boxShadow: [
-                                BoxShadow(
-                                    color: Colors.black54, blurRadius: 20)
+                                BoxShadow(color: Colors.black54, blurRadius: 20)
                               ],
                             ),
                             child: ClipRRect(
@@ -80,7 +124,7 @@ class AlbumScreen extends ConsumerWidget {
                 ),
               ),
 
-              // Informações e Ação Principal
+              // Informações e Botões
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -99,33 +143,58 @@ class AlbumScreen extends ConsumerWidget {
                         style: GoogleFonts.outfit(
                             fontSize: 16, color: Colors.white54),
                       ),
+                      
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          allDownloaded 
+                              ? "Álbum completo disponível" 
+                              : "$downloadedCount de $totalTracks faixas prontas",
+                          style: TextStyle(
+                              color: allDownloaded ? Colors.greenAccent : Colors.white38, 
+                              fontSize: 12),
+                        ),
+                      ),
+                      
                       const SizedBox(height: 20),
 
-                      // Botão Inteligente (Baixar ou Tocar)
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () => _handleMainAction(
-                              context, ref, tracks, allDownloaded),
-                          icon: Icon(
-                              allDownloaded
-                                  ? Icons.play_arrow_rounded
-                                  : Icons.download_rounded,
-                              color: Colors.black),
-                          label: Text(
-                              allDownloaded
-                                  ? "Tocar Álbum"
-                                  : "Baixar Álbum Completo",
-                              style: const TextStyle(
-                                  color: Colors.black,
-                                  fontWeight: FontWeight.bold)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFD4AF37),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(30)),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _handleMainAction(
+                                  context, ref, tracks, allDownloaded),
+                              icon: Icon(
+                                  allDownloaded
+                                      ? Icons.play_arrow_rounded
+                                      : Icons.download_rounded,
+                                  color: Colors.black),
+                              label: Text(
+                                  allDownloaded
+                                      ? "Tocar Álbum"
+                                      : (isPartiallyDownloaded ? "Baixar Restantes" : "Baixar Álbum"),
+                                  style: const TextStyle(
+                                      color: Colors.black,
+                                      fontWeight: FontWeight.bold)),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: allDownloaded ? Colors.greenAccent : const Color(0xFFD4AF37),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(30)),
+                              ),
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 12),
+                          IconButton.filled(
+                            onPressed: () => _handleShuffleAction(context, tracks),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white10,
+                              shape: const CircleBorder(),
+                            ),
+                            icon: const Icon(Icons.shuffle, color: Color(0xFFD4AF37)),
+                            tooltip: "Aleatório",
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -137,7 +206,25 @@ class AlbumScreen extends ConsumerWidget {
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {
                     final track = tracks[index];
-                    return _AlbumTrackItem(track: track);
+                    final itemId = "${track['artistName']}-${track['trackName']}";
+                    
+                    // Recupera filename se tivermos descoberto localmente agora
+                    final localFilename = _localTrackFilenames[itemId];
+                    
+                    return _AlbumTrackItem(
+                      track: track,
+                      localFilename: localFilename,
+                      onPlayTap: () => _playQueue(context, tracks, index),
+                      onDownloadStart: (filename) {
+                        // Callback: assim que inicia o download, salvamos o filename
+                        // para a UI atualizar para 'Loading/Check' instantaneamente
+                        if (mounted) {
+                          setState(() {
+                            _localTrackFilenames[itemId] = filename;
+                          });
+                        }
+                      },
+                    );
                   },
                   childCount: tracks.length,
                 ),
@@ -152,64 +239,155 @@ class AlbumScreen extends ConsumerWidget {
   }
 
   Future<void> _handleMainAction(BuildContext context, WidgetRef ref,
-      List tracks, bool allDownloaded) async {
-    // Se tudo baixado, toca a primeira música
+      List<Map<String, dynamic>> tracks, bool allDownloaded) async {
+    
     if (allDownloaded) {
       if (tracks.isNotEmpty) {
-        _playTrack(context, tracks[0]);
+        _playQueue(context, tracks, 0);
       }
       return;
     }
 
-    // Se não, inicia download em massa
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text("Adicionando álbum à fila..."),
+        content: Text("Processando downloads..."),
         duration: Duration(seconds: 2)));
 
     int started = 0;
     for (var track in tracks) {
-      if (track['isDownloaded'] == true) continue;
-
+      if (_isTrackDownloaded(track)) continue; // Pula os já baixados
+      
       try {
-        // Dispara o download sem esperar conclusão (fire and forget)
-        ref.read(searchControllerProvider).smartDownload(track);
-        started++;
-        // Pequeno delay para não sobrecarregar a API
-        await Future.delayed(const Duration(milliseconds: 200));
+         final filename = await ref.read(searchControllerProvider).smartDownload(track);
+         if (filename != null) {
+            started++;
+            final itemId = "${track['artistName']}-${track['trackName']}";
+            if (mounted) {
+              setState(() {
+                _localTrackFilenames[itemId] = filename;
+              });
+            }
+         }
+         // Pequeno delay para não engasgar o UI thread
+         await Future.delayed(const Duration(milliseconds: 50));
       } catch (e) {
-        print("Erro ao enfileirar ${track['trackName']}: $e");
+        print("Erro: $e");
       }
     }
 
-    if (context.mounted) {
+    if (context.mounted && started > 0) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("$started faixas adicionadas à fila!"),
+          content: Text("$started faixas atualizadas!"),
           backgroundColor: Colors.green));
     }
   }
 
-  void _playTrack(BuildContext context, Map<String, dynamic> track) {
-    final playerItem = {
-      'filename': track['filename'],
-      'display_name': track['trackName'],
-      'artist': track['artistName'],
-      'album': track['collectionName'],
-      'cover_url': track['artworkUrl']
-    };
+  void _handleShuffleAction(BuildContext context, List<Map<String, dynamic>> tracks) {
+      final playable = _getPlayableTracks(tracks);
+      
+      if (playable.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Baixe as músicas primeiro."),
+            backgroundColor: Colors.orange));
+        return;
+      }
+
+      Navigator.push(context,
+        MaterialPageRoute(builder: (_) => PlayerScreen(
+          queue: playable, 
+          initialIndex: 0,
+          shuffle: true,
+        )));
+  }
+
+  void _playQueue(BuildContext context, List<Map<String, dynamic>> queue, int initialIndex) {
+    final playableQueue = _getPlayableTracks(queue);
+    
+    if (playableQueue.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Nenhuma música disponível."), 
+            backgroundColor: Colors.orange));
+        return;
+    }
+    
+    // Tenta achar a música clicada na lista de 'tocáveis'
+    final targetTrack = queue[initialIndex];
+    // A comparação precisa ser robusta, usamos nome e artista
+    int newIndex = playableQueue.indexWhere((t) => 
+        t['trackName'] == targetTrack['trackName'] && 
+        t['artistName'] == targetTrack['artistName']);
+    
+    if (newIndex == -1) {
+        newIndex = 0; // Se a clicada não tá baixada, toca a primeira que tiver
+    }
+
     Navigator.push(context,
-        MaterialPageRoute(builder: (_) => PlayerScreen(item: playerItem)));
+        MaterialPageRoute(builder: (_) => PlayerScreen(
+          queue: playableQueue, 
+          initialIndex: newIndex,
+          shuffle: false,
+        )));
+  }
+
+  // Helper para fundir dados da API com dados locais (filenames) para o Player
+  List<Map<String, dynamic>> _getPlayableTracks(List<Map<String, dynamic>> rawTracks) {
+    List<Map<String, dynamic>> playable = [];
+    
+    for (var t in rawTracks) {
+      String? filename = t['filename'];
+      
+      // Se não veio da API, tenta do cache local
+      if (filename == null) {
+         final id = "${t['artistName']}-${t['trackName']}";
+         filename = _localTrackFilenames[id];
+      }
+      
+      // Só adiciona se tiver filename válido E estiver baixado (API ou Local Status)
+      if (filename != null) {
+         final status = ref.read(downloadStatusProvider)[filename];
+         final isLocalCompleted = status != null && status['state'] == 'Completed';
+         
+         if (t['isDownloaded'] == true || isLocalCompleted) {
+            // Cria cópia com o filename garantido
+            final trackWithFile = Map<String, dynamic>.from(t);
+            trackWithFile['filename'] = filename;
+            playable.add(trackWithFile);
+         }
+      }
+    }
+    return playable;
   }
 }
 
 class _AlbumTrackItem extends ConsumerWidget {
   final Map<String, dynamic> track;
-  const _AlbumTrackItem({super.key, required this.track});
+  final String? localFilename; // Filename vindo do estado local do pai
+  final VoidCallback onPlayTap;
+  final Function(String) onDownloadStart;
+
+  const _AlbumTrackItem({
+    super.key, 
+    required this.track, 
+    this.localFilename,
+    required this.onPlayTap,
+    required this.onDownloadStart
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final itemId = "${track['artistName']}-${track['trackName']}";
     final isNegotiating = ref.watch(processingItemsProvider).contains(itemId);
-    final bool isDownloaded = track['isDownloaded'] == true;
+    
+    // Verifica status global
+    final downloadState = localFilename != null 
+        ? ref.watch(downloadStatusProvider)[localFilename] 
+        : null;
+
+    final bool isCompleted = 
+        track['isDownloaded'] == true || 
+        (downloadState != null && downloadState['state'] == 'Completed');
+    
+    final bool isDownloading = 
+        (downloadState != null && downloadState['state'] != 'Completed') || isNegotiating;
 
     return ListTile(
       leading: Text(
@@ -218,25 +396,46 @@ class _AlbumTrackItem extends ConsumerWidget {
       ),
       title: Text(
         track['trackName'],
+        maxLines: 1, overflow: TextOverflow.ellipsis,
         style: TextStyle(
-            color: isDownloaded ? const Color(0xFFD4AF37) : Colors.white,
-            fontWeight: isDownloaded ? FontWeight.bold : FontWeight.normal),
+            color: isCompleted ? const Color(0xFFD4AF37) : Colors.white,
+            fontWeight: isCompleted ? FontWeight.bold : FontWeight.normal),
       ),
       subtitle: Text(
         _formatDuration(track['durationMs'] ?? 0),
         style: const TextStyle(color: Colors.white38, fontSize: 12),
       ),
-      trailing: isNegotiating
-          ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Color(0xFFD4AF37)))
-          : isDownloaded
-              ? const Icon(Icons.play_circle_outline, color: Color(0xFFD4AF37))
-              : const Icon(Icons.add_circle_outline, color: Colors.white24),
-      onTap: () => _handlePlayOrDownload(context, ref),
+      trailing: _buildTrailing(isCompleted, isDownloading, downloadState),
+      onTap: () {
+        if (isCompleted) {
+            onPlayTap();
+        } else if (!isDownloading) {
+            _handleSingleDownload(context, ref);
+        }
+      },
     );
+  }
+
+  Widget _buildTrailing(bool isCompleted, bool isDownloading, Map? status) {
+    if (isCompleted) {
+      return const Icon(Icons.play_circle_outline, color: Color(0xFFD4AF37));
+    }
+    if (isDownloading) {
+      double? progress;
+      if (status != null && status['progress'] != null) {
+        progress = (status['progress'] as num).toDouble() / 100.0;
+      }
+      return SizedBox(
+        width: 20, height: 20,
+        child: CircularProgressIndicator(
+          value: progress,
+          strokeWidth: 2, 
+          color: const Color(0xFFD4AF37),
+          backgroundColor: Colors.white10,
+        )
+      );
+    }
+    return const Icon(Icons.add_circle_outline, color: Colors.white24);
   }
 
   String _formatDuration(int ms) {
@@ -244,60 +443,15 @@ class _AlbumTrackItem extends ConsumerWidget {
     return "${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}";
   }
 
-  Future<void> _handlePlayOrDownload(
-      BuildContext context, WidgetRef ref) async {
-    if (track['isDownloaded'] == true && track['filename'] != null) {
-      _openPlayer(context, track['filename']);
-      return;
-    }
-
+  void _handleSingleDownload(BuildContext context, WidgetRef ref) async {
     try {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Buscando melhor versão..."),
-          duration: Duration(seconds: 1)));
-
-      final filename =
-          await ref.read(searchControllerProvider).smartDownload(track);
-
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Buscando..."), duration: Duration(seconds: 1)));
+      final filename = await ref.read(searchControllerProvider).smartDownload(track);
       if (filename != null) {
-        _waitForDownloadAndPlay(context, ref, filename);
+        onDownloadStart(filename); // Avisa o pai para salvar o filename
       }
     } catch (e) {
-      if (context.mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
     }
-  }
-
-  void _waitForDownloadAndPlay(
-      BuildContext context, WidgetRef ref, String filename) async {
-    final dio = ref.read(dioProvider);
-    bool isReady = false;
-    int attempts = 0;
-    while (!isReady && attempts < 600) {
-      if (!context.mounted) return;
-      await Future.delayed(const Duration(seconds: 1));
-      attempts++;
-      try {
-        final encodedName = Uri.encodeComponent(filename);
-        final resp = await dio.get('/download/status?filename=$encodedName');
-        if (resp.data['state'] == 'Completed') {
-          isReady = true;
-          _openPlayer(context, filename);
-        }
-      } catch (e) {}
-    }
-  }
-
-  void _openPlayer(BuildContext context, String filename) {
-    final playerItem = {
-      'filename': filename,
-      'display_name': track['trackName'],
-      'artist': track['artistName'],
-      'album': track['collectionName'],
-      'cover_url': track['artworkUrl']
-    };
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => PlayerScreen(item: playerItem)));
   }
 }
