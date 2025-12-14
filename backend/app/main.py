@@ -17,7 +17,7 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.6.4")
+app = FastAPI(title="Orfeu API", version="1.6.5")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -34,39 +34,28 @@ class AutoDownloadRequest(BaseModel):
 class SmartDownloadRequest(BaseModel):
     artist: str
     track: str
-    album: Optional[str] = None
+    album: Optional[str] = None # Campo crucial para o novo score
 
 # --- Helpers ---
 def normalize_text(text: str) -> str:
-    """
-    Limpa o texto para comparação Fuzzy.
-    """
     if not text: return ""
     text = text.lower()
-    # Substituições manuais para artistas estilizados
     text = text.replace("$", "s").replace("&", "and")
-    
     text = unidecode(text)
     for char in ['_', '-', '.', '[', ']', '(', ')', '+', '\\', '/']:
         text = text.replace(char, ' ')
     return text.strip()
 
 def find_local_match(artist: str, track: str) -> Optional[str]:
-    """
-    Busca local usando Fuzzy Matching.
-    """
     base_path = "/downloads"
     target_str = normalize_text(f"{artist} {track}")
-    
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
-
-                # Compara com o caminho completo para pegar pasta do artista
-                clean_path = normalize_text(file) # Pode ajustar para full path se necessario
-                ratio = fuzz.partial_token_sort_ratio(target_str, clean_path)
+                clean_file = normalize_text(file)
+                ratio = fuzz.partial_token_sort_ratio(target_str, clean_file)
                 if ratio > 90:
                     return full_path
     return None
@@ -74,7 +63,7 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.4"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.5"}
 
 # --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
@@ -85,15 +74,10 @@ async def search_catalog(
     type: str = Query("song", enum=["song", "album"])
 ):
     print(f"🔎 Buscando no catálogo YTMusic: '{query}' [Type: {type}]")
-    
     raw_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
-    
     start_index = offset
     end_index = offset + limit
-    
-    if start_index >= len(raw_results):
-        return []
-        
+    if start_index >= len(raw_results): return []
     paged_results = raw_results[start_index:end_index]
     
     for item in paged_results:
@@ -104,7 +88,6 @@ async def search_catalog(
         else:
             item['isDownloaded'] = False
             item['filename'] = None
-
     return paged_results
 
 # --- ÁLBUM (YOUTUBE MUSIC) ---
@@ -113,12 +96,10 @@ async def get_album_details(collection_id: str):
     print(f"💿 Buscando álbum YTMusic ID: {collection_id}")
     try:
         album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
-        
         for track in album_data['tracks']:
             local_file = find_local_match(track['artistName'], track['trackName'])
             track['isDownloaded'] = local_file is not None
             track['filename'] = local_file
-            
         return album_data
     except Exception as e:
         print(f"❌ Erro ao buscar álbum: {e}")
@@ -141,7 +122,10 @@ async def smart_download(request: SmartDownloadRequest):
     print("⏳ Aguardando resultados da rede P2P...")
     best_candidate = None
     highest_score = float('-inf')
+    
     target_clean = normalize_text(f"{request.artist} {request.track}")
+    # Prepara o alvo do álbum (se houver) para comparação
+    target_album_clean = normalize_text(request.album) if request.album else None
     
     last_peer_count = -1
     stable_checks = 0
@@ -155,17 +139,15 @@ async def smart_download(request: SmartDownloadRequest):
             stable_checks += 1
         else:
             stable_checks = 0
-        
         last_peer_count = peer_count
         
-        print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
+        if i % 3 == 0: print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
         
         candidates_debug = []
         best_flac_debug = None 
 
         for response in raw_results:
             if response.get('locked', False): continue
-            
             slots_free = response.get('slotsFree', False)
             queue_length = response.get('queueLength', 0)
             upload_speed = response.get('uploadSpeed', 0)
@@ -174,35 +156,35 @@ async def smart_download(request: SmartDownloadRequest):
                 for file in response['files']:
                     filename = file['filename']
                     
-                    # --- FILTRO INTELIGENTE (FULL PATH + RELAXADO) ---
-                    # Normaliza o caminho COMPLETO agora, não só o arquivo
-                    # Isso permite que "Artist/Album/01 Track.flac" dê match com "Artist Track"
+                    # 1. Filtro de Nome (Música)
                     full_path_clean = normalize_text(filename)
-                    
                     similarity = fuzz.partial_token_sort_ratio(target_clean, full_path_clean)
                     
-                    # Filtro relaxado para 75% (bbno$ gigolo vs 01-gigolo.flac ainda pode falhar se não tiver pasta, 
-                    # mas se tiver pasta do artista, vai passar)
-                    if similarity < 75: 
-                        if i % 8 == 0 and filename.endswith(".flac"): # Debug FLACs rejeitados
-                             # print(f"   [REJEITADO FLAC] Sim: {similarity}% | Path: {filename}")
-                             pass
-                        continue
-
+                    if similarity < 75: continue
+                    
                     if '.' not in filename: continue
                     ext = filename.split('.')[-1].lower()
                     if ext not in ['flac', 'mp3', 'm4a']: continue
 
                     # PONTUAÇÃO
                     score = 0
+                    
+                    # Disponibilidade
                     if slots_free: score += 100_000 
                     else: score -= (queue_length * 1000)
 
+                    # Formato
                     if ext == 'flac': score += 5000
                     elif ext == 'm4a': score += 2000
                     elif ext == 'mp3': score += 1000
                     
-                    score += similarity * 10 
+                    # NOVO: Bônus de Álbum (Contexto)
+                    # Se o nome do álbum solicitado aparecer no caminho do arquivo (pasta), dá um boost.
+                    # Isso prioriza "Typical of Me" sobre "Live at Symphony".
+                    if target_album_clean and target_album_clean in full_path_clean:
+                        score += 5000 # Boost significativo, equivalente a ser FLAC
+                    
+                    # Velocidade
                     score += (upload_speed / 1_000_000)
 
                     candidate_obj = {
@@ -225,19 +207,14 @@ async def smart_download(request: SmartDownloadRequest):
                         if best_flac_debug is None or score > best_flac_debug['score']:
                             best_flac_debug = candidate_obj
 
-        # --- Debug ---
+        # Debug
         if candidates_debug and i % 5 == 0:
             candidates_debug.sort(key=lambda x: x['score'], reverse=True)
-            print("   --- Top Candidatos Atuais ---")
+            print("   --- Top Candidatos ---")
             for c in candidates_debug[:3]:
                 print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Sim: {c['sim']}% | File: {c['filename'][:30]}...")
-            
-            if best_flac_debug:
-                 c = best_flac_debug
-                 print(f"   --- Melhor FLAC ---")
-                 print(f"   [{int(c['score'])}] FLAC | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:30]}...")
 
-        # --- Critérios de Saída ---
+        # Critérios de Saída
         if stable_checks >= 4 and peer_count > 0 and best_candidate:
              print("⚡ Resultados estabilizados. Encerrando busca.")
              break
