@@ -17,7 +17,7 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.6.0")
+app = FastAPI(title="Orfeu API", version="1.6.1")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -63,7 +63,7 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.0"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.1"}
 
 # --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
@@ -134,18 +134,31 @@ async def smart_download(request: SmartDownloadRequest):
     highest_score = float('-inf')
     target_clean = normalize_text(f"{request.artist} {request.track}")
     
+    # Controle de estabilidade
+    last_peer_count = -1
+    stable_checks = 0
+    
     for i in range(22):
         await asyncio.sleep(2.0) 
         raw_results = await get_search_results(search_id)
         peer_count = len(raw_results)
         
-        if i % 3 == 0 or peer_count > 0: print(f"   Check {i+1}/22: {peer_count} peers.")
-
-        has_perfect = best_candidate and best_candidate['score'] > 50000
-        if peer_count > 15 and has_perfect: break
+        # --- 1. Lógica de Estabilidade ---
+        if peer_count > 0 and peer_count == last_peer_count:
+            stable_checks += 1
+        else:
+            stable_checks = 0 # Reseta se mudou o número de peers
+        
+        last_peer_count = peer_count
+        
+        print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
+        
+        # --- 2. Coleta de Candidatos para Debug ---
+        candidates_debug = []
 
         for response in raw_results:
             if response.get('locked', False): continue
+            
             slots_free = response.get('slotsFree', False)
             queue_length = response.get('queueLength', 0)
             upload_speed = response.get('uploadSpeed', 0)
@@ -153,16 +166,21 @@ async def smart_download(request: SmartDownloadRequest):
             if 'files' in response:
                 for file in response['files']:
                     filename = file['filename']
+                    
                     file_basename = os.path.basename(filename.replace("\\", "/"))
                     remote_clean = normalize_text(file_basename)
                     
                     similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
-                    if similarity < 85: continue
+                    if similarity < 85: 
+                        # Debug: Logar os quase-matches pode ajudar a ver se o filtro tá muito rígido
+                        # print(f"Ignorado (Low Sim {similarity}%): {file_basename}")
+                        continue
 
                     if '.' not in filename: continue
                     ext = filename.split('.')[-1].lower()
                     if ext not in ['flac', 'mp3', 'm4a']: continue
 
+                    # PONTUAÇÃO
                     score = 0
                     if slots_free: score += 100_000 
                     else: score -= (queue_length * 1000)
@@ -174,14 +192,43 @@ async def smart_download(request: SmartDownloadRequest):
                     score += similarity * 10 
                     score += (upload_speed / 1_000_000)
 
+                    # Adiciona à lista de debug
+                    candidate_obj = {
+                        'username': response.get('username'),
+                        'filename': filename,
+                        'size': file['size'],
+                        'score': score,
+                        # Dados extras para log
+                        'ext': ext,
+                        'slots': slots_free,
+                        'queue': queue_length
+                    }
+                    candidates_debug.append(candidate_obj)
+
                     if score > highest_score:
                         highest_score = score
-                        best_candidate = {
-                            'username': response.get('username'),
-                            'filename': filename,
-                            'size': file['size'],
-                            'score': score
-                        }
+                        best_candidate = candidate_obj
+
+        # --- 3. Debug Top 3 ---
+        if candidates_debug:
+            candidates_debug.sort(key=lambda x: x['score'], reverse=True)
+            if i % 5 == 0: # Loga de vez em quando para não spammar
+                print("   --- Top Candidatos Atuais ---")
+                for c in candidates_debug[:3]:
+                    print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Queue: {c['queue']} | File: {c['filename'][:40]}...")
+
+        # --- 4. Critérios de Saída ---
+        
+        # A. Estabilidade: Se o número de resultados parou de mudar por 3 checks (~6s) e temos resultados
+        if stable_checks >= 3 and peer_count > 0 and best_candidate:
+             print("⚡ Resultados estabilizados. Encerrando busca.")
+             break
+
+        # B. Perfeito: Já achamos o arquivo dos sonhos
+        has_perfect = best_candidate and best_candidate['score'] > 50000
+        if peer_count > 15 and has_perfect: 
+            print("⚡ Candidato perfeito encontrado. Encerrando.")
+            break
     
     if not best_candidate:
         raise HTTPException(404, "Nenhum ficheiro compatível encontrado.")
