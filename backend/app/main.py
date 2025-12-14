@@ -19,12 +19,12 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.9.0")
+app = FastAPI(title="Orfeu API", version="1.10.0")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
-# --- Modelos de Dados ---
+# --- Modelos ---
 class DownloadRequest(BaseModel):
     username: str
     filename: str
@@ -41,16 +41,10 @@ class SmartDownloadRequest(BaseModel):
     artworkUrl: Optional[str] = None
 
 # --- Helpers ---
-
 async def download_file_background(url: str, dest_path: str, metadata: dict, cover_url: str = None):
-    """
-    Baixa arquivo HTTP em background, busca capa (se não fornecida) e aplica tags.
-    """
     temp_path = dest_path + ".tmp"
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        
-        # 1. Download do Áudio
         async with httpx.AsyncClient() as client:
             async with client.stream('GET', url) as response:
                 response.raise_for_status()
@@ -58,11 +52,8 @@ async def download_file_background(url: str, dest_path: str, metadata: dict, cov
                     async for chunk in response.aiter_bytes():
                         f.write(chunk)
         
-        # 2. Download da Capa
         cover_bytes = None
         target_cover = cover_url
-        
-        # Se não veio URL do frontend, tenta buscar online
         if not target_cover:
              target_cover = await LyricsProvider.get_online_cover(dest_path)
 
@@ -70,18 +61,12 @@ async def download_file_background(url: str, dest_path: str, metadata: dict, cov
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(target_cover, timeout=10.0)
-                    if resp.status_code == 200: 
-                        cover_bytes = resp.content
-            except Exception as e:
-                print(f"⚠️ Falha ao baixar capa para tagging: {e}")
+                    if resp.status_code == 200: cover_bytes = resp.content
+            except: pass
 
-        # 3. Finalização
         os.rename(temp_path, dest_path)
-        
-        # Aplica tags e capa (executa em thread separada para não bloquear)
         if metadata: 
             await run_in_threadpool(AudioManager.embed_metadata, dest_path, metadata, cover_bytes)
-            
         print(f"✅ Download HTTP concluído e tagueado: {dest_path}")
         
     except Exception as e:
@@ -90,73 +75,54 @@ async def download_file_background(url: str, dest_path: str, metadata: dict, cov
 
 def normalize_text(text: str) -> str:
     if not text: return ""
-    # Substituições para melhorar match de artistas estilizados
     text = text.lower().replace("$", "s").replace("&", "and")
     return unidecode(text).strip()
 
 def find_local_match(artist: str, track: str) -> Optional[str]:
-    """
-    Busca arquivo local usando Fuzzy Matching no nome do arquivo.
-    """
     base_path = "/downloads"
     target_str = normalize_text(f"{artist} {track}")
-    
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
-                # Ignora arquivos vazios (erros de download anteriores)
                 if os.path.getsize(full_path) == 0: continue
-                
                 clean_file = normalize_text(file)
-                # Fuzzy match parcial (ignora ordem das palavras)
                 if fuzz.partial_token_sort_ratio(target_str, clean_file) > 90: 
                     return full_path
     return None
 
-# --- Rotas de Sistema ---
+# --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.9.0"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.10.0"}
 
-# --- BUSCA HÍBRIDA (TIDAL -> YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
 async def search_catalog(
-    query: str, 
-    limit: int = 20, 
-    offset: int = 0,
-    type: str = Query("song", enum=["song", "album"])
+    query: str, limit: int = 20, offset: int = 0, type: str = Query("song", enum=["song", "album"])
 ):
     print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
     results = []
 
-    # 1. Tenta TIDAL Primeiro (Prioridade para qualidade)
-    try:
-        print(f"   Tentando Tidal ({type})...")
-        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
-        if tidal_results:
-            results = tidal_results
-            print(f"   ✅ Tidal retornou {len(results)} resultados.")
-    except Exception as e:
-        print(f"   ⚠️ Tidal falhou: {e}")
+    # 1. Tenta TIDAL
+    if type == "song":
+        try:
+            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
+            if tidal_results: results = tidal_results
+        except Exception as e: print(f"⚠️ Tidal falhou: {e}")
 
-    # 2. Fallback para YouTube Music (Se Tidal falhar ou retornar vazio)
+    # 2. Fallback YTMusic
     if not results:
         print("   Tentando YouTube Music (Fallback)...")
         yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
         results = yt_results
 
-    # Lógica de paginação manual (se vier do YTMusic que retorna blocos grandes)
     final_page = results
     if len(results) > limit:
          start = offset
          end = offset + limit
-         if start < len(results):
-             final_page = results[start:end]
-         else:
-             final_page = []
+         if start < len(results): final_page = results[start:end]
+         else: final_page = []
 
-    # Verifica se já temos o arquivo localmente
     for item in final_page:
         if item.get('type') == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
@@ -168,58 +134,64 @@ async def search_catalog(
 
     return final_page
 
-# --- ÁLBUM (Roteamneto Híbrido) ---
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
-    print(f"💿 Buscando detalhes do álbum: {collection_id}")
-    
-    album_data = None
-    
-    # 1. Detecção de Provedor
-    # Tidal usa IDs puramente numéricos
-    if collection_id.isdigit():
-        print("   -> Detectado ID Tidal")
-        try:
-            album_data = await run_in_threadpool(TidalProvider.get_album_details, collection_id)
-            print(f"   ✅ Álbum Tidal carregado: {len(album_data['tracks'])} faixas.")
-        except Exception as e:
-            print(f"   ⚠️ Falha no Tidal: {e}")
-            # Se falhar no Tidal, não temos fallback fácil pois o ID é específico do Tidal
-            raise HTTPException(404, "Álbum não encontrado no Tidal.")
-    else:
-        # YouTube Music usa IDs alfanuméricos
-        print("   -> Detectado ID YouTube Music")
-        try:
-            album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
-        except Exception as e:
-            print(f"   ⚠️ Falha no YTMusic: {e}")
-            raise HTTPException(500, str(e))
-
-    # 2. Check Local (Para ambas as fontes)
-    if album_data:
+    print(f"💿 Buscando álbum ID: {collection_id}")
+    try:
+        album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
         for track in album_data['tracks']:
             local_file = find_local_match(track['artistName'], track['trackName'])
             track['isDownloaded'] = local_file is not None
             track['filename'] = local_file
-    
-    return album_data
+        return album_data
+    except Exception as e:
+        print(f"❌ Erro ao buscar álbum: {e}")
+        raise HTTPException(500, str(e))
 
-
-# --- SMART DOWNLOAD (TIDAL DIRECT -> SOULSEEK) ---
+# --- SMART DOWNLOAD (CROSS-REFERENCE TIDAL) ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest, background_tasks: BackgroundTasks):
     print(f"🤖 Smart Download: {request.artist} - {request.track}")
     
-    # 0. Check Local
     local_match = find_local_match(request.artist, request.track)
     if local_match:
         print(f"✅ Cache Local: {local_match}")
         return {"status": "Already downloaded", "file": local_match, "display_name": request.track}
 
-    # 1. TENTATIVA TIDAL DIRECT (Prioridade Máxima - HTTP)
-    if request.tidalId:
-        print(f"🌊 Tentando download direto do Tidal (ID: {request.tidalId})...")
-        download_info = await run_in_threadpool(TidalProvider.get_download_url, request.tidalId)
+    # Lógica de Resgate de ID do Tidal
+    target_tidal_id = request.tidalId
+    
+    # Se não veio ID (veio do YTMusic), tentamos achar no Tidal agora
+    if not target_tidal_id:
+        print("🔄 Origem sem ID Tidal. Tentando Cross-Reference no Tidal...")
+        try:
+            query = f"{request.artist} {request.track}"
+            # Busca rápida no Tidal (1 resultado)
+            cross_results = await run_in_threadpool(TidalProvider.search_catalog, query, 5, "song")
+            
+            if cross_results:
+                top_hit = cross_results[0]
+                
+                # Verifica se é a música certa usando Fuzzy
+                req_clean = normalize_text(f"{request.artist} {request.track}")
+                hit_clean = normalize_text(f"{top_hit['artistName']} {top_hit['trackName']}")
+                similarity = fuzz.token_sort_ratio(req_clean, hit_clean)
+                
+                if similarity > 85:
+                    target_tidal_id = top_hit['tidalId']
+                    # Atualiza a capa se a do Tidal for melhor
+                    if not request.artworkUrl and top_hit.get('artworkUrl'):
+                        request.artworkUrl = top_hit['artworkUrl']
+                    print(f"✅ Match encontrado no Tidal! ID: {target_tidal_id} (Sim: {similarity}%)")
+                else:
+                    print(f"⚠️ Match Tidal rejeitado (Sim: {similarity}%): {top_hit['trackName']}")
+        except Exception as e:
+            print(f"⚠️ Falha no Cross-Reference Tidal: {e}")
+
+    # 1. TENTATIVA TIDAL DIRECT (Se tivermos ID, original ou resgatado)
+    if target_tidal_id:
+        print(f"🌊 Tentando download direto do Tidal (ID: {target_tidal_id})...")
+        download_info = await run_in_threadpool(TidalProvider.get_download_url, target_tidal_id)
         
         if download_info and download_info.get('url'):
             safe_artist = normalize_text(request.artist).replace(" ", "_")
@@ -231,30 +203,13 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
             
             print(f"🚀 Iniciando download HTTP para: {full_path}")
             
-            meta = {
-                "title": request.track, 
-                "artist": request.artist, 
-                "album": request.album or "Single"
-            }
-            
-            # Dispara download e tagging em background
-            background_tasks.add_task(
-                download_file_background, 
-                download_info['url'], 
-                full_path, 
-                meta, 
-                request.artworkUrl
-            )
-            
-            return {
-                "status": "Download started",
-                "file": relative_path,
-                "source": "Tidal"
-            }
+            meta = {"title": request.track, "artist": request.artist, "album": request.album or "Single"}
+            background_tasks.add_task(download_file_background, download_info['url'], full_path, meta, request.artworkUrl)
+            return {"status": "Download started", "file": relative_path, "source": "Tidal"}
         else:
-            print("⚠️ Falha ao obter link Tidal ou Track não disponível. Caindo para Soulseek...")
+            print("⚠️ Falha ao obter link Tidal. Caindo para Soulseek...")
 
-    # 2. TENTATIVA SOULSEEK (Fallback - P2P)
+    # 2. TENTATIVA SOULSEEK (Fallback)
     search_term = unidecode(f"{request.artist} {request.track}")
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
@@ -264,7 +219,6 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
     highest_score = float('-inf')
     target_clean = normalize_text(f"{request.artist} {request.track}")
     
-    # Polling Soulseek
     for i in range(22):
         await asyncio.sleep(2.0) 
         raw_results = await get_search_results(search_id)
@@ -272,7 +226,6 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
         
         if i % 3 == 0: print(f"   Check {i+1}/22: {peer_count} peers.")
 
-        # Saída Antecipada (Se achar arquivo perfeito)
         has_perfect = best_candidate and best_candidate['score'] > 50000
         if peer_count > 15 and has_perfect: break
 
@@ -286,11 +239,9 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
                 for file in response['files']:
                     fname = file['filename']
                     fclean = normalize_text(os.path.basename(fname.replace("\\", "/")))
-                    
-                    # Filtro Fuzzy (75% similaridade mínima)
                     sim = fuzz.partial_token_sort_ratio(target_clean, fclean)
-                    if sim < 75: continue
                     
+                    if sim < 75: continue
                     if '.' not in fname: continue
                     ext = fname.split('.')[-1].lower()
                     if ext not in ['flac', 'mp3', 'm4a']: continue
@@ -298,28 +249,18 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
                     score = 0
                     if slots: score += 100_000 
                     else: score -= (queue * 1000)
-                    
                     if ext == 'flac': score += 5000
                     elif ext == 'm4a': score += 2000
                     elif ext == 'mp3': score += 1000
-                    
                     score += (speed / 1_000_000)
 
                     if score > highest_score:
                         highest_score = score
-                        best_candidate = {
-                            'username': response.get('username'),
-                            'filename': fname,
-                            'size': file['size'],
-                            'score': score
-                        }
+                        best_candidate = {'username': response.get('username'), 'filename': fname, 'size': file['size'], 'score': score}
     
-    if not best_candidate:
-        raise HTTPException(404, "Nenhum ficheiro encontrado.")
-
+    if not best_candidate: raise HTTPException(404, "Nenhum ficheiro encontrado.")
     print(f"🏆 Vencedor Soulseek: {best_candidate['filename']}")
     
-    # Verifica novamente se o vencedor P2P já existe localmente
     try:
         if AudioManager.find_local_file(best_candidate['filename']):
              return {"status": "Already downloaded", "file": best_candidate['filename']}
@@ -327,7 +268,6 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
 
     return await download_slskd(best_candidate['username'], best_candidate['filename'], best_candidate['size'])
 
-# --- Rotas Legadas (Mantidas para compatibilidade) ---
 @app.post("/search/{query}")
 async def start_search_legacy(query: str): return await search_slskd(query)
 
@@ -343,36 +283,20 @@ async def queue_download(request: DownloadRequest):
     except HTTPException: pass
     return await download_slskd(request.username, request.filename, request.size)
 
-# --- STATUS DO DOWNLOAD ---
 @app.get("/download/status")
 async def check_download_status(filename: str):
-    # 1. Verifica Disco Local
     try:
         path = AudioManager.find_local_file(filename)
-        size = os.path.getsize(path)
-        
-        # Se for Tidal (HTTP), consideramos completo se tiver tamanho razoável (>1MB)
-        # (Idealmente teríamos um controle de estado mais robusto, mas isso serve pro MVP)
-        if "Tidal" in path and size > 1000000:
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Tidal Download"}
-             
-        if size > 0 and "Tidal" not in path: 
-             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
-    except HTTPException:
-        pass
-
-    # 2. Verifica Slskd
+        if os.path.getsize(path) > 0: return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
+    except HTTPException: pass
     status = await get_transfer_status(filename)
     if status: return status
-    
-    # 3. Fallback (Pode estar baixando HTTP e ainda não completou)
-    return {"state": "Unknown", "progress": 0.0, "message": "Procurando..."}
+    return {"state": "Unknown", "progress": 0.0, "message": "Iniciando"}
 
 @app.post("/download/auto")
 async def auto_download_best(request: AutoDownloadRequest):
     return await smart_download(SmartDownloadRequest(artist="", track="")) 
 
-# --- ROTAS DE MÍDIA ---
 @app.get("/metadata")
 async def get_track_details(filename: str):
     full_path = AudioManager.find_local_file(filename)
@@ -389,12 +313,9 @@ async def get_lyrics(filename: str):
 async def get_cover_art(filename: str):
     full_path = AudioManager.find_local_file(filename)
     try:
-        # Tenta extrair do arquivo
         if AudioManager.extract_cover_stream(full_path): 
              return StreamingResponse(AudioManager.extract_cover_stream(full_path), media_type="image/jpeg")
     except: pass
-    
-    # Tenta online
     url = await LyricsProvider.get_online_cover(full_path)
     if url: return RedirectResponse(url)
     raise HTTPException(404, "Capa não encontrada")
@@ -407,7 +328,6 @@ async def stream_music(request: Request, filename: str, quality: str = Query("lo
     
     file_size = os.path.getsize(full_path)
     range_header = request.headers.get("range")
-    
     if range_header:
         byte_range = range_header.replace("bytes=", "").split("-")
         start = int(byte_range[0])
