@@ -17,7 +17,7 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.6.3")
+app = FastAPI(title="Orfeu API", version="1.6.4")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -42,8 +42,12 @@ def normalize_text(text: str) -> str:
     Limpa o texto para comparação Fuzzy.
     """
     if not text: return ""
-    text = unidecode(text).lower()
-    for char in ['_', '-', '.', '[', ']', '(', ')', '+']:
+    text = text.lower()
+    # Substituições manuais para artistas estilizados
+    text = text.replace("$", "s").replace("&", "and")
+    
+    text = unidecode(text)
+    for char in ['_', '-', '.', '[', ']', '(', ')', '+', '\\', '/']:
         text = text.replace(char, ' ')
     return text.strip()
 
@@ -60,8 +64,9 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
 
-                clean_file = normalize_text(file)
-                ratio = fuzz.partial_token_sort_ratio(target_str, clean_file)
+                # Compara com o caminho completo para pegar pasta do artista
+                clean_path = normalize_text(file) # Pode ajustar para full path se necessario
+                ratio = fuzz.partial_token_sort_ratio(target_str, clean_path)
                 if ratio > 90:
                     return full_path
     return None
@@ -69,7 +74,7 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.3"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.4"}
 
 # --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
@@ -123,7 +128,7 @@ async def get_album_details(collection_id: str):
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest):
     search_term = unidecode(f"{request.artist} {request.track}")
-    print(f"🤖 Smart Download (Fuzzy): {search_term}")
+    print(f"🤖 Smart Download (Fuzzy V2): {search_term}")
     
     local_match = find_local_match(request.artist, request.track)
     if local_match:
@@ -156,7 +161,7 @@ async def smart_download(request: SmartDownloadRequest):
         print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
         
         candidates_debug = []
-        best_flac_debug = None # Rastreia o melhor FLAC para logs, mesmo que perca
+        best_flac_debug = None 
 
         for response in raw_results:
             if response.get('locked', False): continue
@@ -169,22 +174,24 @@ async def smart_download(request: SmartDownloadRequest):
                 for file in response['files']:
                     filename = file['filename']
                     
-                    # Filtro de Extensão (Antecipado para o debug fazer sentido)
+                    # --- FILTRO INTELIGENTE (FULL PATH + RELAXADO) ---
+                    # Normaliza o caminho COMPLETO agora, não só o arquivo
+                    # Isso permite que "Artist/Album/01 Track.flac" dê match com "Artist Track"
+                    full_path_clean = normalize_text(filename)
+                    
+                    similarity = fuzz.partial_token_sort_ratio(target_clean, full_path_clean)
+                    
+                    # Filtro relaxado para 75% (bbno$ gigolo vs 01-gigolo.flac ainda pode falhar se não tiver pasta, 
+                    # mas se tiver pasta do artista, vai passar)
+                    if similarity < 75: 
+                        if i % 8 == 0 and filename.endswith(".flac"): # Debug FLACs rejeitados
+                             # print(f"   [REJEITADO FLAC] Sim: {similarity}% | Path: {filename}")
+                             pass
+                        continue
+
                     if '.' not in filename: continue
                     ext = filename.split('.')[-1].lower()
                     if ext not in ['flac', 'mp3', 'm4a']: continue
-
-                    # Normalização
-                    file_basename = os.path.basename(filename.replace("\\", "/"))
-                    remote_clean = normalize_text(file_basename)
-                    
-                    similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
-                    
-                    # Log de Rejeição de FLACs (Para entender se o nome está atrapalhando)
-                    if similarity < 85: 
-                        if ext == 'flac' and i % 5 == 0:
-                             print(f"   [REJEITADO FLAC] Sim: {similarity}% | Nome: {file_basename}")
-                        continue
 
                     # PONTUAÇÃO
                     score = 0
@@ -214,28 +221,24 @@ async def smart_download(request: SmartDownloadRequest):
                         highest_score = score
                         best_candidate = candidate_obj
                     
-                    # Rastreia o melhor FLAC separadamente para debug
                     if ext == 'flac':
                         if best_flac_debug is None or score > best_flac_debug['score']:
                             best_flac_debug = candidate_obj
 
-        # --- 3. Debug Completo ---
+        # --- Debug ---
         if candidates_debug and i % 5 == 0:
             candidates_debug.sort(key=lambda x: x['score'], reverse=True)
             print("   --- Top Candidatos Atuais ---")
             for c in candidates_debug[:3]:
-                print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:40]}...")
+                print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Sim: {c['sim']}% | File: {c['filename'][:30]}...")
             
-            # Mostra o status do melhor FLAC (se existir) para comparar
             if best_flac_debug:
                  c = best_flac_debug
-                 print(f"   --- Melhor FLAC Encontrado ---")
-                 print(f"   [{int(c['score'])}] FLAC | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:40]}...")
-            else:
-                 print("   --- Nenhum FLAC qualificado encontrado até agora ---")
+                 print(f"   --- Melhor FLAC ---")
+                 print(f"   [{int(c['score'])}] FLAC | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:30]}...")
 
-        # --- 4. Critérios de Saída ---
-        if stable_checks >= 3 and peer_count > 0 and best_candidate:
+        # --- Critérios de Saída ---
+        if stable_checks >= 4 and peer_count > 0 and best_candidate:
              print("⚡ Resultados estabilizados. Encerrando busca.")
              break
 
