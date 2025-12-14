@@ -17,7 +17,7 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 
-app = FastAPI(title="Orfeu API", version="1.6.2")
+app = FastAPI(title="Orfeu API", version="1.6.3")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -40,12 +40,9 @@ class SmartDownloadRequest(BaseModel):
 def normalize_text(text: str) -> str:
     """
     Limpa o texto para comparação Fuzzy.
-    Substitui separadores comuns por espaços para evitar que palavras fiquem coladas.
-    Ex: "bbno$_lil_freak" -> "bbno$ lil freak"
     """
     if not text: return ""
     text = unidecode(text).lower()
-    # Substitui caracteres que costumam colar palavras
     for char in ['_', '-', '.', '[', ']', '(', ')', '+']:
         text = text.replace(char, ' ')
     return text.strip()
@@ -72,7 +69,7 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.2"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.6.3"}
 
 # --- BUSCA (YOUTUBE MUSIC) ---
 @app.get("/search/catalog")
@@ -141,7 +138,6 @@ async def smart_download(request: SmartDownloadRequest):
     highest_score = float('-inf')
     target_clean = normalize_text(f"{request.artist} {request.track}")
     
-    # Controle de estabilidade
     last_peer_count = -1
     stable_checks = 0
     
@@ -150,7 +146,6 @@ async def smart_download(request: SmartDownloadRequest):
         raw_results = await get_search_results(search_id)
         peer_count = len(raw_results)
         
-        # --- 1. Lógica de Estabilidade ---
         if peer_count > 0 and peer_count == last_peer_count:
             stable_checks += 1
         else:
@@ -160,8 +155,8 @@ async def smart_download(request: SmartDownloadRequest):
         
         print(f"   Check {i+1}/22: {peer_count} peers (Stable: {stable_checks}).")
         
-        # --- 2. Coleta de Candidatos ---
         candidates_debug = []
+        best_flac_debug = None # Rastreia o melhor FLAC para logs, mesmo que perca
 
         for response in raw_results:
             if response.get('locked', False): continue
@@ -174,20 +169,22 @@ async def smart_download(request: SmartDownloadRequest):
                 for file in response['files']:
                     filename = file['filename']
                     
+                    # Filtro de Extensão (Antecipado para o debug fazer sentido)
+                    if '.' not in filename: continue
+                    ext = filename.split('.')[-1].lower()
+                    if ext not in ['flac', 'mp3', 'm4a']: continue
+
+                    # Normalização
                     file_basename = os.path.basename(filename.replace("\\", "/"))
                     remote_clean = normalize_text(file_basename)
                     
                     similarity = fuzz.partial_token_sort_ratio(target_clean, remote_clean)
                     
-                    # Filtro de similaridade (agora com texto limpo, 85 deve passar FLACs com underline)
+                    # Log de Rejeição de FLACs (Para entender se o nome está atrapalhando)
                     if similarity < 85: 
-                        # Debug Opcional: Descomente para ver o que está sendo rejeitado
-                        # if i > 10: print(f"   [SKIP {similarity}%] {file_basename}")
+                        if ext == 'flac' and i % 5 == 0:
+                             print(f"   [REJEITADO FLAC] Sim: {similarity}% | Nome: {file_basename}")
                         continue
-
-                    if '.' not in filename: continue
-                    ext = filename.split('.')[-1].lower()
-                    if ext not in ['flac', 'mp3', 'm4a']: continue
 
                     # PONTUAÇÃO
                     score = 0
@@ -208,21 +205,34 @@ async def smart_download(request: SmartDownloadRequest):
                         'score': score,
                         'ext': ext,
                         'slots': slots_free,
-                        'queue': queue_length
+                        'queue': queue_length,
+                        'sim': similarity
                     }
                     candidates_debug.append(candidate_obj)
 
                     if score > highest_score:
                         highest_score = score
                         best_candidate = candidate_obj
+                    
+                    # Rastreia o melhor FLAC separadamente para debug
+                    if ext == 'flac':
+                        if best_flac_debug is None or score > best_flac_debug['score']:
+                            best_flac_debug = candidate_obj
 
-        # --- 3. Debug Top 3 ---
-        if candidates_debug:
+        # --- 3. Debug Completo ---
+        if candidates_debug and i % 5 == 0:
             candidates_debug.sort(key=lambda x: x['score'], reverse=True)
-            if i % 5 == 0: 
-                print("   --- Top Candidatos Atuais ---")
-                for c in candidates_debug[:3]:
-                    print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Queue: {c['queue']} | File: {c['filename'][:40]}...")
+            print("   --- Top Candidatos Atuais ---")
+            for c in candidates_debug[:3]:
+                print(f"   [{int(c['score'])}] {c['ext']} | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:40]}...")
+            
+            # Mostra o status do melhor FLAC (se existir) para comparar
+            if best_flac_debug:
+                 c = best_flac_debug
+                 print(f"   --- Melhor FLAC Encontrado ---")
+                 print(f"   [{int(c['score'])}] FLAC | Free: {c['slots']} | Q: {c['queue']} | Sim: {c['sim']}% | File: {c['filename'][:40]}...")
+            else:
+                 print("   --- Nenhum FLAC qualificado encontrado até agora ---")
 
         # --- 4. Critérios de Saída ---
         if stable_checks >= 3 and peer_count > 0 and best_candidate:
