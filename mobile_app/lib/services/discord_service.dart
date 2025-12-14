@@ -9,35 +9,41 @@ class DiscordService {
   bool _isInitialized = false;
 
   // Substitua pelo SEU Application ID REAL
-  final String _appId = '1449808556743200911'; 
+  final String _appId = '1449808556743200911';
 
-  // Mudamos para Future<void> e async para poder usar await
   Future<void> init() async {
     // RPC só funciona em Desktop
     if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) return;
-    
+
     if (_isInitialized) return;
 
     try {
-      // CORREÇÃO CRÍTICA: Esperar a inicialização do Rust antes de conectar
+      // Inicializa a lib nativa
       await FlutterDiscordRPC.initialize(_appId);
-      
-      // Conecta ao cliente Discord (O Discord Desktop PRECISA estar aberto no PC)
-      FlutterDiscordRPC.instance.connect();
-      
+
+      // Conecta ao cliente Discord (Adicionado await para garantir conexão antes de prosseguir)
+      await FlutterDiscordRPC.instance.connect();
+
       _isInitialized = true;
       print("👾 Discord RPC Iniciado (Modo Moderno - Com Botões!)");
-      
     } catch (e) {
       print("⚠️ Aviso: Falha ao iniciar Discord RPC: $e");
+
       if (Platform.isWindows) {
-        print("   DICA: Verifique se o aplicativo Discord está aberto e logado.");
+        print(
+            "   DICA: Verifique se o aplicativo Discord está aberto e logado.");
+      } else if (Platform.isMacOS) {
+        print(
+            "   DICA (macOS): Erro de conexão IPC geralmente é causado pelo App Sandbox.");
+        print(
+            "   SOLUÇÃO: Abra 'macos/Runner/DebugProfile.entitlements' e remova a chave 'com.apple.security.app-sandbox'.");
       }
+
       _isInitialized = false;
     }
   }
 
-  void updateActivity({
+  Future<void> updateActivity({
     required String track,
     required String artist,
     required String album,
@@ -45,12 +51,12 @@ class DiscordService {
     required Duration position,
     required bool isPlaying,
     String? coverUrl,
-  }) {
+  }) async {
     if (!_isInitialized) return;
 
     try {
       final int now = DateTime.now().millisecondsSinceEpoch;
-      
+
       final int start = now - position.inMilliseconds;
       final int end = start + duration.inMilliseconds;
 
@@ -61,7 +67,8 @@ class DiscordService {
       print("   👤 Artist: $artist");
       print("   💿 Album: $album");
       print("   ▶️ Status: ${isPlaying ? 'Tocando' : 'Pausado'}");
-      print("   ⏱️ Duration: ${duration.inSeconds}s | Position: ${position.inSeconds}s");
+      print(
+          "   ⏱️ Duration: ${duration.inSeconds}s | Position: ${position.inSeconds}s");
       print("   🔢 Timestamps: Start=$start | End=$end");
       print("--------------------------------------------------");
 
@@ -71,24 +78,20 @@ class DiscordService {
       );
 
       final assets = RPCAssets(
-        largeImage: 'logo', 
-        largeText: album,   
-        smallImage: isPlaying ? 'play_icon' : 'pause_icon', 
+        largeImage: 'logo',
+        largeText: album,
+        smallImage: isPlaying ? 'play_icon' : 'pause_icon',
         smallText: isPlaying ? 'Tocando' : 'Pausado',
       );
-      
+
       final buttons = [
-        RPCButton(
-          label: "Ouvir no Orfeu", 
-          url: "https://orfeu.ocnaibill.dev"
-        ),
+        RPCButton(label: "Ouvir no Orfeu", url: "https://orfeu.ocnaibill.dev"),
       ];
 
-      FlutterDiscordRPC.instance.setActivity(
+      // Adicionado await para garantir que erros sejam capturados pelo catch abaixo
+      await FlutterDiscordRPC.instance.setActivity(
         activity: RPCActivity(
-          // CORREÇÃO: O parâmetro correto é activityType
-          activityType: ActivityType.listening, 
-          // REMOVIDO O PREFIXO "Artista: "
+          activityType: ActivityType.listening,
           state: artist,
           details: track,
           timestamps: timestamps,
@@ -110,11 +113,11 @@ class DiscordService {
 
   void dispose() {
     if (_isInitialized) {
-        try {
-          print("[DiscordRPC] Desconectando.");
-          FlutterDiscordRPC.instance.disconnect();
-        } catch (_) {}
-        _isInitialized = false;
+      try {
+        print("[DiscordRPC] Desconectando.");
+        FlutterDiscordRPC.instance.disconnect();
+      } catch (_) {}
+      _isInitialized = false;
     }
   }
 }
