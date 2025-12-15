@@ -37,7 +37,7 @@ from . import models, auth_utils
 models.Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI(title="Orfeu API", version="2.1.0")
+app = FastAPI(title="Orfeu API", version="2.2.0")
 
 # Esquema de Segurança
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -92,6 +92,15 @@ class HistoryRequest(BaseModel):
     filename: str
     duration_listened: float
 
+class PlaylistCreate(BaseModel):
+    name: str
+    is_public: bool = False
+
+class PlaylistItemAdd(BaseModel):
+    filename: str
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
 
 # --- Helper de Usuário Atual ---
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -184,7 +193,7 @@ def get_update_config() -> dict:
 # --- Rotas ---
 @app.get("/")
 def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.2"}
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "2.2.0"}
 
 
 # --- ROTAS DE AUTENTICAÇÃO ---
@@ -277,6 +286,84 @@ def get_favorites(db: Session = Depends(get_db), current_user: models.User = Dep
         "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
         "isFavorite": True
     } for t in favorites]
+
+# --- PLAYLISTS (NOVAS ROTAS) ---
+@app.post("/users/me/playlists")
+def create_playlist(playlist: PlaylistCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    db_playlist = models.Playlist(name=playlist.name, is_public=playlist.is_public, user_id=current_user.id)
+    db.add(db_playlist)
+    db.commit()
+    db.refresh(db_playlist)
+    return db_playlist
+
+@app.get("/users/me/playlists")
+def get_playlists(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Playlist).filter(models.Playlist.user_id == current_user.id).all()
+
+@app.post("/users/me/playlists/{playlist_id}/tracks")
+def add_track_to_playlist(playlist_id: int, item: PlaylistItemAdd, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    playlist = db.query(models.Playlist).filter(models.Playlist.id == playlist_id, models.Playlist.user_id == current_user.id).first()
+    if not playlist: raise HTTPException(404, "Playlist não encontrada ou acesso negado")
+    
+    # Lazy creation da Track se não existir
+    track = db.query(models.Track).filter(models.Track.filename == item.filename).first()
+    if not track:
+        duration = 0
+        try:
+            fp = AudioManager.find_local_file(item.filename)
+            meta = AudioManager.get_audio_metadata(fp)
+            duration = meta.get('duration', 0)
+        except: pass
+        
+        track = models.Track(
+            filename=item.filename, 
+            title=item.title or "Desconhecido", 
+            artist=item.artist or "Desconhecido", 
+            album=item.album, 
+            duration=duration
+        )
+        db.add(track)
+        db.commit()
+        db.refresh(track)
+        
+    # Adiciona à playlist no fim da lista
+    last_item = db.query(models.PlaylistItem).filter(models.PlaylistItem.playlist_id == playlist_id).order_by(models.PlaylistItem.order.desc()).first()
+    new_order = (last_item.order + 1) if last_item else 0
+    
+    playlist_item = models.PlaylistItem(playlist_id=playlist.id, track_id=track.id, order=new_order)
+    db.add(playlist_item)
+    db.commit()
+    return {"status": "added", "track": track.title}
+
+@app.get("/users/me/playlists/{playlist_id}")
+def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    playlist = db.query(models.Playlist).filter(models.Playlist.id == playlist_id).first()
+    if not playlist: raise HTTPException(404, "Playlist não encontrada")
+    
+    if not playlist.is_public and playlist.user_id != current_user.id:
+        raise HTTPException(403, "Playlist privada")
+
+    tracks_data = []
+    # Ordena pelo campo 'order'
+    for item in sorted(playlist.items, key=lambda x: x.order):
+        t = item.track
+        tracks_data.append({
+            "filename": t.filename,
+            "display_name": t.title,
+            "artist": t.artist,
+            "album": t.album,
+            "format": t.filename.split('.')[-1] if t.filename else "",
+            "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
+            "id": t.id,
+            "playlist_item_id": item.id
+        })
+        
+    return {
+        "id": playlist.id,
+        "name": playlist.name,
+        "is_public": playlist.is_public,
+        "tracks": tracks_data
+    }
 
 # Histórico
 @app.post("/users/me/history")
