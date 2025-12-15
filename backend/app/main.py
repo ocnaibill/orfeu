@@ -1,9 +1,13 @@
-from fastapi import FastAPI, HTTPException, Query, Request, Response, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, Request, Response, BackgroundTasks, Depends, status
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Dict, List
+from .database import engine, get_db, Base
+from . import models, auth_utils
 import os
 import asyncio
 import httpx
@@ -23,7 +27,14 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.13.3")
+# Cria tabelas se não existirem
+models.Base.metadata.create_all(bind=engine)
+
+
+app = FastAPI(title="Orfeu API", version="2.0.0")
+
+# Esquema de Segurança
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # --- Configuração de Arquivos Estáticos (OTA Updates) ---
 os.makedirs("/downloads_public", exist_ok=True)
@@ -35,6 +46,17 @@ TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"
 # --- Cache de Proxy de Imagem ---
 SHORT_URL_MAP: Dict[str, dict] = {} 
 PROXY_EXPIRY_SECONDS = 3600
+
+# --- Modelos Pydantic para API ---
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+    full_name: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 # --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
@@ -51,6 +73,23 @@ class SmartDownloadRequest(BaseModel):
     album: Optional[str] = None
     tidalId: Optional[int] = None
     artworkUrl: Optional[str] = None
+
+
+# --- Helper de Usuário Atual ---
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    from jose import JWTError, jwt
+    try:
+        payload = jwt.decode(token, auth_utils.SECRET_KEY, algorithms=[auth_utils.ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return user
 
 # --- Helpers ---
 async def download_file_background(url: str, dest_path: str, metadata: dict, cover_url: str = None):
@@ -128,6 +167,121 @@ def get_update_config() -> dict:
 @app.get("/")
 def read_root():
     return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.2"}
+
+
+# --- ROTAS DE AUTENTICAÇÃO ---
+
+@app.post("/auth/register", response_model=Token)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    # Verifica se existe
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username já cadastrado")
+    
+    # Cria usuário
+    hashed_pwd = auth_utils.get_password_hash(user.password)
+    db_user = models.User(
+        username=user.username, 
+        email=user.email, 
+        full_name=user.full_name, 
+        hashed_password=hashed_pwd
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    # Gera Token
+    access_token = auth_utils.create_access_token(data={"sub": db_user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/token", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
+    if not user or not auth_utils.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário ou senha incorretos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = auth_utils.create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me")
+def read_users_me(current_user: models.User = Depends(get_current_user)):
+    return {
+        "username": current_user.username, 
+        "full_name": current_user.full_name,
+        "email": current_user.email
+    }
+
+
+
+# --- ATUALIZAÇÃO DA BIBLIOTECA (SYNC DB) ---
+# Precisamos atualizar a função de biblioteca para ler do Banco de Dados
+# e uma função background para popular o banco com os arquivos do disco.
+
+async def sync_files_to_db(db: Session):
+    print("🔄 Sincronizando arquivos do disco para o DB...")
+    base_path = "/downloads"
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, base_path)
+                
+                # Verifica se já existe no banco
+                exists = db.query(models.Track).filter(models.Track.filename == rel_path).first()
+                if not exists:
+                    try:
+                        # Lê metadados
+                        from app.services.audio_manager import AudioManager
+                        tags = AudioManager.get_audio_tags(full_path)
+                        meta = AudioManager.get_audio_metadata(full_path)
+                        
+                        track = models.Track(
+                            filename=rel_path,
+                            title=tags.get('title') or file,
+                            artist=tags.get('artist') or "Desconhecido",
+                            album=tags.get('album'),
+                            duration=meta.get('duration', 0),
+                            format=meta.get('format'),
+                            bitrate=meta.get('bitrate')
+                        )
+                        db.add(track)
+                    except Exception as e:
+                        print(f"Erro ao indexar {file}: {e}")
+    db.commit()
+    print("✅ Sincronização concluída.")
+
+@app.post("/library/scan")
+async def scan_library_db(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    Força uma varredura no disco e atualiza o Banco de Dados.
+    """
+    background_tasks.add_task(sync_files_to_db, db)
+    return {"status": "started", "message": "Indexação iniciada."}
+
+# --- NOVA ROTA DE BIBLIOTECA (VIA DB) ---
+@app.get("/library")
+def get_library_db(db: Session = Depends(get_db)):
+    """
+    Retorna a biblioteca consultando o SQL (Muito mais rápido que os.walk).
+    """
+    tracks = db.query(models.Track).all()
+    # Converte para o formato que o frontend espera
+    return [
+        {
+            "filename": t.filename, # O frontend usa isso para stream
+            "display_name": t.title,
+            "artist": t.artist,
+            "album": t.album,
+            "format": t.format,
+            "id": t.id # Novo: ID do banco para favoritos/playlists
+        }
+        for t in tracks
+    ]
+
 
 # --- Página de instalação ---
 

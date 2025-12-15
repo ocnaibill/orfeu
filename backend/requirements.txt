@@ -11,3 +11,6 @@ unidecode
 thefuzz
 python-levenshtein
 ytmusicapi
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
