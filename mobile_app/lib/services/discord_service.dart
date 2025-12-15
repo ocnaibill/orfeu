@@ -6,44 +6,52 @@ class DiscordService {
   factory DiscordService() => _instance;
   DiscordService._internal();
 
-  bool _isInitialized = false;
+  // Variável estática para saber se a LIB nativa já carregou (uma vez por app)
+  static bool _isPluginInitialized = false;
 
-  // Substitua pelo SEU Application ID REAL
+  // Variável de instância para saber se estamos conectados ao cliente Discord
+  bool _isConnected = false;
+
   final String _appId = '1449808556743200911';
 
   Future<void> init() async {
     // RPC só funciona em Desktop
     if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) return;
 
-    if (_isInitialized) return;
+    // Se já estamos conectados, não faz nada
+    if (_isConnected) return;
 
     try {
-      // Inicializa a lib nativa
-      await FlutterDiscordRPC.initialize(_appId);
-
-      // Conecta ao cliente Discord (Adicionado await para garantir conexão antes de prosseguir)
-      await FlutterDiscordRPC.instance.connect();
-
-      _isInitialized = true;
-      print("👾 Discord RPC Iniciado (Modo Moderno - Com Botões!)");
-    } catch (e) {
-      print("⚠️ Aviso: Falha ao iniciar Discord RPC: $e");
-
-      if (Platform.isWindows) {
-        print(
-            "   DICA: Verifique se o aplicativo Discord está aberto e logado.");
-      } else if (Platform.isMacOS) {
-        print(
-            "   DICA (macOS): Erro de conexão IPC geralmente é causado pelo App Sandbox.");
-        print(
-            "   SOLUÇÃO: Abra 'macos/Runner/DebugProfile.entitlements' e remova a chave 'com.apple.security.app-sandbox'.");
+      // 1. Inicializa a biblioteca nativa (SÓ UMA VEZ)
+      if (!_isPluginInitialized) {
+        await FlutterDiscordRPC.initialize(_appId);
+        _isPluginInitialized = true;
+        print("👾 Discord RPC: Lib nativa inicializada.");
       }
 
-      _isInitialized = false;
+      // 2. Conecta ao cliente Discord (Pode ser feito várias vezes)
+      FlutterDiscordRPC.instance.connect();
+      _isConnected = true;
+      print("👾 Discord RPC: Conectado ao cliente.");
+    } catch (e) {
+      // Se o erro for "já inicializado", ignoramos e seguimos
+      if (e.toString().contains("already been initialized")) {
+        _isPluginInitialized = true;
+        try {
+          FlutterDiscordRPC.instance.connect();
+          _isConnected = true;
+        } catch (_) {}
+      } else {
+        print("⚠️ Aviso: Falha no Discord RPC: $e");
+        if (Platform.isMacOS) {
+          print("   DICA (macOS): Verifique o App Sandbox.");
+        }
+        _isConnected = false;
+      }
     }
   }
 
-  Future<void> updateActivity({
+  void updateActivity({
     required String track,
     required String artist,
     required String album,
@@ -51,34 +59,42 @@ class DiscordService {
     required Duration position,
     required bool isPlaying,
     String? coverUrl,
-  }) async {
-    if (!_isInitialized) return;
+  }) {
+    if (!_isConnected) return;
 
     try {
       final int now = DateTime.now().millisecondsSinceEpoch;
-
       final int start = now - position.inMilliseconds;
       final int end = start + duration.inMilliseconds;
-
-      // --- DEBUG LOGGING ---
-      print("--------------------------------------------------");
-      print("[DiscordRPC] Atualizando Presença:");
-      print("   🎵 Track: $track");
-      print("   👤 Artist: $artist");
-      print("   💿 Album: $album");
-      print("   ▶️ Status: ${isPlaying ? 'Tocando' : 'Pausado'}");
-      print(
-          "   ⏱️ Duration: ${duration.inSeconds}s | Position: ${position.inSeconds}s");
-      print("   🔢 Timestamps: Start=$start | End=$end");
-      print("--------------------------------------------------");
 
       final timestamps = RPCTimestamps(
         start: isPlaying ? start : null,
         end: isPlaying ? end : null,
       );
 
+      // --- LÓGICA DE CAPA COM DEBUG ---
+      String imageKey = 'logo'; // Fallback padrão (asset no portal)
+
+      if (coverUrl != null &&
+          coverUrl.isNotEmpty &&
+          coverUrl.startsWith('http')) {
+        final int len = coverUrl.length;
+        // O limite do Discord é 256 bytes para a string da chave
+        if (len <= 256) {
+          imageKey = coverUrl;
+          print("[DiscordRPC] ✅ URL da Capa válida ($len chars): $coverUrl");
+        } else {
+          print("[DiscordRPC] ⚠️ URL da Capa muito longa ($len > 256 chars).");
+          print("[DiscordRPC]    URL: $coverUrl");
+          print("[DiscordRPC]    Usando fallback 'logo'.");
+          // TODO: Implementar encurtador no backend (ex: /img/hash)
+        }
+      } else {
+        print("[DiscordRPC] ℹ️ Nenhuma URL de capa fornecida. Usando logo.");
+      }
+
       final assets = RPCAssets(
-        largeImage: 'logo',
+        largeImage: imageKey,
         largeText: album,
         smallImage: isPlaying ? 'play_icon' : 'pause_icon',
         smallText: isPlaying ? 'Tocando' : 'Pausado',
@@ -88,8 +104,7 @@ class DiscordService {
         RPCButton(label: "Ouvir no Orfeu", url: "https://orfeu.ocnaibill.dev"),
       ];
 
-      // Adicionado await para garantir que erros sejam capturados pelo catch abaixo
-      await FlutterDiscordRPC.instance.setActivity(
+      FlutterDiscordRPC.instance.setActivity(
         activity: RPCActivity(
           activityType: ActivityType.listening,
           state: artist,
@@ -100,24 +115,26 @@ class DiscordService {
         ),
       );
     } catch (e) {
-      print("⚠️ Erro RPC: $e");
+      print("⚠️ Erro RPC Update: $e");
     }
   }
 
   void clear() {
     try {
-      print("[DiscordRPC] Limpando atividade.");
-      if (_isInitialized) FlutterDiscordRPC.instance.clearActivity();
+      if (_isConnected) {
+        FlutterDiscordRPC.instance.clearActivity();
+      }
     } catch (_) {}
   }
 
   void dispose() {
-    if (_isInitialized) {
+    // Apenas desconectamos, NÃO desinicializamos a lib nativa
+    if (_isConnected) {
       try {
-        print("[DiscordRPC] Desconectando.");
+        print("[DiscordRPC] Desconectando (mantendo lib ativa).");
         FlutterDiscordRPC.instance.disconnect();
       } catch (_) {}
-      _isInitialized = false;
+      _isConnected = false;
     }
   }
 }

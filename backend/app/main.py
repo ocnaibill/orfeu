@@ -13,6 +13,7 @@ from unidecode import unidecode
 from thefuzz import fuzz
 import hashlib
 import time
+import json # NOVO: Importar JSON
 
 # Importação dos Serviços
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
@@ -114,6 +115,18 @@ def get_short_cover_url(filename: str) -> str:
     # Usando o prefixo da rota para ser curto.
     return f"https://orfeu.ocnaibill.dev/cover/short/{short_hash}"
 
+# --- NOVO HELPER: LER ARQUIVO DE UPDATE ---
+def get_update_config() -> dict:
+    # Assume que o arquivo está na raiz do volume do backend (/app)
+    config_path = "/app/updates.json" 
+    
+    # Se o volume de trabalho fosse backend/, seria "./updates.json"
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    return {"latest_version": "0.0.0"}
+
+
 # --- Rotas ---
 @app.get("/")
 def read_root():
@@ -138,6 +151,16 @@ async def proxy_cover_art(hash_id: str):
     # Usamos o 302 (Found) para garantir que o cliente (Discord) segue o redirect.
     redirect_url = f"/cover?filename={quote(filename)}"
     return RedirectResponse(redirect_url, status_code=302)
+
+# --- NOVA ROTA: CHECK DE ATUALIZAÇÃO ---
+@app.get("/app/latest_version")
+def latest_version_check():
+    """Retorna a última versão disponível e os links de download."""
+    try:
+        return get_update_config()
+    except Exception as e:
+        print(f"❌ Erro ao ler config de update: {e}")
+        raise HTTPException(500, detail="Erro ao ler configuração de atualização.")
 
 
 @app.get("/search/catalog")
@@ -386,10 +409,93 @@ async def organize_library(background_tasks: BackgroundTasks):
     return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
 
 async def process_library_auto_tagging():
-    # ... (Função completa omitida por brevidade, assume-se que foi colada e está correta)
-    pass # Assume-se que esta função existe no main.py completo
+    base_path = "/downloads"
+    count = 0
+    
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
+                full_path = os.path.join(root, file)
+                try:
+                    # Lê tags atuais
+                    current_tags = AudioManager.get_audio_tags(full_path)
+                    
+                    # Se faltar Artista ou Título, é candidato a correção
+                    if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
+                        print(f"📝 Identificando: {file}...")
+                        
+                        # Tenta limpar o nome do arquivo para busca
+                        clean_name = os.path.splitext(file)[0].replace("_", " ").replace("-", " ")
+                        clean_name = normalize_text(clean_name)
+                        
+                        # 1. Busca no Tidal (Prioridade)
+                        results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
+                        
+                        # 2. Fallback YouTube Music
+                        if not results:
+                            results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
+                        
+                        if results:
+                            best_match = results[0]
+                            # Verifica similaridade para não etiquetar errado
+                            match_str = normalize_text(f"{best_match['artistName']} {best_match['trackName']}")
+                            similarity = fuzz.token_set_ratio(clean_name, match_str)
+                            
+                            if similarity > 80:
+                                print(f"   ✅ Match encontrado: {best_match['artistName']} - {best_match['trackName']} ({similarity}%)")
+                                
+                                # Baixa capa se houver
+                                cover_bytes = None
+                                if best_match.get('artworkUrl'):
+                                    try:
+                                        async with httpx.AsyncClient() as client:
+                                            resp = await client.get(best_match['artworkUrl'])
+                                            if resp.status_code == 200: cover_bytes = resp.content
+                                    except: pass
+                                
+                                # Aplica Tags no Arquivo Físico
+                                meta = {
+                                    "title": best_match['trackName'],
+                                    "artist": best_match['artistName'],
+                                    "album": best_match['collectionName']
+                                }
+                                await run_in_threadpool(AudioManager.embed_metadata, full_path, meta, cover_bytes)
+                                count += 1
+                            else:
+                                print(f"   ⚠️ Match fraco ({similarity}%). Ignorando.")
+                except Exception as e:
+                    print(f"❌ Erro ao processar {file}: {e}")
+                    
+    print(f"✨ Auto-Tagging concluído. {count} arquivos atualizados.")
 
 @app.get("/library")
 async def get_library():
-    # ... (Rota /library omitida por brevidade, assume-se que foi colada e está correta)
-    pass # Assume-se que esta rota existe no main.py completo
+    base_path = "/downloads"
+    library: List[Dict] = []
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
+                full_path = os.path.join(root, file)
+                try:
+                    tags = AudioManager.get_audio_tags(full_path)
+                    
+                    title = tags.get('title') or os.path.splitext(file)[0]
+                    artist = tags.get('artist') or "Desconhecido"
+                    album = tags.get('album')
+                    
+                    if artist == "Desconhecido":
+                        parts = full_path.replace("\\", "/").split("/")
+                        if len(parts) >= 3:
+                            artist = parts[-3]
+                            
+                    library.append({
+                        "filename": file, 
+                        "display_name": title,
+                        "artist": artist,
+                        "album": album,
+                        "format": file.split('.')[-1].lower(),
+                        # ADICIONA O PROXY DA CAPA À LISTA DA BIBLIOTECA
+                        "coverProxyUrl": get_short_cover_url(file) 
+                    })
+                except: pass
+    return library

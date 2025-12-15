@@ -5,8 +5,8 @@ import '../providers.dart';
 import 'player_screen.dart';
 
 // Provider para carregar os dados do álbum
-final albumDetailsProvider =
-    FutureProvider.family.autoDispose<Map<String, dynamic>, String>((ref, id) async {
+final albumDetailsProvider = FutureProvider.family
+    .autoDispose<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(searchControllerProvider).getAlbumDetails(id);
 });
 
@@ -45,10 +45,10 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
   // Verifica se uma faixa está baixada (Server ou Local Recente)
   bool _isTrackDownloaded(Map<String, dynamic> track) {
     if (track['isDownloaded'] == true) return true;
-    
+
     final id = "${track['artistName']}-${track['trackName']}";
     final filename = _localTrackFilenames[id];
-    
+
     if (filename != null) {
       // Se temos um filename local, checamos o status global dele
       final status = ref.read(downloadStatusProvider)[filename];
@@ -76,7 +76,8 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
           final int totalTracks = tracks.length;
           final int downloadedCount = tracks.where(_isTrackDownloaded).length;
           final bool allDownloaded = downloadedCount == totalTracks;
-          final bool isPartiallyDownloaded = downloadedCount > 0 && !allDownloaded;
+          final bool isPartiallyDownloaded =
+              downloadedCount > 0 && !allDownloaded;
 
           return CustomScrollView(
             slivers: [
@@ -143,27 +144,26 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                         style: GoogleFonts.outfit(
                             fontSize: 16, color: Colors.white54),
                       ),
-                      
                       Padding(
                         padding: const EdgeInsets.only(top: 8.0),
                         child: Text(
-                          allDownloaded 
-                              ? "Álbum completo disponível" 
+                          allDownloaded
+                              ? "Álbum completo disponível"
                               : "$downloadedCount de $totalTracks faixas prontas",
                           style: TextStyle(
-                              color: allDownloaded ? Colors.greenAccent : Colors.white38, 
+                              color: allDownloaded
+                                  ? Colors.greenAccent
+                                  : Colors.white38,
                               fontSize: 12),
                         ),
                       ),
-                      
                       const SizedBox(height: 20),
-
                       Row(
                         children: [
                           Expanded(
                             child: ElevatedButton.icon(
-                              onPressed: () => _handleMainAction(
-                                  context, ref, tracks, allDownloaded),
+                              onPressed: () => _handleMainAction(context, ref,
+                                  tracks, allDownloaded, albumData),
                               icon: Icon(
                                   allDownloaded
                                       ? Icons.play_arrow_rounded
@@ -172,13 +172,18 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                               label: Text(
                                   allDownloaded
                                       ? "Tocar Álbum"
-                                      : (isPartiallyDownloaded ? "Baixar Restantes" : "Baixar Álbum"),
+                                      : (isPartiallyDownloaded
+                                          ? "Baixar Restantes"
+                                          : "Baixar Álbum"),
                                   style: const TextStyle(
                                       color: Colors.black,
                                       fontWeight: FontWeight.bold)),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: allDownloaded ? Colors.greenAccent : const Color(0xFFD4AF37),
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                backgroundColor: allDownloaded
+                                    ? Colors.greenAccent
+                                    : const Color(0xFFD4AF37),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
                                 shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(30)),
                               ),
@@ -186,12 +191,14 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                           ),
                           const SizedBox(width: 12),
                           IconButton.filled(
-                            onPressed: () => _handleShuffleAction(context, tracks),
+                            onPressed: () =>
+                                _handleShuffleAction(context, tracks),
                             style: IconButton.styleFrom(
                               backgroundColor: Colors.white10,
                               shape: const CircleBorder(),
                             ),
-                            icon: const Icon(Icons.shuffle, color: Color(0xFFD4AF37)),
+                            icon: const Icon(Icons.shuffle,
+                                color: Color(0xFFD4AF37)),
                             tooltip: "Aleatório",
                           ),
                         ],
@@ -206,14 +213,19 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {
                     final track = tracks[index];
-                    final itemId = "${track['artistName']}-${track['trackName']}";
-                    
+                    final itemId =
+                        "${track['artistName']}-${track['trackName']}";
+
                     // Recupera filename se tivermos descoberto localmente agora
                     final localFilename = _localTrackFilenames[itemId];
-                    
+
                     return _AlbumTrackItem(
                       track: track,
                       localFilename: localFilename,
+                      albumArtworkUrl:
+                          albumData['artworkUrl'], // Passa a URL do álbum
+                      albumCollectionName:
+                          albumData['collectionName'], // Passa o nome do álbum
                       onPlayTap: () => _playQueue(context, tracks, index),
                       onDownloadStart: (filename) {
                         // Callback: assim que inicia o download, salvamos o filename
@@ -238,9 +250,12 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
     );
   }
 
-  Future<void> _handleMainAction(BuildContext context, WidgetRef ref,
-      List<Map<String, dynamic>> tracks, bool allDownloaded) async {
-    
+  Future<void> _handleMainAction(
+      BuildContext context,
+      WidgetRef ref,
+      List<Map<String, dynamic>> tracks,
+      bool allDownloaded,
+      Map<String, dynamic> albumData) async {
     if (allDownloaded) {
       if (tracks.isNotEmpty) {
         _playQueue(context, tracks, 0);
@@ -255,20 +270,33 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
     int started = 0;
     for (var track in tracks) {
       if (_isTrackDownloaded(track)) continue; // Pula os já baixados
-      
+
+      // Criar o objeto de download inteligente completo
+      final smartTrack = Map<String, dynamic>.from(track);
+
+      // GARANTE o artworkUrl e o nome do álbum (para metadados)
+      if (smartTrack['artworkUrl'] == null) {
+        smartTrack['artworkUrl'] = albumData['artworkUrl'];
+      }
+      if (smartTrack['album'] == null) {
+        smartTrack['album'] = albumData['collectionName'];
+      }
+
       try {
-         final filename = await ref.read(searchControllerProvider).smartDownload(track);
-         if (filename != null) {
-            started++;
-            final itemId = "${track['artistName']}-${track['trackName']}";
-            if (mounted) {
-              setState(() {
-                _localTrackFilenames[itemId] = filename;
-              });
-            }
-         }
-         // Pequeno delay para não engasgar o UI thread
-         await Future.delayed(const Duration(milliseconds: 50));
+        // Chamada ao smartDownload com o objeto enriquecido
+        final filename =
+            await ref.read(searchControllerProvider).smartDownload(smartTrack);
+        if (filename != null) {
+          started++;
+          final itemId = "${track['artistName']}-${track['trackName']}";
+          if (mounted) {
+            setState(() {
+              _localTrackFilenames[itemId] = filename;
+            });
+          }
+        }
+        // Pequeno delay para não engasgar o UI thread
+        await Future.delayed(const Duration(milliseconds: 50));
       } catch (e) {
         print("Erro: $e");
       }
@@ -281,77 +309,85 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
     }
   }
 
-  void _handleShuffleAction(BuildContext context, List<Map<String, dynamic>> tracks) {
-      final playable = _getPlayableTracks(tracks);
-      
-      if (playable.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("Baixe as músicas primeiro."),
-            backgroundColor: Colors.orange));
-        return;
-      }
+  void _handleShuffleAction(
+      BuildContext context, List<Map<String, dynamic>> tracks) {
+    final playable = _getPlayableTracks(tracks);
 
-      Navigator.push(context,
-        MaterialPageRoute(builder: (_) => PlayerScreen(
-          queue: playable, 
-          initialIndex: 0,
-          shuffle: true,
-        )));
+    if (playable.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Baixe as músicas primeiro."),
+          backgroundColor: Colors.orange));
+      return;
+    }
+
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => PlayerScreen(
+                  queue: playable,
+                  initialIndex: 0,
+                  shuffle: true,
+                )));
   }
 
-  void _playQueue(BuildContext context, List<Map<String, dynamic>> queue, int initialIndex) {
+  void _playQueue(BuildContext context, List<Map<String, dynamic>> queue,
+      int initialIndex) {
     final playableQueue = _getPlayableTracks(queue);
-    
+
     if (playableQueue.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("Nenhuma música disponível."), 
-            backgroundColor: Colors.orange));
-        return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Nenhuma música disponível."),
+          backgroundColor: Colors.orange));
+      return;
     }
-    
+
     // Tenta achar a música clicada na lista de 'tocáveis'
     final targetTrack = queue[initialIndex];
     // A comparação precisa ser robusta, usamos nome e artista
-    int newIndex = playableQueue.indexWhere((t) => 
-        t['trackName'] == targetTrack['trackName'] && 
+    int newIndex = playableQueue.indexWhere((t) =>
+        t['trackName'] == targetTrack['trackName'] &&
         t['artistName'] == targetTrack['artistName']);
-    
+
     if (newIndex == -1) {
-        newIndex = 0; // Se a clicada não tá baixada, toca a primeira que tiver
+      newIndex = 0; // Se a clicada não tá baixada, toca a primeira que tiver
     }
 
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => PlayerScreen(
-          queue: playableQueue, 
-          initialIndex: newIndex,
-          shuffle: false,
-        )));
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => PlayerScreen(
+                  queue: playableQueue,
+                  initialIndex: newIndex,
+                  shuffle: false,
+                )));
   }
 
   // Helper para fundir dados da API com dados locais (filenames) para o Player
-  List<Map<String, dynamic>> _getPlayableTracks(List<Map<String, dynamic>> rawTracks) {
+  List<Map<String, dynamic>> _getPlayableTracks(
+      List<Map<String, dynamic>> rawTracks) {
     List<Map<String, dynamic>> playable = [];
-    
+
     for (var t in rawTracks) {
       String? filename = t['filename'];
-      
+
       // Se não veio da API, tenta do cache local
       if (filename == null) {
-         final id = "${t['artistName']}-${t['trackName']}";
-         filename = _localTrackFilenames[id];
+        final id = "${t['artistName']}-${t['trackName']}";
+        filename = _localTrackFilenames[id];
       }
-      
+
       // Só adiciona se tiver filename válido E estiver baixado (API ou Local Status)
       if (filename != null) {
-         final status = ref.read(downloadStatusProvider)[filename];
-         final isLocalCompleted = status != null && status['state'] == 'Completed';
-         
-         if (t['isDownloaded'] == true || isLocalCompleted) {
-            // Cria cópia com o filename garantido
-            final trackWithFile = Map<String, dynamic>.from(t);
-            trackWithFile['filename'] = filename;
-            playable.add(trackWithFile);
-         }
+        final status = ref.read(downloadStatusProvider)[filename];
+        final isLocalCompleted =
+            status != null && status['state'] == 'Completed';
+
+        if (t['isDownloaded'] == true || isLocalCompleted) {
+          // Cria cópia com o filename garantido
+          final trackWithFile = Map<String, dynamic>.from(t);
+          trackWithFile['filename'] = filename;
+          playable.add(trackWithFile);
+        }
       }
     }
     return playable;
@@ -361,33 +397,36 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
 class _AlbumTrackItem extends ConsumerWidget {
   final Map<String, dynamic> track;
   final String? localFilename; // Filename vindo do estado local do pai
+  final String? albumArtworkUrl; // Novo: URL da capa do álbum
+  final String? albumCollectionName; // Novo: Nome do álbum
   final VoidCallback onPlayTap;
   final Function(String) onDownloadStart;
 
-  const _AlbumTrackItem({
-    super.key, 
-    required this.track, 
-    this.localFilename,
-    required this.onPlayTap,
-    required this.onDownloadStart
-  });
+  const _AlbumTrackItem(
+      {super.key,
+      required this.track,
+      this.localFilename,
+      this.albumArtworkUrl,
+      this.albumCollectionName,
+      required this.onPlayTap,
+      required this.onDownloadStart});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final itemId = "${track['artistName']}-${track['trackName']}";
     final isNegotiating = ref.watch(processingItemsProvider).contains(itemId);
-    
+
     // Verifica status global
-    final downloadState = localFilename != null 
-        ? ref.watch(downloadStatusProvider)[localFilename] 
+    final downloadState = localFilename != null
+        ? ref.watch(downloadStatusProvider)[localFilename]
         : null;
 
-    final bool isCompleted = 
-        track['isDownloaded'] == true || 
+    final bool isCompleted = track['isDownloaded'] == true ||
         (downloadState != null && downloadState['state'] == 'Completed');
-    
-    final bool isDownloading = 
-        (downloadState != null && downloadState['state'] != 'Completed') || isNegotiating;
+
+    final bool isDownloading =
+        (downloadState != null && downloadState['state'] != 'Completed') ||
+            isNegotiating;
 
     return ListTile(
       leading: Text(
@@ -396,7 +435,8 @@ class _AlbumTrackItem extends ConsumerWidget {
       ),
       title: Text(
         track['trackName'],
-        maxLines: 1, overflow: TextOverflow.ellipsis,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
             color: isCompleted ? const Color(0xFFD4AF37) : Colors.white,
             fontWeight: isCompleted ? FontWeight.bold : FontWeight.normal),
@@ -408,9 +448,9 @@ class _AlbumTrackItem extends ConsumerWidget {
       trailing: _buildTrailing(isCompleted, isDownloading, downloadState),
       onTap: () {
         if (isCompleted) {
-            onPlayTap();
+          onPlayTap();
         } else if (!isDownloading) {
-            _handleSingleDownload(context, ref);
+          _handleSingleDownload(context, ref);
         }
       },
     );
@@ -426,14 +466,14 @@ class _AlbumTrackItem extends ConsumerWidget {
         progress = (status['progress'] as num).toDouble() / 100.0;
       }
       return SizedBox(
-        width: 20, height: 20,
-        child: CircularProgressIndicator(
-          value: progress,
-          strokeWidth: 2, 
-          color: const Color(0xFFD4AF37),
-          backgroundColor: Colors.white10,
-        )
-      );
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 2,
+            color: const Color(0xFFD4AF37),
+            backgroundColor: Colors.white10,
+          ));
     }
     return const Icon(Icons.add_circle_outline, color: Colors.white24);
   }
@@ -445,13 +485,30 @@ class _AlbumTrackItem extends ConsumerWidget {
 
   void _handleSingleDownload(BuildContext context, WidgetRef ref) async {
     try {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Buscando..."), duration: Duration(seconds: 1)));
-      final filename = await ref.read(searchControllerProvider).smartDownload(track);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Buscando..."), duration: Duration(seconds: 1)));
+
+      // Criar o objeto de download inteligente completo
+      final smartTrack = Map<String, dynamic>.from(track);
+
+      // Garantir o TIDAL ID e Artwork URL do álbum, que é o que o smartDownload usa para priorizar o Tidal
+      if (smartTrack['artworkUrl'] == null) {
+        smartTrack['artworkUrl'] = albumArtworkUrl;
+      }
+      if (smartTrack['album'] == null) {
+        smartTrack['album'] = albumCollectionName;
+      }
+
+      // Chamada ao smartDownload com o objeto enriquecido
+      final filename =
+          await ref.read(searchControllerProvider).smartDownload(smartTrack);
       if (filename != null) {
         onDownloadStart(filename); // Avisa o pai para salvar o filename
       }
     } catch (e) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
+      if (context.mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
     }
   }
 }

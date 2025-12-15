@@ -1,23 +1,93 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'search_screen.dart';
-import 'library_screen.dart'; // Importa a nova tela
+import 'library_screen.dart';
+import '../services/update_service.dart';
+import 'dart:io' show Platform;
 
-class HomeShell extends StatefulWidget {
+class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell> {
   int _selectedIndex = 0;
 
   final List<Widget> _screens = [
-    const PlaceholderHome(), // Aba 0: Início
-    const SearchScreen(), // Aba 1: Buscar
-    const LibraryScreen(), // Aba 2: Biblioteca (AGORA REAL)
+    const PlaceholderHome(),
+    const SearchScreen(),
+    const LibraryScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkForUpdates();
+    });
+  }
+
+  void _checkForUpdates() async {
+    if (Platform.isIOS ||
+        Platform.isAndroid ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      final updateService = ref.read(updateServiceProvider);
+      final updateInfo = await updateService.checkForUpdate();
+
+      if (updateInfo != null && mounted) {
+        _showUpdateDialog(updateInfo);
+      }
+    }
+  }
+
+  void _showUpdateDialog(UpdateInfo info) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          title: Text("Atualização Disponível!",
+              style: GoogleFonts.outfit(color: const Color(0xFFD4AF37))),
+          content: SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text("Nova Versão: ${info.latestVersion}",
+                    style: const TextStyle(color: Colors.white)),
+                const SizedBox(height: 10),
+                Text(info.releaseNotes,
+                    style: const TextStyle(color: Colors.white70)),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Mais Tarde',
+                  style: TextStyle(color: Colors.white54)),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFD4AF37)),
+              child: const Text('Baixar Agora',
+                  style: TextStyle(color: Colors.black)),
+              onPressed: () {
+                print(
+                    "🔗 Tentando abrir link de download: ${info.downloadUrl}");
+
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +124,9 @@ class PlaceholderHome extends StatelessWidget {
   const PlaceholderHome({super.key});
   @override
   Widget build(BuildContext context) {
+    final updateService =
+        ProviderScope.containerOf(context).read(updateServiceProvider);
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -65,6 +138,8 @@ class PlaceholderHome extends StatelessWidget {
           const SizedBox(height: 10),
           const Text("Sua jornada Hi-Fi começa aqui.",
               style: TextStyle(color: Colors.white54)),
+          const SizedBox(height: 10),
+          Text("v1.0.0", style: TextStyle(color: Colors.white38, fontSize: 12)),
         ],
       ),
     );
