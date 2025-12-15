@@ -62,7 +62,6 @@ jobs:
           flutter pub get
           flutter build macos --release
           VERSION=${{ needs.get_version.outputs.version }}
-          # Caminho padrão de release do macOS
           zip -r "Orfeu-v$VERSION-macos.zip" build/macos/Build/Products/Release/mobile_app.app
       - uses: actions/upload-artifact@v4
         with:
@@ -83,7 +82,6 @@ jobs:
           flutter pub get
           flutter build windows --release
           $VERSION = "${{ needs.get_version.outputs.version }}"
-          # CORREÇÃO: Adicionado 'x64' ao caminho
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "Orfeu-v$VERSION-windows.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -118,12 +116,12 @@ jobs:
           username: ${{ secrets.HOMELAB_USER }}
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
-          # CORREÇÃO: Aponta para a pasta do projeto no user home (onde o Docker monta o volume)
+          # Alvo: Pasta pública montada no Docker
           target: ~/orfeu/public_downloads/
-          # CORREÇÃO: Pega os arquivos dentro da subpasta mobile_app criada pelo artifact
-          source: "artifacts/mobile_app/*"
-          # CORREÇÃO: Remove 'artifacts/mobile_app/' do caminho para salvar flat no destino
-          strip_components: 2
+          # Fonte: Todos os arquivos na raiz de artifacts
+          source: "artifacts/*"
+          # Strip 1: Remove a pasta 'artifacts/', deixando apenas os arquivos
+          strip_components: 1
 
       - name: Update Config JSON no Homelab
         uses: appleboy/ssh-action@v1.0.3
@@ -136,7 +134,7 @@ jobs:
             VERSION=${{ steps.get_version_final.outputs.VERSION }}
             RELEASE_NOTES="Nova versão de desenvolvimento (CI/CD) v$VERSION."
 
-            # Note: Usamos o domínio HTTPS do Tunnel para os links
+            # Atualiza o JSON
             cat <<EOF > ~/orfeu/backend/updates.json
             {
               "latest_version": "$VERSION",
