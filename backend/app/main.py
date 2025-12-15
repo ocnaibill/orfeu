@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Request, Response, BackgroundTasks
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, Dict, List
@@ -22,7 +23,11 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
-app = FastAPI(title="Orfeu API", version="1.13.2")
+app = FastAPI(title="Orfeu API", version="1.13.3")
+
+# --- Configuração de Arquivos Estáticos (OTA Updates) ---
+os.makedirs("/downloads_public", exist_ok=True)
+app.mount("/downloads", StaticFiles(directory="/downloads_public"), name="downloads")
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -123,6 +128,41 @@ def get_update_config() -> dict:
 @app.get("/")
 def read_root():
     return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.2"}
+
+# --- Página de instalação ---
+
+@app.get("/install", response_class=HTMLResponse)
+async def install_page():
+    """
+    Página simples para listar e baixar os arquivos de atualização.
+    Útil para debug e para o usuário baixar manualmente.
+    """
+    files = os.listdir("/downloads_public")
+    files.sort()
+    
+    html_content = """
+    <html>
+        <head>
+            <title>Instalar Orfeu</title>
+            <style>
+                body { font-family: sans-serif; background: #121212; color: white; padding: 20px; }
+                h1 { color: #D4AF37; }
+                a { display: block; padding: 10px; background: #222; margin: 5px 0; color: #D4AF37; text-decoration: none; border-radius: 5px; }
+                a:hover { background: #333; }
+            </style>
+        </head>
+        <body>
+            <h1>Downloads Disponíveis</h1>
+    """
+    
+    if not files:
+        html_content += "<p>Nenhum arquivo encontrado no servidor.</p>"
+    else:
+        for f in files:
+            html_content += f'<a href="/downloads/{f}">⬇️ {f}</a>'
+            
+    html_content += "</body></html>"
+    return html_content
 
 # --- UPDATE OTA ---
 @app.get("/app/latest_version")
