@@ -1,15 +1,15 @@
 {
-  "latest_version": "1.0.0",
-  "release_notes_pt": "Primeiro lançamento oficial do Orfeu: Busca Tidal/YT, download Soulseek, e Rich Presence do Discord.",
+  "latest_version": "0.9.1",
+  "release_notes_pt": "Correção de bugs na inicialização do Discord RPC no macOS/Windows e melhoria na prioridade de download Tidal/Soulseek para garantir a qualidade Lossless.",
   "platforms": {
     "android": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.0.0.apk"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1.apk"
     },
     "windows": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.0.0-windows.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1-windows.zip"
     },
     "macos": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.0.0-macos.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1-macos.zip"
     }
   }
 }

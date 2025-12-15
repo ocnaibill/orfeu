@@ -1,8 +1,7 @@
 name: orfeu
 description: "Um player de música de alta fidelidade conectado ao Soulseek."
-publish_to: "none" # Prevents accidental publishing to pub.dev
-
-version: 1.0.0+1
+publish_to: "none"
+version: 0.9.0+1
 
 environment:
   sdk: ">=3.2.0 <4.0.0"
@@ -25,6 +24,7 @@ dependencies:
 
   #--- Utilidades ---
   flutter_discord_rpc: ^1.1.0
+  # --- NOVAS DEPENDÊNCIAS PARA UPDATE E VERSÃO ---
   version: ^3.0.0
   package_info_plus: ^8.0.0
 
