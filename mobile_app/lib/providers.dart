@@ -1,48 +1,259 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:io';
 
 // --- Configuração de Rede ---
-// Aponta para o domínio de produção com HTTPS (Cloudflare Tunnel)
+const String serverIp = '127.0.0.1';
 const String baseUrl = 'https://orfeu.ocnaibill.dev';
 
-// --- Cliente HTTP ---
-final dioProvider = Provider((ref) {
-  return Dio(BaseOptions(
-    baseUrl: baseUrl,
-    connectTimeout: const Duration(seconds: 10),
-    // Timeout aumentado para 60s para suportar a busca P2P no backend que pode demorar
-    receiveTimeout: const Duration(seconds: 60),
-  ));
+// --- Armazenamento Seguro ---
+const _storage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  mOptions: MacOsOptions(
+    accessibility: KeychainAccessibility.first_unlock,
+  ),
+);
+
+// --- ESTADO DE AUTENTICAÇÃO ---
+class AuthState {
+  final bool isAuthenticated;
+  final bool isLoading;
+  final String? token;
+  final String? username;
+  final String? error;
+
+  AuthState({
+    this.isAuthenticated = false,
+    this.isLoading = true,
+    this.token,
+    this.username,
+    this.error,
+  });
+
+  AuthState copyWith(
+      {bool? isAuthenticated,
+      bool? isLoading,
+      String? token,
+      String? username,
+      String? error}) {
+    return AuthState(
+      isAuthenticated: isAuthenticated ?? this.isAuthenticated,
+      isLoading: isLoading ?? this.isLoading,
+      token: token ?? this.token,
+      username: username ?? this.username,
+      error: error ?? this.error,
+    );
+  }
+}
+
+class AuthController extends StateNotifier<AuthState> {
+  AuthController() : super(AuthState()) {
+    _checkToken();
+  }
+
+  Future<void> _checkToken() async {
+    try {
+      final token = await _storage.read(key: 'jwt_token');
+      final username = await _storage.read(key: 'username');
+
+      if (token != null) {
+        state = AuthState(
+            isAuthenticated: true,
+            isLoading: false,
+            token: token,
+            username: username);
+      } else {
+        state = AuthState(isAuthenticated: false, isLoading: false);
+      }
+    } catch (e) {
+      print("⚠️ Erro ao ler token do disco: $e");
+      state = AuthState(isAuthenticated: false, isLoading: false);
+    }
+  }
+
+  Future<bool> login(String username, String password) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final dio = Dio(BaseOptions(
+          baseUrl: baseUrl, connectTimeout: const Duration(seconds: 10)));
+
+      final response = await dio.post('/token',
+          data: FormData.fromMap({
+            'username': username,
+            'password': password,
+          }));
+
+      final token = response.data['access_token'];
+
+      try {
+        await _storage.write(key: 'jwt_token', value: token);
+        await _storage.write(key: 'username', value: username);
+      } catch (e) {
+        print("⚠️ Falha de Persistência (Login segue em memória): $e");
+      }
+
+      state = AuthState(
+          isAuthenticated: true,
+          isLoading: false,
+          token: token,
+          username: username);
+      return true;
+    } on DioException catch (e) {
+      final msg = e.response?.data['detail'] ?? "Erro de conexão: ${e.message}";
+      state = state.copyWith(isLoading: false, error: msg.toString());
+      return false;
+    } catch (e) {
+      print("❌ Erro inesperado no login: $e");
+      state = state.copyWith(isLoading: false, error: "Erro inesperado: $e");
+      return false;
+    }
+  }
+
+  Future<bool> register(
+      String username, String email, String password, String fullName) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      final dio = Dio(BaseOptions(baseUrl: baseUrl));
+      await dio.post('/auth/register', data: {
+        "username": username,
+        "email": email,
+        "password": password,
+        "full_name": fullName
+      });
+
+      return await login(username, password);
+    } on DioException catch (e) {
+      final msg = e.response?.data['detail'] ?? "Erro no registro";
+      state = state.copyWith(isLoading: false, error: msg.toString());
+      return false;
+    }
+  }
+
+  Future<void> logout() async {
+    try {
+      await _storage.delete(key: 'jwt_token');
+      await _storage.delete(key: 'username');
+    } catch (e) {
+      print("⚠️ Erro ao limpar token: $e");
+    }
+    state = AuthState(isAuthenticated: false, isLoading: false);
+  }
+}
+
+final authProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
+  return AuthController();
 });
 
-// --- Estados Globais ---
+// --- Cliente HTTP (Autenticado) ---
+final dioProvider = Provider((ref) {
+  final authState = ref.watch(authProvider);
+
+  final dio = Dio(BaseOptions(
+    baseUrl: baseUrl,
+    connectTimeout: const Duration(seconds: 10),
+    receiveTimeout: const Duration(seconds: 60),
+  ));
+
+  if (authState.token != null) {
+    dio.options.headers['Authorization'] = 'Bearer ${authState.token}';
+  }
+
+  return dio;
+});
+
+// --- Estados Globais (App) ---
 final searchResultsProvider = StateProvider<List<dynamic>>((ref) => []);
 final isLoadingProvider = StateProvider<bool>((ref) => false);
 final hasSearchedProvider = StateProvider<bool>((ref) => false);
-
-// Tipo de Busca: 'song' ou 'album'
 final searchTypeProvider = StateProvider<String>((ref) => 'song');
-
-// --- Estados de Paginação ---
 final searchOffsetProvider = StateProvider<int>((ref) => 0);
 final hasMoreResultsProvider = StateProvider<bool>((ref) => true);
 final isFetchingMoreProvider = StateProvider<bool>((ref) => false);
-
-// --- Estados de Processamento ---
-// Rastreia quais itens do catálogo estão sendo processados pelo Backend (buscando P2P)
 final processingItemsProvider = StateProvider<Set<String>>((ref) => {});
-
-// Rastreia o status de download por NOME DE ARQUIVO
 final downloadStatusProvider = StateProvider<Map<String, dynamic>>((ref) => {});
+final currentSearchIdProvider = StateProvider<String?>((ref) => null);
 
-// --- Controller Principal ---
+// --- NOVO: Estados de Biblioteca do Usuário ---
+// Lista de IDs/Filenames que o usuário marcou como favorito
+final favoriteTracksProvider = StateProvider<Set<String>>((ref) => {});
+
+// --- Controller de Busca ---
 final searchControllerProvider = Provider((ref) => SearchController(ref));
+
+// --- NOVO: Controller de Biblioteca (Favoritos, Histórico) ---
+final libraryControllerProvider = Provider((ref) => LibraryController(ref));
+
+class LibraryController {
+  final Ref ref;
+  LibraryController(this.ref);
+
+  // Carrega favoritos do servidor ao iniciar
+  Future<void> fetchFavorites() async {
+    final dio = ref.read(dioProvider);
+    try {
+      final response = await dio.get('/users/me/favorites');
+      final List<dynamic> data = response.data;
+
+      // Armazena apenas os filenames/IDs num Set para verificação rápida na UI
+      final favorites = data.map((item) => item['filename'].toString()).toSet();
+      ref.read(favoriteTracksProvider.notifier).state = favorites;
+    } catch (e) {
+      print("⚠️ Erro ao carregar favoritos: $e");
+    }
+  }
+
+  Future<void> toggleFavorite(Map<String, dynamic> track) async {
+    final dio = ref.read(dioProvider);
+    final filename = track['filename'];
+    if (filename == null) return;
+
+    // Atualização Otimista da UI (Muda o ícone antes do servidor responder)
+    final currentFavorites = ref.read(favoriteTracksProvider);
+    final isFavorite = currentFavorites.contains(filename);
+
+    if (isFavorite) {
+      ref.read(favoriteTracksProvider.notifier).state = {...currentFavorites}
+        ..remove(filename);
+    } else {
+      ref.read(favoriteTracksProvider.notifier).state = {
+        ...currentFavorites,
+        filename
+      };
+    }
+
+    try {
+      // Envia metadados essenciais para o caso de a música ainda não estar indexada no DB
+      await dio.post('/users/me/favorites', data: {
+        "filename": filename,
+        "title": track['display_name'] ?? track['trackName'],
+        "artist": track['artist'] ?? track['artistName'],
+        "album": track['album'] ?? track['collectionName'],
+      });
+    } catch (e) {
+      print("❌ Erro ao favoritar: $e");
+      // Reverte em caso de erro (Rollback)
+      ref.read(favoriteTracksProvider.notifier).state = currentFavorites;
+    }
+  }
+
+  Future<void> logPlay(String filename, int durationSeconds) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/users/me/history',
+          data: {"filename": filename, "duration_listened": durationSeconds});
+    } catch (e) {
+      // Falhas de log não devem atrapalhar o usuário
+      print("⚠️ Falha ao registrar histórico: $e");
+    }
+  }
+}
 
 class SearchController {
   final Ref ref;
   SearchController(this.ref);
 
-  // 1. Busca Inicial no Catálogo (iTunes)
   Future<void> searchCatalog(String query) async {
     if (query.isEmpty) return;
 
@@ -52,7 +263,6 @@ class SearchController {
     final hasSearched = ref.read(hasSearchedProvider.notifier);
     final searchType = ref.read(searchTypeProvider);
 
-    // Reseta paginação para nova busca
     ref.read(searchOffsetProvider.notifier).state = 0;
     ref.read(hasMoreResultsProvider.notifier).state = true;
     ref.read(isFetchingMoreProvider.notifier).state = false;
@@ -72,8 +282,6 @@ class SearchController {
       });
 
       notifier.state = resp.data;
-
-      // Se vier menos que o limite, não tem mais páginas
       if (resp.data.length < 20) {
         ref.read(hasMoreResultsProvider.notifier).state = false;
       }
@@ -85,11 +293,9 @@ class SearchController {
     }
   }
 
-  // 2. Carregar Mais (Infinite Scroll)
   Future<void> loadMoreCatalog(String query) async {
     final hasMore = ref.read(hasMoreResultsProvider);
     final isFetching = ref.read(isFetchingMoreProvider);
-
     if (!hasMore || isFetching) return;
 
     final dio = ref.read(dioProvider);
@@ -101,8 +307,6 @@ class SearchController {
     try {
       fetchingNotifier.state = true;
       final newOffset = currentOffset + 20;
-
-      print('🔍 Carregando mais resultados (Offset $newOffset)...');
 
       final resp = await dio.get('/search/catalog', queryParameters: {
         'query': query,
@@ -118,7 +322,6 @@ class SearchController {
       } else {
         ref.read(searchOffsetProvider.notifier).state = newOffset;
         notifier.update((state) => [...state, ...newItems]);
-
         if (newItems.length < 20) {
           ref.read(hasMoreResultsProvider.notifier).state = false;
         }
@@ -130,44 +333,36 @@ class SearchController {
     }
   }
 
-  // 3. Detalhes do Álbum
   Future<Map<String, dynamic>> getAlbumDetails(String collectionId) async {
     final dio = ref.read(dioProvider);
     try {
       final resp = await dio.get('/catalog/album/$collectionId');
       return resp.data;
     } catch (e) {
-      print('❌ Erro ao buscar álbum: $e');
+      print('❌ Erro álbum: $e');
       rethrow;
     }
   }
 
-  // 4. Smart Download - Inicia a busca P2P no Backend
   Future<String?> smartDownload(Map<String, dynamic> catalogItem) async {
     final dio = ref.read(dioProvider);
     final processing = ref.read(processingItemsProvider.notifier);
-
-    // ID único para mostrar spinner no item correto
     final itemId = "${catalogItem['artistName']}-${catalogItem['trackName']}";
 
     try {
       processing.update((state) => {...state, itemId});
-      print('🤖 Iniciando Smart Download para: $itemId');
+      print('🤖 Smart DL: $itemId');
 
       final resp = await dio.post('/download/smart', data: {
         "artist": catalogItem['artistName'],
         "track": catalogItem['trackName'],
         "album": catalogItem['collectionName'],
         "tidalId": catalogItem['tidalId'],
-        "artworkUrl": catalogItem['artworkUrl'] 
+        "artworkUrl": catalogItem['artworkUrl']
       });
 
       final filename = resp.data['file'];
-      print('⬇️ Arquivo escolhido pelo Orfeu: $filename');
-
-      // Começa a monitorar o progresso
       _pollDownloadStatus(filename);
-
       return filename;
     } catch (e) {
       print('❌ Erro no smart download: $e');
@@ -177,41 +372,26 @@ class SearchController {
     }
   }
 
-  // 5. Monitoramento de Progresso (Polling)
+  Future<void> refresh() async {
+    // Método placeholder para compatibilidade
+  }
+
   void _pollDownloadStatus(String filename) async {
     final dio = ref.read(dioProvider);
     final statusNotifier = ref.read(downloadStatusProvider.notifier);
-
     bool isFinished = false;
     int attempts = 0;
-    const maxAttempts = 600; // ~10 minutos de timeout
 
-    while (!isFinished && attempts < maxAttempts) {
+    while (!isFinished && attempts < 600) {
       await Future.delayed(const Duration(seconds: 1));
       attempts++;
-
       try {
         final encodedName = Uri.encodeComponent(filename);
         final resp = await dio.get('/download/status?filename=$encodedName');
-        final data = resp.data;
-
-        statusNotifier.update((state) {
-          final newState = Map<String, dynamic>.from(state);
-          newState[filename] = data;
-          return newState;
-        });
-
-        final state = data['state'];
-        if (state == 'Completed') {
-          print("✅ Download concluído: $filename");
-          isFinished = true;
-        } else if (state == 'Aborted' || state == 'Cancelled') {
-          print("❌ Download falhou: $filename");
-          isFinished = true;
-        }
-      } catch (e) {
-        // Falhas de rede no polling são ignoradas para tentar novamente
-      }
+        statusNotifier.update((state) => {...state, filename: resp.data});
+        if (resp.data['state'] == 'Completed' ||
+            resp.data['state'] == 'Aborted') isFinished = true;
+      } catch (e) {}
     }
   }
 }
