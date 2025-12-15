@@ -118,9 +118,12 @@ jobs:
           username: ${{ secrets.HOMELAB_USER }}
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
-          target: /var/www/orfeu/downloads/
-          source: "artifacts/*"
-          strip_components: 1
+          # CORREÇÃO: Aponta para a pasta do projeto no user home (onde o Docker monta o volume)
+          target: ~/orfeu/public_downloads/
+          # CORREÇÃO: Pega os arquivos dentro da subpasta mobile_app criada pelo artifact
+          source: "artifacts/mobile_app/*"
+          # CORREÇÃO: Remove 'artifacts/mobile_app/' do caminho para salvar flat no destino
+          strip_components: 2
 
       - name: Update Config JSON no Homelab
         uses: appleboy/ssh-action@v1.0.3
