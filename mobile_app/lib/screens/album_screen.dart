@@ -22,16 +22,12 @@ class AlbumScreen extends ConsumerStatefulWidget {
 }
 
 class _AlbumScreenState extends ConsumerState<AlbumScreen> {
-  // Mapa local para guardar filenames descobertos durante o uso da tela
-  // Chave: "Artist-Track", Valor: "path/to/file.flac"
   final Map<String, String> _localTrackFilenames = {};
 
-  // Timer para atualizar o estado enquanto baixa
   void _startRefreshLoop() async {
     while (mounted) {
       await Future.delayed(const Duration(seconds: 5));
       if (!mounted) break;
-      // Atualiza os dados do servidor silenciosamente (sem resetar estado local)
       ref.invalidate(albumDetailsProvider(widget.collectionId));
     }
   }
@@ -39,18 +35,16 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
   @override
   void initState() {
     super.initState();
+    // Carrega os favoritos atuais ao abrir o álbum para garantir sincronia
+    ref.read(libraryControllerProvider).fetchFavorites();
     _startRefreshLoop();
   }
 
-  // Verifica se uma faixa está baixada (Server ou Local Recente)
   bool _isTrackDownloaded(Map<String, dynamic> track) {
     if (track['isDownloaded'] == true) return true;
-
     final id = "${track['artistName']}-${track['trackName']}";
     final filename = _localTrackFilenames[id];
-
     if (filename != null) {
-      // Se temos um filename local, checamos o status global dele
       final status = ref.read(downloadStatusProvider)[filename];
       if (status != null && status['state'] == 'Completed') return true;
     }
@@ -72,7 +66,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
         data: (albumData) {
           final tracks = List<Map<String, dynamic>>.from(albumData['tracks']);
 
-          // Calcula status geral combinando API + Estado Local
           final int totalTracks = tracks.length;
           final int downloadedCount = tracks.where(_isTrackDownloaded).length;
           final bool allDownloaded = downloadedCount == totalTracks;
@@ -81,7 +74,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
 
           return CustomScrollView(
             slivers: [
-              // Cabeçalho Expansível
               SliverAppBar(
                 expandedHeight: 300,
                 pinned: true,
@@ -124,8 +116,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                   ),
                 ),
               ),
-
-              // Informações e Botões
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -207,29 +197,22 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                   ),
                 ),
               ),
-
-              // Lista de Músicas
               SliverList(
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {
                     final track = tracks[index];
                     final itemId =
                         "${track['artistName']}-${track['trackName']}";
-
-                    // Recupera filename se tivermos descoberto localmente agora
                     final localFilename = _localTrackFilenames[itemId];
 
                     return _AlbumTrackItem(
                       track: track,
                       localFilename: localFilename,
-                      albumArtworkUrl:
-                          albumData['artworkUrl'], // Passa a URL do álbum
-                      albumCollectionName:
-                          albumData['collectionName'], // Passa o nome do álbum
+                      // Passamos dados do álbum para caso precisem ser usados no download/favorito
+                      albumArtworkUrl: albumData['artworkUrl'],
+                      albumCollectionName: albumData['collectionName'],
                       onPlayTap: () => _playQueue(context, tracks, index),
                       onDownloadStart: (filename) {
-                        // Callback: assim que inicia o download, salvamos o filename
-                        // para a UI atualizar para 'Loading/Check' instantaneamente
                         if (mounted) {
                           setState(() {
                             _localTrackFilenames[itemId] = filename;
@@ -241,7 +224,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                   childCount: tracks.length,
                 ),
               ),
-
               const SliverPadding(padding: EdgeInsets.only(bottom: 40)),
             ],
           );
@@ -264,26 +246,20 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text("Processando downloads..."),
+        content: Text("Solicitando downloads ao servidor..."),
         duration: Duration(seconds: 2)));
 
     int started = 0;
     for (var track in tracks) {
-      if (_isTrackDownloaded(track)) continue; // Pula os já baixados
+      if (_isTrackDownloaded(track)) continue;
 
-      // Criar o objeto de download inteligente completo
       final smartTrack = Map<String, dynamic>.from(track);
-
-      // GARANTE o artworkUrl e o nome do álbum (para metadados)
-      if (smartTrack['artworkUrl'] == null) {
+      if (smartTrack['artworkUrl'] == null)
         smartTrack['artworkUrl'] = albumData['artworkUrl'];
-      }
-      if (smartTrack['album'] == null) {
+      if (smartTrack['album'] == null)
         smartTrack['album'] = albumData['collectionName'];
-      }
 
       try {
-        // Chamada ao smartDownload com o objeto enriquecido
         final filename =
             await ref.read(searchControllerProvider).smartDownload(smartTrack);
         if (filename != null) {
@@ -295,7 +271,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
             });
           }
         }
-        // Pequeno delay para não engasgar o UI thread
         await Future.delayed(const Duration(milliseconds: 50));
       } catch (e) {
         print("Erro: $e");
@@ -341,16 +316,12 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
       return;
     }
 
-    // Tenta achar a música clicada na lista de 'tocáveis'
     final targetTrack = queue[initialIndex];
-    // A comparação precisa ser robusta, usamos nome e artista
     int newIndex = playableQueue.indexWhere((t) =>
         t['trackName'] == targetTrack['trackName'] &&
         t['artistName'] == targetTrack['artistName']);
 
-    if (newIndex == -1) {
-      newIndex = 0; // Se a clicada não tá baixada, toca a primeira que tiver
-    }
+    if (newIndex == -1) newIndex = 0;
 
     Navigator.push(
         context,
@@ -362,7 +333,6 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
                 )));
   }
 
-  // Helper para fundir dados da API com dados locais (filenames) para o Player
   List<Map<String, dynamic>> _getPlayableTracks(
       List<Map<String, dynamic>> rawTracks) {
     List<Map<String, dynamic>> playable = [];
@@ -370,20 +340,17 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
     for (var t in rawTracks) {
       String? filename = t['filename'];
 
-      // Se não veio da API, tenta do cache local
       if (filename == null) {
         final id = "${t['artistName']}-${t['trackName']}";
         filename = _localTrackFilenames[id];
       }
 
-      // Só adiciona se tiver filename válido E estiver baixado (API ou Local Status)
       if (filename != null) {
         final status = ref.read(downloadStatusProvider)[filename];
         final isLocalCompleted =
             status != null && status['state'] == 'Completed';
 
         if (t['isDownloaded'] == true || isLocalCompleted) {
-          // Cria cópia com o filename garantido
           final trackWithFile = Map<String, dynamic>.from(t);
           trackWithFile['filename'] = filename;
           playable.add(trackWithFile);
@@ -396,9 +363,9 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen> {
 
 class _AlbumTrackItem extends ConsumerWidget {
   final Map<String, dynamic> track;
-  final String? localFilename; // Filename vindo do estado local do pai
-  final String? albumArtworkUrl; // Novo: URL da capa do álbum
-  final String? albumCollectionName; // Novo: Nome do álbum
+  final String? localFilename;
+  final String? albumArtworkUrl;
+  final String? albumCollectionName;
   final VoidCallback onPlayTap;
   final Function(String) onDownloadStart;
 
@@ -416,7 +383,6 @@ class _AlbumTrackItem extends ConsumerWidget {
     final itemId = "${track['artistName']}-${track['trackName']}";
     final isNegotiating = ref.watch(processingItemsProvider).contains(itemId);
 
-    // Verifica status global
     final downloadState = localFilename != null
         ? ref.watch(downloadStatusProvider)[localFilename]
         : null;
@@ -427,6 +393,14 @@ class _AlbumTrackItem extends ConsumerWidget {
     final bool isDownloading =
         (downloadState != null && downloadState['state'] != 'Completed') ||
             isNegotiating;
+
+    // FAVORITOS: Lógica de UI
+    final favorites = ref.watch(favoriteTracksProvider);
+    // Para verificar se é favorito, precisamos do filename.
+    // Se ainda não baixou, não dá para favoritar (pois o backend usa o filename como chave).
+    final String? effectiveFilename = track['filename'] ?? localFilename;
+    final bool isFavorite =
+        effectiveFilename != null && favorites.contains(effectiveFilename);
 
     return ListTile(
       leading: Text(
@@ -445,7 +419,36 @@ class _AlbumTrackItem extends ConsumerWidget {
         _formatDuration(track['durationMs'] ?? 0),
         style: const TextStyle(color: Colors.white38, fontSize: 12),
       ),
-      trailing: _buildTrailing(isCompleted, isDownloading, downloadState),
+      // TRAILING: Agora contém Download/Play E Favorito
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Botão Favorito (Só aparece se já tivermos o arquivo/filename para linkar)
+          if (effectiveFilename != null)
+            IconButton(
+              icon: Icon(
+                isFavorite ? Icons.favorite : Icons.favorite_border,
+                color: isFavorite ? const Color(0xFFD4AF37) : Colors.white24,
+                size: 20,
+              ),
+              onPressed: () {
+                // Monta objeto completo para enviar ao backend se necessário
+                final trackToFav = Map<String, dynamic>.from(track);
+                trackToFav['filename'] = effectiveFilename;
+                trackToFav['album'] = albumCollectionName;
+                trackToFav['display_name'] = track['trackName'];
+                trackToFav['artist'] = track['artistName'];
+
+                ref.read(libraryControllerProvider).toggleFavorite(trackToFav);
+              },
+            ),
+
+          const SizedBox(width: 8),
+
+          // Botão de Status (Download/Play)
+          _buildStatusIcon(isCompleted, isDownloading, downloadState),
+        ],
+      ),
       onTap: () {
         if (isCompleted) {
           onPlayTap();
@@ -456,7 +459,7 @@ class _AlbumTrackItem extends ConsumerWidget {
     );
   }
 
-  Widget _buildTrailing(bool isCompleted, bool isDownloading, Map? status) {
+  Widget _buildStatusIcon(bool isCompleted, bool isDownloading, Map? status) {
     if (isCompleted) {
       return const Icon(Icons.play_circle_outline, color: Color(0xFFD4AF37));
     }
@@ -488,22 +491,16 @@ class _AlbumTrackItem extends ConsumerWidget {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text("Buscando..."), duration: Duration(seconds: 1)));
 
-      // Criar o objeto de download inteligente completo
       final smartTrack = Map<String, dynamic>.from(track);
-
-      // Garantir o TIDAL ID e Artwork URL do álbum, que é o que o smartDownload usa para priorizar o Tidal
-      if (smartTrack['artworkUrl'] == null) {
+      if (smartTrack['artworkUrl'] == null)
         smartTrack['artworkUrl'] = albumArtworkUrl;
-      }
-      if (smartTrack['album'] == null) {
+      if (smartTrack['album'] == null)
         smartTrack['album'] = albumCollectionName;
-      }
 
-      // Chamada ao smartDownload com o objeto enriquecido
       final filename =
           await ref.read(searchControllerProvider).smartDownload(smartTrack);
       if (filename != null) {
-        onDownloadStart(filename); // Avisa o pai para salvar o filename
+        onDownloadStart(filename);
       }
     } catch (e) {
       if (context.mounted)

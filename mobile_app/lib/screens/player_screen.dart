@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:dio/dio.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -8,23 +9,22 @@ import '../providers.dart';
 // Importa o serviço novo
 import '../services/discord_service.dart';
 
-class PlayerScreen extends StatefulWidget {
-  // Agora aceita uma FILA de músicas
+class PlayerScreen extends ConsumerStatefulWidget {
+  final Map<String, dynamic>? item;
   final List<Map<String, dynamic>> queue;
   final int initialIndex;
   final bool shuffle;
 
-  // Construtor flexível: aceita item único ou lista
   PlayerScreen({
     super.key,
-    Map<String, dynamic>? item,
+    this.item,
     List<Map<String, dynamic>>? queue,
     this.initialIndex = 0,
     this.shuffle = false,
   }) : queue = queue ?? (item != null ? [item] : []);
 
   @override
-  State<PlayerScreen> createState() => _PlayerScreenState();
+  ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
 }
 
 class LyricLine {
@@ -36,7 +36,7 @@ class LyricLine {
       {this.duration = const Duration(seconds: 5)});
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   late AudioPlayer _audioPlayer;
   bool _isPlaying = false;
   String _currentQuality = 'lossless';
@@ -520,9 +520,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Column(
           children: [
             Expanded(
-                child: _showLyrics
-                    ? _buildLyricsView(coverUrl)
-                    : _buildCoverView(coverUrl)),
+              child: _showLyrics
+                  ? _buildLyricsView(coverUrl)
+                  : _buildCoverView(coverUrl),
+            ),
             _buildPlayerControls(),
           ],
         ),
@@ -634,87 +635,131 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Widget _buildCoverView(String coverUrl) {
     return LayoutBuilder(builder: (context, constraints) {
+      // Verifica se é favorito usando o provider
+      final favorites = ref.watch(favoriteTracksProvider);
+      final filename = _currentItem?['filename'];
+      final isFavorite = filename != null && favorites.contains(filename);
+
       return SingleChildScrollView(
         child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight),
-            child: SafeArea(
-                top: true,
-                bottom: false,
-                child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: SafeArea(
+            top: true,
+            bottom: false,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(height: 20),
+                Container(
+                    height: 300,
+                    width: 300,
+                    decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Colors.black45,
+                              blurRadius: 20,
+                              spreadRadius: 5)
+                        ]),
+                    clipBehavior: Clip.antiAlias,
+                    child: Image.network(coverUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) =>
+                            Container(color: Colors.white10))),
+                const SizedBox(height: 40),
+                // Título e Artista + Coração
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const SizedBox(height: 20),
-                      Container(
-                          height: 300,
-                          width: 300,
-                          decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: const [
-                                BoxShadow(
-                                    color: Colors.black45,
-                                    blurRadius: 20,
-                                    spreadRadius: 5)
-                              ]),
-                          clipBehavior: Clip.antiAlias,
-                          child: Image.network(coverUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) =>
-                                  Container(color: Colors.white10))),
-                      const SizedBox(height: 40),
-                      Text(
-                          _metadata?['title'] ??
-                              _currentItem?['display_name'] ??
-                              'Carregando...',
-                          style: GoogleFonts.outfit(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                          textAlign: TextAlign.center,
-                          maxLines: 2),
-                      const SizedBox(height: 8),
-                      Text(
-                          _metadata?['artist'] ??
-                              _currentItem?['artist'] ??
-                              "Desconhecido",
-                          style: GoogleFonts.outfit(
-                              fontSize: 18, color: Colors.white54)),
-                      const SizedBox(height: 20),
-                      GestureDetector(
-                        onTap: _showQualitySelector,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                              color: const Color(0xFFD4AF37).withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                  color: const Color(0xFFD4AF37)
-                                      .withOpacity(0.3))),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.tune,
-                                  size: 14, color: Color(0xFFD4AF37)),
-                              const SizedBox(width: 8),
-                              Text(
-                                  _getQualityLabel(_currentQuality)
-                                      .toUpperCase(),
-                                  style: const TextStyle(
-                                      color: Color(0xFFD4AF37),
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 1)),
-                            ],
-                          ),
+                      // Textos (Expanded para não quebrar layout)
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                _metadata?['title'] ??
+                                    _currentItem?['display_name'] ??
+                                    '...',
+                                style: GoogleFonts.outfit(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            Text(
+                                _metadata?['artist'] ??
+                                    _currentItem?['artist'] ??
+                                    "...",
+                                style: GoogleFonts.outfit(
+                                    fontSize: 18, color: Colors.white54),
+                                maxLines: 1),
+                          ],
                         ),
                       ),
-                      if (_metadata != null)
-                        Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: Text(_metadata!['tech_label'] ?? "",
-                                style: const TextStyle(
-                                    color: Colors.white38, fontSize: 10))),
-                    ]))),
+                      // BOTÃO DE FAVORITO
+                      IconButton(
+                        icon: Icon(
+                          isFavorite ? Icons.favorite : Icons.favorite_border,
+                          color: isFavorite
+                              ? const Color(0xFFD4AF37)
+                              : Colors.white54,
+                          size: 32,
+                        ),
+                        onPressed: () {
+                          if (_currentItem != null) {
+                            ref
+                                .read(libraryControllerProvider)
+                                .toggleFavorite(_currentItem!);
+                          }
+                        },
+                      )
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: _showQualitySelector,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFD4AF37).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: const Color(0xFFD4AF37).withOpacity(0.3))),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.tune,
+                            size: 14, color: Color(0xFFD4AF37)),
+                        const SizedBox(width: 8),
+                        Text(_getQualityLabel(_currentQuality).toUpperCase(),
+                            style: const TextStyle(
+                                color: Color(0xFFD4AF37),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1)),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_metadata != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text(
+                      _metadata!['tech_label'] ?? "",
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
       );
     });
   }
