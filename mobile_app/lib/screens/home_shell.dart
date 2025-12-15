@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'dart:io' show Platform;
 import 'search_screen.dart';
 import 'library_screen.dart';
+import 'profile_screen.dart'; // Importa a nova tela
 import '../services/update_service.dart';
-import 'dart:io' show Platform;
+import '../providers.dart'; // Para acessar authProvider
 
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
@@ -17,9 +19,9 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   int _selectedIndex = 0;
 
   final List<Widget> _screens = [
-    const PlaceholderHome(),
-    const SearchScreen(),
-    const LibraryScreen(),
+    const HomeTab(), // Aba 0: Início (Renomeado de PlaceholderHome)
+    const SearchScreen(), // Aba 1: Buscar
+    const LibraryScreen(), // Aba 2: Biblioteca
   ];
 
   @override
@@ -67,9 +69,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
             TextButton(
               child: const Text('Mais Tarde',
                   style: TextStyle(color: Colors.white54)),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
+              onPressed: () => Navigator.of(context).pop(),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -77,9 +77,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               child: const Text('Baixar Agora',
                   style: TextStyle(color: Colors.black)),
               onPressed: () {
-                print(
-                    "🔗 Tentando abrir link de download: ${info.downloadUrl}");
-
+                // Aqui entraria o url_launcher
+                print("🔗 Link: ${info.downloadUrl}");
                 Navigator.of(context).pop();
               },
             ),
@@ -93,6 +92,37 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
+      // AppBar condicional: Só aparece na Home (index 0)
+      appBar: _selectedIndex == 0
+          ? AppBar(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              title: Row(
+                children: [
+                  const Icon(Icons.music_note, color: Color(0xFFD4AF37)),
+                  const SizedBox(width: 8),
+                  Text("Orfeu",
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.white)),
+                ],
+              ),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.account_circle,
+                      color: Colors.white, size: 28),
+                  tooltip: "Perfil",
+                  onPressed: () {
+                    Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ProfileScreen()));
+                  },
+                ),
+                const SizedBox(width: 16),
+              ],
+            )
+          : null, // Nas outras telas, elas definem sua própria AppBar ou usam SafeArea
+
       body: IndexedStack(
         index: _selectedIndex,
         children: _screens,
@@ -100,8 +130,10 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       bottomNavigationBar: NavigationBarTheme(
         data: NavigationBarThemeData(
           labelTextStyle:
-              MaterialStateProperty.all(GoogleFonts.outfit(fontSize: 12)),
+              WidgetStateProperty.all(GoogleFonts.outfit(fontSize: 12)),
           indicatorColor: const Color(0xFFD4AF37).withOpacity(0.2),
+          iconTheme: WidgetStateProperty.all(
+              const IconThemeData(color: Colors.white70)),
         ),
         child: NavigationBar(
           selectedIndex: _selectedIndex,
@@ -109,10 +141,19 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           backgroundColor: Colors.black,
           destinations: const [
             NavigationDestination(
-                icon: Icon(Icons.home_filled), label: 'Início'),
-            NavigationDestination(icon: Icon(Icons.search), label: 'Buscar'),
+                icon: Icon(Icons.home_filled),
+                label: 'Início',
+                selectedIcon:
+                    Icon(Icons.home_filled, color: Color(0xFFD4AF37))),
             NavigationDestination(
-                icon: Icon(Icons.library_music), label: 'Biblioteca'),
+                icon: Icon(Icons.search),
+                label: 'Buscar',
+                selectedIcon: Icon(Icons.search, color: Color(0xFFD4AF37))),
+            NavigationDestination(
+                icon: Icon(Icons.library_music),
+                label: 'Biblioteca',
+                selectedIcon:
+                    Icon(Icons.library_music, color: Color(0xFFD4AF37))),
           ],
         ),
       ),
@@ -120,26 +161,83 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   }
 }
 
-class PlaceholderHome extends StatelessWidget {
-  const PlaceholderHome({super.key});
-  @override
-  Widget build(BuildContext context) {
-    final updateService =
-        ProviderScope.containerOf(context).read(updateServiceProvider);
+// --- Home Tab (Dashboard) ---
+class HomeTab extends ConsumerWidget {
+  const HomeTab({super.key});
 
-    return Center(
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Pega o nome do usuário do estado de Auth
+    final username = ref.watch(authProvider).username ?? "Visitante";
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.music_note, size: 80, color: Color(0xFFD4AF37)),
-          const SizedBox(height: 20),
-          Text("Bem-vindo ao Orfeu",
-              style: GoogleFonts.outfit(fontSize: 24, color: Colors.white)),
+          Text("Bem-vindo de volta,",
+              style: GoogleFonts.outfit(fontSize: 16, color: Colors.white54)),
+          Text(username,
+              style: GoogleFonts.outfit(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white)),
+
+          const SizedBox(height: 30),
+
+          // Cartão de Destaque (Estático por enquanto)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                  colors: [Color(0xFFD4AF37), Color(0xFFA08020)]),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.auto_awesome, color: Colors.black, size: 30),
+                const SizedBox(height: 10),
+                Text("Sua Vibe Musical",
+                    style: GoogleFonts.outfit(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                const SizedBox(height: 5),
+                const Text(
+                    "Descubra o que você tem ouvido ultimamente na sua retrospectiva.",
+                    style: TextStyle(color: Colors.black87)),
+                const SizedBox(height: 15),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ProfileScreen()));
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                  ),
+                  child: const Text("Ver Estatísticas"),
+                )
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 30),
+          Text("Recentes",
+              style: GoogleFonts.outfit(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white)),
           const SizedBox(height: 10),
-          const Text("Sua jornada Hi-Fi começa aqui.",
-              style: TextStyle(color: Colors.white54)),
-          const SizedBox(height: 10),
-          Text("v1.0.0", style: TextStyle(color: Colors.white38, fontSize: 12)),
+          const Center(
+              child: Text("Seu histórico aparecerá aqui em breve.",
+                  style: TextStyle(color: Colors.white24))),
         ],
       ),
     );

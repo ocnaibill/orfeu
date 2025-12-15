@@ -2,43 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
-import 'player_screen.dart';
+import 'playlist_detail_screen.dart';
 
-// Provider para buscar a biblioteca completa (arquivos)
-final libraryFilesProvider = FutureProvider<List<dynamic>>((ref) async {
+final userPlaylistsFuture = FutureProvider<List<dynamic>>((ref) async {
   final dio = ref.watch(dioProvider);
-  final response = await dio.get('/library');
+  final response = await dio.get('/users/me/playlists');
   return response.data;
 });
 
-// Provider para buscar apenas favoritos (banco de dados)
-final libraryFavoritesProvider = FutureProvider<List<dynamic>>((ref) async {
-  final dio = ref.watch(dioProvider);
-  final response = await dio.get('/users/me/favorites');
-  return response.data;
-});
-
-class LibraryScreen extends ConsumerStatefulWidget {
+class LibraryScreen extends ConsumerWidget {
   const LibraryScreen({super.key});
 
   @override
-  ConsumerState<LibraryScreen> createState() => _LibraryScreenState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final playlistsAsync = ref.watch(userPlaylistsFuture);
 
-class _LibraryScreenState extends ConsumerState<LibraryScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    // Carrega favoritos ao abrir a tela
-    ref.read(libraryControllerProvider).fetchFavorites();
-  }
-
-  @override
-  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
@@ -46,115 +24,168 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
         title: Text("Sua Biblioteca",
             style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
         centerTitle: false,
-        bottom: TabBar(
-          controller: _tabController,
-          indicatorColor: const Color(0xFFD4AF37),
-          labelColor: const Color(0xFFD4AF37),
-          unselectedLabelColor: Colors.white54,
-          tabs: const [
-            Tab(text: "Downloads"),
-            Tab(text: "Favoritos"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add, color: Color(0xFFD4AF37)),
+            onPressed: () => _showCreatePlaylistDialog(context, ref),
+          )
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.refresh(userPlaylistsFuture),
+        color: const Color(0xFFD4AF37),
+        child: CustomScrollView(
+          slivers: [
+            // Espaço
+            const SliverToBoxAdapter(child: SizedBox(height: 16)),
+
+            // Grid de Coleções
+            playlistsAsync.when(
+              data: (playlists) {
+                // Item 0 é sempre Favoritos
+                final allItems = [
+                  {'id': 'fav', 'name': 'Músicas Curtidas', 'type': 'favorite'},
+                  ...playlists
+                ];
+
+                return SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: SliverGrid(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      childAspectRatio: 0.85,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final item = allItems[index];
+                        return _LibraryCard(item: item);
+                      },
+                      childCount: allItems.length,
+                    ),
+                  ),
+                );
+              },
+              loading: () => const SliverFillRemaining(
+                  child: Center(
+                      child:
+                          CircularProgressIndicator(color: Color(0xFFD4AF37)))),
+              error: (err, stack) => SliverToBoxAdapter(
+                  child: Center(
+                      child: Text("Erro: $err",
+                          style: const TextStyle(color: Colors.red)))),
+            ),
+
+            const SliverPadding(padding: EdgeInsets.only(bottom: 40)),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          // Aba 1: Arquivos no Disco
-          _buildTrackList(ref, libraryFilesProvider, "Nenhum arquivo baixado."),
-          // Aba 2: Favoritos do Usuário
-          _buildTrackList(
-              ref, libraryFavoritesProvider, "Nenhum favorito ainda."),
+    );
+  }
+
+  void _showCreatePlaylistDialog(BuildContext context, WidgetRef ref) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title:
+            const Text("Nova Playlist", style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Nome da playlist",
+            hintStyle: TextStyle(color: Colors.white38),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFFD4AF37))),
+          ),
+        ),
+        actions: [
+          TextButton(
+            child: const Text("Cancelar"),
+            onPressed: () => Navigator.pop(ctx),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFD4AF37)),
+            child: const Text("Criar", style: TextStyle(color: Colors.black)),
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                await ref
+                    .read(libraryControllerProvider)
+                    .createPlaylist(controller.text, false);
+                ref.refresh(userPlaylistsFuture); // Atualiza lista
+                Navigator.pop(ctx);
+              }
+            },
+          )
         ],
       ),
     );
   }
+}
 
-  Widget _buildTrackList(
-      WidgetRef ref, FutureProvider<List<dynamic>> provider, String emptyMsg) {
-    final listAsync = ref.watch(provider);
+class _LibraryCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  const _LibraryCard({required this.item});
 
-    return RefreshIndicator(
-      onRefresh: () async => ref.refresh(provider),
-      color: const Color(0xFFD4AF37),
-      child: listAsync.when(
-        data: (songs) {
-          if (songs.isEmpty) {
-            return Center(
-                child: Text(emptyMsg,
-                    style: const TextStyle(color: Colors.white38)));
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: songs.length,
-            itemBuilder: (context, index) {
-              final song = songs[index];
-              final isFlac = song['format'] == 'flac';
+  @override
+  Widget build(BuildContext context) {
+    final bool isFavorite = item['type'] == 'favorite';
 
-              final filenameEncoded = Uri.encodeComponent(song['filename']);
-              final coverUrl = song['coverProxyUrl'] ??
-                  '$baseUrl/cover?filename=$filenameEncoded';
-
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                color: Colors.white.withOpacity(0.05),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                child: ListTile(
-                  onTap: () {
-                    // Toca a lista inteira a partir desta música
-                    _playQueue(
-                        context, songs.cast<Map<String, dynamic>>(), index);
-                  },
-                  leading: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      coverUrl,
-                      width: 50,
-                      height: 50,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                          width: 50,
-                          height: 50,
-                          color: Colors.white10,
-                          child: const Icon(Icons.music_note,
-                              color: Colors.white24)),
-                    ),
-                  ),
-                  title: Text(song['display_name'],
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, color: Colors.white)),
-                  subtitle: Text(song['artist'],
-                      style:
-                          const TextStyle(color: Colors.white54, fontSize: 12)),
-                  trailing: isFlac
-                      ? const Icon(Icons.high_quality,
-                          color: Color(0xFFD4AF37), size: 18)
-                      : null,
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => PlaylistDetailScreen(
+                      title: item['name'],
+                      playlistId:
+                          isFavorite ? null : item['id'], // Null ID = Favoritos
+                    )));
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(12),
+                gradient: isFavorite
+                    ? const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)])
+                    : null,
+              ),
+              child: Center(
+                child: Icon(
+                  isFavorite ? Icons.favorite : Icons.music_note,
+                  size: 40,
+                  color: Colors.white,
                 ),
-              );
-            },
-          );
-        },
-        loading: () => const Center(
-            child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
-        error: (err, stack) => Center(
-            child:
-                Text('Erro: $err', style: const TextStyle(color: Colors.red))),
+              ),
+              // TODO: Futuro - Implementar Mosaico aqui puxando as capas das tracks
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            item['name'],
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Text(
+            isFavorite ? "Automática" : "Playlist",
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ],
       ),
     );
-  }
-
-  void _playQueue(
-      BuildContext context, List<Map<String, dynamic>> queue, int index) {
-    Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (_) => PlayerScreen(
-                  queue: queue,
-                  initialIndex: index,
-                )));
   }
 }
