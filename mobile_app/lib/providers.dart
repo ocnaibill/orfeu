@@ -175,32 +175,64 @@ final processingItemsProvider = StateProvider<Set<String>>((ref) => {});
 final downloadStatusProvider = StateProvider<Map<String, dynamic>>((ref) => {});
 final currentSearchIdProvider = StateProvider<String?>((ref) => null);
 
-// --- NOVO: Estados de Biblioteca do Usuário ---
-// Lista de IDs/Filenames que o usuário marcou como favorito
+// --- BIBLIOTECA E PLAYLISTS ---
 final favoriteTracksProvider = StateProvider<Set<String>>((ref) => {});
+final userPlaylistsProvider = StateProvider<List<dynamic>>((ref) => []);
 
-// --- Controller de Busca ---
 final searchControllerProvider = Provider((ref) => SearchController(ref));
-
-// --- NOVO: Controller de Biblioteca (Favoritos, Histórico) ---
 final libraryControllerProvider = Provider((ref) => LibraryController(ref));
 
 class LibraryController {
   final Ref ref;
   LibraryController(this.ref);
 
-  // Carrega favoritos do servidor ao iniciar
   Future<void> fetchFavorites() async {
     final dio = ref.read(dioProvider);
     try {
       final response = await dio.get('/users/me/favorites');
       final List<dynamic> data = response.data;
-
-      // Armazena apenas os filenames/IDs num Set para verificação rápida na UI
       final favorites = data.map((item) => item['filename'].toString()).toSet();
       ref.read(favoriteTracksProvider.notifier).state = favorites;
     } catch (e) {
       print("⚠️ Erro ao carregar favoritos: $e");
+    }
+  }
+
+  // Busca lista de playlists criadas
+  Future<void> fetchPlaylists() async {
+    final dio = ref.read(dioProvider);
+    try {
+      final response = await dio.get('/users/me/playlists');
+      ref.read(userPlaylistsProvider.notifier).state = response.data;
+    } catch (e) {
+      print("⚠️ Erro playlists: $e");
+    }
+  }
+
+  // Cria nova playlist
+  Future<bool> createPlaylist(String name, bool isPublic) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/users/me/playlists',
+          data: {"name": name, "is_public": isPublic});
+      // Atualiza a lista local
+      await fetchPlaylists();
+      return true;
+    } catch (e) {
+      print("❌ Erro criar playlist: $e");
+      return false;
+    }
+  }
+
+  // Busca detalhes de uma playlist (tracks)
+  Future<Map<String, dynamic>> getPlaylistDetails(int playlistId) async {
+    final dio = ref.read(dioProvider);
+    try {
+      final resp = await dio.get('/users/me/playlists/$playlistId');
+      return resp.data;
+    } catch (e) {
+      print("❌ Erro detalhes playlist: $e");
+      rethrow;
     }
   }
 
@@ -209,7 +241,6 @@ class LibraryController {
     final filename = track['filename'];
     if (filename == null) return;
 
-    // Atualização Otimista da UI (Muda o ícone antes do servidor responder)
     final currentFavorites = ref.read(favoriteTracksProvider);
     final isFavorite = currentFavorites.contains(filename);
 
@@ -224,7 +255,6 @@ class LibraryController {
     }
 
     try {
-      // Envia metadados essenciais para o caso de a música ainda não estar indexada no DB
       await dio.post('/users/me/favorites', data: {
         "filename": filename,
         "title": track['display_name'] ?? track['trackName'],
@@ -233,19 +263,7 @@ class LibraryController {
       });
     } catch (e) {
       print("❌ Erro ao favoritar: $e");
-      // Reverte em caso de erro (Rollback)
       ref.read(favoriteTracksProvider.notifier).state = currentFavorites;
-    }
-  }
-
-  Future<void> logPlay(String filename, int durationSeconds) async {
-    final dio = ref.read(dioProvider);
-    try {
-      await dio.post('/users/me/history',
-          data: {"filename": filename, "duration_listened": durationSeconds});
-    } catch (e) {
-      // Falhas de log não devem atrapalhar o usuário
-      print("⚠️ Falha ao registrar histórico: $e");
     }
   }
 }
