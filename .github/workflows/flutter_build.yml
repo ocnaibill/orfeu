@@ -1,117 +1,133 @@
-name: Build and Release Mobile App
+name: Flutter Build Artifacts
 
 on:
   push:
     branches: ["main"]
     paths:
-      - "mobile_app/**" # Só roda se mexer no App
+      - "mobile_app/**"
+      - ".github/workflows/flutter_build.yml"
+
   workflow_dispatch:
 
 jobs:
-  # 1. Identificar Versão
   get_version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.version }}
+      version: ${{ steps.get_version.outputs.VERSION }}
     steps:
       - uses: actions/checkout@v4
-      - id: extract_version
+      - name: Get App Version
+        id: get_version
         run: |
           VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Versão do App: $VERSION"
 
-  # 2. Build Android
   build_android:
     needs: get_version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Setup Flutter (Atualizado para Stable)
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.16.x"
-          channel: "stable"
-      - uses: actions/setup-java@v3
+          channel: "stable" # Usa a versão estável mais recente (resolve o conflito de dependências)
+      - name: Setup Java
+        uses: actions/setup-java@v3
         with:
           distribution: "temurin"
           java-version: "17"
-
-      - name: Build APK
+      - name: Build Android APK
         run: |
           cd mobile_app
           flutter pub get
           flutter build apk --release
-          mv build/app/outputs/flutter-apk/app-release.apk "Orfeu-v${{ needs.get_version.outputs.version }}.apk"
-
+          VERSION=${{ needs.get_version.outputs.version }}
+          cp build/app/outputs/flutter-apk/app-release.apk "Orfeu-v$VERSION.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: mobile_app/*.apk
+          name: android-release-apk
+          path: mobile_app/Orfeu-*.apk
 
-  # 3. Build Windows (Opcional se quiser economizar minutos do GitHub Actions)
-  build_windows:
-    needs: get_version
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.16.x"
-          channel: "stable"
-      - name: Build Windows
-        run: |
-          cd mobile_app
-          flutter pub get
-          flutter build windows --release
-          Compress-Archive -Path build\windows\runner\Release\* -DestinationPath "Orfeu-v${{ needs.get_version.outputs.version }}-windows.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-zip
-          path: mobile_app/*.zip
-
-  # 4. Build macOS (Requer runner macOS, gasta mais "minutos" do GitHub)
   build_macos:
     needs: get_version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      # Setup Flutter (Atualizado para Stable)
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.16.x"
           channel: "stable"
-      - name: Build macOS
+      - name: Build macOS App
         run: |
           cd mobile_app
           flutter pub get
           flutter build macos --release
-          # Zipar o .app é obrigatório para distribuição
-          zip -r "Orfeu-v${{ needs.get_version.outputs.version }}-macos.zip" build/macos/Build/Products/Release/mobile_app.app
+          VERSION=${{ needs.get_version.outputs.version }}
+          zip -r "Orfeu-v$VERSION-macos.zip" build/macos/Build/Products/Release/mobile_app.app
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-zip
-          path: mobile_app/*.zip
+          name: macos-release-zip
+          path: mobile_app/Orfeu-*-macos.zip
 
-  # 5. Deploy Final (Upload para Homelab e Atualizar JSON)
-  deploy_artifacts:
-    needs: [get_version, build_android, build_windows, build_macos]
+  build_windows:
+    needs: get_version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Setup Flutter (Atualizado para Stable)
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+      - name: Build Windows Executable
+        run: |
+          cd mobile_app
+          flutter pub get
+          flutter build windows --release
+          $VERSION = "${{ needs.get_version.outputs.version }}"
+          Compress-Archive -Path build\windows\runner\Release\* -DestinationPath "Orfeu-v$VERSION-windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-zip
+          path: mobile_app\Orfeu-*-windows.zip
+
+  deploy_to_homelab:
+    needs: [get_version, build_android, build_macos, build_windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - name: Download all Build Artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true # Junta tudo numa pasta só
+          merge-multiple: true
 
-      - name: Upload via SCP
+      - name: Get Version
+        id: get_version_final
+        run: |
+          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Prepare Files for SCP
+        run: |
+          VERSION=${{ steps.get_version_final.outputs.VERSION }}
+          # O download-artifact v4 baixa tudo solto se merge-multiple: true
+          # Apenas listamos para debug
+          ls -R artifacts
+
+      - name: Deploy Binários para o Servidor
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.HOMELAB_HOST }}
           username: ${{ secrets.HOMELAB_USER }}
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
+          target: /var/www/orfeu/downloads/
           source: "artifacts/*"
-          target: "/var/www/orfeu/downloads/" # Ajuste para onde seu servidor guarda arquivos estáticos
-          strip_components: 1
+          strip_components: 1 # Remove a pasta 'artifacts'
 
-      - name: Update JSON & Restart Backend
+      - name: Update Config JSON no Homelab
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOMELAB_HOST }}
@@ -119,21 +135,26 @@ jobs:
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
           script: |
-            VERSION="${{ needs.get_version.outputs.version }}"
+            VERSION=${{ steps.get_version_final.outputs.VERSION }}
+            RELEASE_NOTES="Nova versão de desenvolvimento (CI/CD) v$VERSION."
 
-            # Atualiza o arquivo updates.json no servidor
             cat <<EOF > ~/orfeu/backend/updates.json
             {
               "latest_version": "$VERSION",
-              "release_notes_pt": "Atualização automática via CI/CD.",
+              "release_notes_pt": "$RELEASE_NOTES",
               "platforms": {
-                "android": { "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk" },
-                "windows": { "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip" },
-                "macos": { "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip" }
+                "android": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk"
+                },
+                "windows": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip"
+                },
+                "macos": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip"
+                }
               }
             }
             EOF
 
-            # Reinicia o backend para ele ler a nova versão
-            cd ~/orfeu
-            docker compose restart backend
+            echo "✅ updates.json gerado no servidor para a versão $VERSION."
+            docker compose -f ~/orfeu/docker-compose.yml restart backend
