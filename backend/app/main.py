@@ -26,6 +26,8 @@ from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
+from app.services.analytics_service import AnalyticsService
+
 
 
 # Importação de Banco de Dados e Auth
@@ -364,6 +366,40 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
         "is_public": playlist.is_public,
         "tracks": tracks_data
     }
+
+# --- ANALYTICS ---
+
+@app.get("/users/me/analytics/summary")
+def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Retorna resumo: Total minutos, Top Artista, Total Plays.
+    Padrão: Últimos 30 dias.
+    """
+    return AnalyticsService.get_user_stats(db, current_user.id, days)
+
+@app.get("/users/me/analytics/top-tracks")
+def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Retorna as músicas mais ouvidas.
+    """
+    return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
+
+@app.get("/analytics/rankings")
+def get_global_rankings(db: Session = Depends(get_db)):
+    """
+    Retorna o ranking global de usuários (quem ouviu mais).
+    """
+    return AnalyticsService.get_global_rankings(db)
+
+@app.post("/users/me/analytics/generate-playlist")
+def generate_retro_playlist(month: int, year: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Gera a playlist automática do mês e salva na conta do usuário.
+    """
+    pl = AnalyticsService.create_retro_playlist(db, current_user.id, month, year)
+    if not pl:
+        raise HTTPException(400, "Não há dados suficientes para gerar playlist.")
+    return {"status": "created", "playlist_id": pl.id, "name": pl.name}
 
 # Histórico
 @app.post("/users/me/history")
