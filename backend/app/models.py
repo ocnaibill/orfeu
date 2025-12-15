@@ -14,7 +14,6 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Relacionamentos
     history = relationship("ListenHistory", back_populates="user")
     playlists = relationship("Playlist", back_populates="owner")
     favorites = relationship("Favorite", back_populates="user")
@@ -23,31 +22,26 @@ class Track(Base):
     __tablename__ = "tracks"
 
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, unique=True, index=True) # Caminho relativo: Tidal/Artist/Song.flac
+    filename = Column(String, unique=True, index=True)
     title = Column(String, index=True)
     artist = Column(String, index=True)
     album = Column(String, index=True)
-    duration = Column(Float) # Segundos
+    duration = Column(Float)
     genre = Column(String, nullable=True)
     
-    # Metadados técnicos
     bitrate = Column(Integer, nullable=True)
-    format = Column(String, nullable=True) # flac, mp3
+    format = Column(String, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class ListenHistory(Base):
-    """
-    Tabela Fato para Analytics (Retrospectiva)
-    Registra cada 'play' individual.
-    """
     __tablename__ = "listen_history"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     track_id = Column(Integer, ForeignKey("tracks.id"))
     played_at = Column(DateTime(timezone=True), server_default=func.now())
-    duration_listened = Column(Float) # Quanto tempo a pessoa ouviu (para ignorar skips)
+    duration_listened = Column(Float)
 
     user = relationship("User", back_populates="history")
     track = relationship("Track")
@@ -80,7 +74,7 @@ class PlaylistItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     playlist_id = Column(Integer, ForeignKey("playlists.id"))
     track_id = Column(Integer, ForeignKey("tracks.id"))
-    order = Column(Integer) # Para manter a ordem escolhida pelo usuário
+    order = Column(Integer)
 
     playlist = relationship("Playlist", back_populates="items")
     track = relationship("Track")
