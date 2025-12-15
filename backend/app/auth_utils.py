@@ -7,9 +7,10 @@ import os
 # Configuração JWT
 SECRET_KEY = os.getenv("SECRET_KEY", "uma_chave_super_secreta_e_aleatoria_para_o_orfeu")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 dias de login
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 dias
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Mudança para argon2 para evitar erro do bcrypt "password too long"
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
