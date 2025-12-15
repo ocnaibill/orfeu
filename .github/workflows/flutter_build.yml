@@ -1,148 +1,27 @@
-name: Flutter Build Artifacts
+name: Deploy Backend and Update Config
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
     paths:
-      - 'mobile_app/**'
-      - '.github/workflows/flutter_build.yml' # Roda se o próprio arquivo mudar
-  
-  workflow_dispatch: # Permite disparar manualmente
+      - "backend/**"
+      - "docker-compose.yml"
+      - ".github/workflows/deploy.yml"
+      - "backend/updates.json" # Aciona se o JSON for alterado manualmente
+      - "mobile_app/pubspec.yaml" # Aciona se a versão for alterada (para atualizar o JSON)
+
+  # Permite disparar manualmente na aba "Actions" do GitHub
+  workflow_dispatch:
 
 jobs:
-  get_version:
-    # Este job executa o build em paralelo para todas as plataformas.
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.get_version.outputs.VERSION }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Get App Version
-        id: get_version
-        run: |
-          # Extrai a versão base (ex: 0.9.0)
-          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "Versão do App: $VERSION"
-
-  build_android:
-    needs: get_version
+  # Job que cuida do deploy do Docker e do Backend
+  deploy_backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.16.x'
-          channel: 'stable'
-      - name: Setup Java
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-      - name: Build Android APK
-        run: |
-          cd mobile_app
-          flutter pub get
-          flutter build apk --release
-          VERSION=${{ needs.get_version.outputs.version }}
-          # Renomeia o APK
-          cp build/app/outputs/flutter-apk/app-release.apk "Orfeu-v$VERSION.apk"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-release-apk
-          path: mobile_app/Orfeu-*.apk
-          
-  build_macos:
-    needs: get_version
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.16.x'
-          channel: 'stable'
-      - name: Build macOS App
-        run: |
-          cd mobile_app
-          flutter pub get
-          flutter build macos --release
-          VERSION=${{ needs.get_version.outputs.version }}
-          # Compacta o .app para distribuição OTA
-          zip -r "Orfeu-v$VERSION-macos.zip" build/macos/Build/Products/Release/mobile_app.app
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-release-zip
-          path: mobile_app/Orfeu-*-macos.zip
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  # NOVO JOB: BUILD WINDOWS
-  build_windows:
-    needs: get_version
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.16.x'
-          channel: 'stable'
-      - name: Build Windows Executable
-        run: |
-          cd mobile_app
-          flutter pub get
-          flutter build windows --release
-          VERSION=${{ needs.get_version.outputs.version }}
-          # Compacta o diretório de Release
-          Compress-Archive -Path build\windows\runner\Release\* -DestinationPath "Orfeu-v$VERSION-windows.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-release-zip
-          path: mobile_app\Orfeu-*-windows.zip
-
-  # Job Final: Deploy Binários e Atualização do JSON
-  # Este job depende que todos os builds tenham sido concluídos para poder fazer o upload.
-  deploy_to_homelab:
-    needs: [build_android, build_macos, build_windows] # Espera todos os builds
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      # 1. Baixar Artefatos de Build
-      - name: Download all Build Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      # 2. Obter a Versão
-      - name: Get Version from artifacts info
-        id: get_version_final
-        run: |
-          # A versão é a mesma em todos os jobs anteriores
-          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "Final App Version: $VERSION"
-      
-      # 3. Mover Artefatos para a pasta de Upload
-      - name: Prepare Files for SCP
-        run: |
-          VERSION=${{ steps.get_version_final.outputs.VERSION }}
-          # Move e renomeia os arquivos para a estrutura correta de upload
-          cp artifacts/android-release-apk/mobile_app/Orfeu-v*.apk "Orfeu-v$VERSION.apk"
-          cp artifacts/macos-release-zip/mobile_app/Orfeu-v*-macos.zip .
-          cp artifacts/windows-release-zip/mobile_app/Orfeu-v*-windows.zip .
-          
-      # 4. Deploy Binários via SCP
-      - name: Deploy Binários para o Servidor de Downloads
-        uses: appleboy/scp-action@master
-        with:
-          host: ${{ secrets.HOMELAB_HOST }}
-          username: ${{ secrets.HOMELAB_USER }}
-          key: ${{ secrets.HOMELAB_SSH_KEY }}
-          port: ${{ secrets.HOMELAB_PORT }}
-          # O Nginx/Webserver serve a pasta /var/www/orfeu/downloads/
-          target: /var/www/orfeu/downloads/ 
-          source: "Orfeu-v*.apk,Orfeu-v*-macos.zip,Orfeu-v*-windows.zip"
-
-      # 5. Atualizar o JSON (Via SSH)
-      - name: Update Config JSON no Homelab e Reiniciar Backend
+      - name: Deploy Backend e Infra via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOMELAB_HOST }}
@@ -150,29 +29,72 @@ jobs:
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
           script: |
-            VERSION=${{ steps.get_version_final.outputs.VERSION }}
+            # 1. Navegar até a pasta do projeto
+            cd ~/orfeu
+
+            # 2. Baixar as mudanças do GitHub
+            git pull origin main
+
+            # 3. LIMPEZA PREVENTIVA
+            echo "🧹 Executando limpeza preventiva de containers..."
+            # O || true garante que o workflow não falhe se o container não existir
+            docker rm -f orfeu_backend orfeu_slskd orfeu_db orfeu_pgadmin orfeu_tunnel || true
+
+            # 4. Recriar o ambiente (Backend lê o novo updates.json)
+            echo "🚀 Subindo nova versão do Backend..."
+            # O --build garante que qualquer mudança no código Python seja compilada
+            docker compose up -d --build
+
+            # 5. Limpeza de imagens antigas (opcional, economiza disco)
+            docker image prune -f
+
+  # Job para sincronizar a versão do Flutter (pubspec) com o arquivo updates.json no servidor
+  update_config_json:
+    runs-on: ubuntu-latest
+    # Este job deve rodar mesmo que o deploy_backend falhe (a menos que a falha seja no checkout)
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Obter a versão do pubspec.yaml
+      - name: Get App Version
+        id: get_version
+        run: |
+          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
+          echo "APP_VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      # 2. Atualizar Config JSON via SSH
+      - name: Update Config JSON no Homelab
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOMELAB_HOST }}
+          username: ${{ secrets.HOMELAB_USER }}
+          key: ${{ secrets.HOMELAB_SSH_KEY }}
+          port: ${{ secrets.HOMELAB_PORT }}
+          script: |
+            # CORREÇÃO DA SINTAXE YAML: A atribuição é limpa e segura dentro do bloco.
+            VERSION="${{ steps.get_version.outputs.APP_VERSION }}"
             RELEASE_NOTES="Nova versão de desenvolvimento (CI/CD) v$VERSION."
 
             # Gerar o updates.json NO SERVIDOR com a nova versão
             cat <<EOF > ~/orfeu/backend/updates.json
-{
-  "latest_version": "$VERSION",
-  "release_notes_pt": "$RELEASE_NOTES",
-  "platforms": {
-    "android": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk"
-    },
-    "windows": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip"
-    },
-    "macos": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip"
-    }
-  }
-}
-EOF
+            {
+              "latest_version": "$VERSION",
+              "release_notes_pt": "$RELEASE_NOTES",
+              "platforms": {
+                "android": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk"
+                },
+                "windows": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip"
+                },
+                "macos": {
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip"
+                }
+              }
+            }
+            EOF
             echo "✅ updates.json gerado no servidor para a versão $VERSION."
-            
+
             # Reiniciar o Backend para ler o novo JSON
-            docker compose -f ~/orfeu/docker-compose.yml restart backend
+            docker compose restart backend
             echo "Backend reiniciado para carregar nova configuração de atualização."
