@@ -27,14 +27,22 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
+
+# Importação de Banco de Dados e Auth
+from .database import engine, get_db, Base
+from . import models, auth_utils
+
+
 # Cria tabelas se não existirem
 models.Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI(title="Orfeu API", version="2.0.0")
+app = FastAPI(title="Orfeu API", version="2.1.0")
 
 # Esquema de Segurança
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+SECRET_KEY = os.getenv("SECRET_KEY", "uma_chave_super_secreta")
+ALGORITHM = "HS256"
 
 # --- Configuração de Arquivos Estáticos (OTA Updates) ---
 os.makedirs("/downloads_public", exist_ok=True)
@@ -73,6 +81,16 @@ class SmartDownloadRequest(BaseModel):
     album: Optional[str] = None
     tidalId: Optional[int] = None
     artworkUrl: Optional[str] = None
+
+class FavoriteRequest(BaseModel):
+    filename: str
+    title: str
+    artist: str
+    album: Optional[str] = None
+
+class HistoryRequest(BaseModel):
+    filename: str
+    duration_listened: float
 
 
 # --- Helper de Usuário Atual ---
@@ -215,6 +233,60 @@ def read_users_me(current_user: models.User = Depends(get_current_user)):
         "email": current_user.email
     }
 
+# Favoritos
+@app.post("/users/me/favorites")
+def toggle_favorite(req: FavoriteRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # 1. Garante que a track existe no DB (Sincronização Lazy)
+    track = db.query(models.Track).filter(models.Track.filename == req.filename).first()
+    if not track:
+        # Tenta pegar duração real
+        duration = 0
+        try:
+            fp = AudioManager.find_local_file(req.filename)
+            meta = AudioManager.get_audio_metadata(fp)
+            duration = meta.get('duration', 0)
+        except: pass
+        
+        track = models.Track(filename=req.filename, title=req.title, artist=req.artist, album=req.album, duration=duration)
+        db.add(track)
+        db.commit()
+        db.refresh(track)
+    
+    # 2. Toggle Favorito
+    fav = db.query(models.Favorite).filter(models.Favorite.user_id == current_user.id, models.Favorite.track_id == track.id).first()
+    if fav:
+        db.delete(fav)
+        db.commit()
+        return {"status": "removed", "track": req.title}
+    else:
+        new_fav = models.Favorite(user_id=current_user.id, track_id=track.id)
+        db.add(new_fav)
+        db.commit()
+        return {"status": "added", "track": req.title}
+
+@app.get("/users/me/favorites")
+def get_favorites(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    favorites = db.query(models.Track).join(models.Favorite).filter(models.Favorite.user_id == current_user.id).all()
+    # Retorna no formato compatível com o LibraryScreen
+    return [{
+        "filename": t.filename,
+        "display_name": t.title,
+        "artist": t.artist,
+        "album": t.album,
+        "format": t.filename.split('.')[-1] if t.filename else "",
+        "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
+        "isFavorite": True
+    } for t in favorites]
+
+# Histórico
+@app.post("/users/me/history")
+def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    track = db.query(models.Track).filter(models.Track.filename == req.filename).first()
+    if track:
+        history = models.ListenHistory(user_id=current_user.id, track_id=track.id, duration_listened=req.duration_listened)
+        db.add(history)
+        db.commit()
+    return {"status": "logged"}
 
 
 # --- ATUALIZAÇÃO DA BIBLIOTECA (SYNC DB) ---
