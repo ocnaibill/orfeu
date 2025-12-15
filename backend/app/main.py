@@ -13,7 +13,7 @@ from unidecode import unidecode
 from thefuzz import fuzz
 import hashlib
 import time
-import json # NOVO: Importar JSON
+import json
 
 # Importação dos Serviços
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
@@ -28,9 +28,8 @@ app = FastAPI(title="Orfeu API", version="1.13.2")
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
 
 # --- Cache de Proxy de Imagem ---
-# Armazena mapeamento de hash curto para nome de arquivo longo
 SHORT_URL_MAP: Dict[str, dict] = {} 
-PROXY_EXPIRY_SECONDS = 3600 # 1 hora de cache (o Discord faz cache pesado de qualquer forma)
+PROXY_EXPIRY_SECONDS = 3600
 
 # --- Modelos de Dados ---
 class DownloadRequest(BaseModel):
@@ -92,77 +91,60 @@ def find_local_match(artist: str, track: str) -> Optional[str]:
                 full_path = os.path.join(root, file)
                 if os.path.getsize(full_path) == 0: continue
                 
+                # Compara com "PastaPai NomeArquivo" para contexto
                 parent_folder = os.path.basename(root)
                 candidate_str = normalize_text(f"{parent_folder} {file}")
                 
+                # Se só tiver arquivo solto, compara só o nome
+                if parent_folder == "downloads": candidate_str = normalize_text(file)
+
                 if fuzz.partial_token_sort_ratio(target_str, candidate_str) > 90: 
                     return full_path
     return None
 
 def get_short_cover_url(filename: str) -> str:
-    # 1. Gera um hash curto do nome do arquivo
     hash_object = hashlib.sha256(filename.encode())
-    short_hash = hash_object.hexdigest()[:12] # 12 caracteres de hash
-    
-    # 2. Armazena o mapeamento e o tempo de expiração
+    short_hash = hash_object.hexdigest()[:12]
     SHORT_URL_MAP[short_hash] = {
         "filename": filename,
         "expires": time.time() + PROXY_EXPIRY_SECONDS
     }
-    
-    # 3. Retorna a URL curta do proxy
-    # O Flutter DEVE substituir 'localhost:8000' por 'https://orfeu.ocnaibill.dev' em produção.
-    # Usando o prefixo da rota para ser curto.
+    # Substitua pelo seu domínio real em produção se necessário, ou use relativa
     return f"https://orfeu.ocnaibill.dev/cover/short/{short_hash}"
 
-# --- NOVO HELPER: LER ARQUIVO DE UPDATE ---
 def get_update_config() -> dict:
-    # Assume que o arquivo está na raiz do volume do backend (/app)
     config_path = "/app/updates.json" 
-    
-    # Se o volume de trabalho fosse backend/, seria "./updates.json"
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:
             return json.load(f)
     return {"latest_version": "0.0.0"}
-
 
 # --- Rotas ---
 @app.get("/")
 def read_root():
     return {"status": "Orfeu is alive", "service": "Backend", "version": "1.13.2"}
 
-# --- NOVA ROTA: PROXY DE IMAGEM CURTO ---
-@app.get("/cover/short/{hash_id}")
-async def proxy_cover_art(hash_id: str):
-    item = SHORT_URL_MAP.get(hash_id)
-    
-    if not item:
-        raise HTTPException(404, "Cover hash não encontrado ou expirado.")
-        
-    # Limpeza de cache se expirado
-    if time.time() > item["expires"]:
-        del SHORT_URL_MAP[hash_id]
-        raise HTTPException(404, "Cover hash expirado.")
-        
-    filename = item["filename"]
-    
-    # Redireciona para a rota /cover original que lida com extração/stream
-    # Usamos o 302 (Found) para garantir que o cliente (Discord) segue o redirect.
-    redirect_url = f"/cover?filename={quote(filename)}"
-    return RedirectResponse(redirect_url, status_code=302)
-
-# --- NOVA ROTA: CHECK DE ATUALIZAÇÃO ---
+# --- UPDATE OTA ---
 @app.get("/app/latest_version")
 def latest_version_check():
-    """Retorna a última versão disponível e os links de download."""
     try:
         return get_update_config()
     except Exception as e:
-        print(f"❌ Erro ao ler config de update: {e}")
-        raise HTTPException(500, detail="Erro ao ler configuração de atualização.")
+        print(f"❌ Erro config update: {e}")
+        raise HTTPException(500, detail="Erro de configuração.")
 
+# --- PROXY IMAGEM DISCORD ---
+@app.get("/cover/short/{hash_id}")
+async def proxy_cover_art(hash_id: str):
+    item = SHORT_URL_MAP.get(hash_id)
+    if not item: raise HTTPException(404, "Cover hash inválido.")
+    if time.time() > item["expires"]:
+        del SHORT_URL_MAP[hash_id]
+        raise HTTPException(404, "Cover hash expirado.")
+    filename = item["filename"]
+    return RedirectResponse(f"/cover?filename={quote(filename)}", status_code=302)
 
+# --- BUSCA ---
 @app.get("/search/catalog")
 async def search_catalog(
     query: str, limit: int = 20, offset: int = 0, type: str = Query("song", enum=["song", "album"])
@@ -210,6 +192,7 @@ async def get_album_details(collection_id: str):
         print(f"❌ Erro álbum: {e}")
         raise HTTPException(500, str(e))
 
+# --- SMART DOWNLOAD (CORE LOGIC) ---
 @app.post("/download/smart")
 async def smart_download(request: SmartDownloadRequest, background_tasks: BackgroundTasks):
     print(f"🤖 Smart Download: {request.artist} - {request.track}")
@@ -218,36 +201,25 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
     if local_match:
         print(f"✅ Cache Local: {local_match}")
         return {"status": "Already downloaded", "file": local_match, "display_name": request.track}
-    
-    # ----------------------------------------------------
-    # CORREÇÃO CRÍTICA: Priorizar Tidal mesmo sem Tidal ID
-    # ----------------------------------------------------
-    if request.tidalId is None:
-        print("🌊 Tidal ID ausente. Tentando buscar ID no Tidal...")
-        # Tenta buscar a faixa no Tidal pelo nome.
-        # Limitamos a 1 resultado para ser rápido.
-        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, f"{request.artist} {request.track}", 1, "song")
-        
-        if tidal_results and tidal_results[0].get('tidalId'):
-             best_tidal_match = tidal_results[0]
-             
-             # Verifica a similaridade para evitar downloads errados
-             target_clean = normalize_text(f"{request.artist} {request.track}")
-             match_clean = normalize_text(f"{best_tidal_match['artistName']} {best_tidal_match['trackName']}")
-             
-             if fuzz.token_set_ratio(target_clean, match_clean) > 85:
-                 request.tidalId = best_tidal_match['tidalId']
-                 request.artworkUrl = best_tidal_match['artworkUrl']
-                 print(f"   ✅ ID Tidal encontrado: {request.tidalId}")
-             else:
-                 print("   ⚠️ Match Tidal encontrado, mas similaridade baixa. Pulando Tidal.")
 
-    # ----------------------------------------------------
-    # 2. TENTATIVA DE DOWNLOAD DO TIDAL (SE TIVER ID)
-    # ----------------------------------------------------
-    if request.tidalId:
-        print(f"🌊 Tentando download direto do Tidal (ID: {request.tidalId})...")
-        download_info = await run_in_threadpool(TidalProvider.get_download_url, request.tidalId)
+    # 1. Tidal Direct
+    target_tidal_id = request.tidalId
+    
+    # Se veio sem ID (YTMusic), tenta achar no Tidal agora
+    if not target_tidal_id:
+        try:
+            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, f"{request.artist} {request.track}", 1, "song")
+            if tidal_results:
+                 best = tidal_results[0]
+                 if fuzz.token_set_ratio(normalize_text(f"{request.artist} {request.track}"), normalize_text(f"{best['artistName']} {best['trackName']}")) > 85:
+                     target_tidal_id = best['tidalId']
+                     if not request.artworkUrl: request.artworkUrl = best['artworkUrl']
+                     print(f"✅ Tidal ID recuperado: {target_tidal_id}")
+        except: pass
+
+    if target_tidal_id:
+        print(f"🌊 Tentando download Tidal (ID: {target_tidal_id})...")
+        download_info = await run_in_threadpool(TidalProvider.get_download_url, target_tidal_id)
         if download_info and download_info.get('url'):
             safe_artist = normalize_text(request.artist).replace(" ", "_")
             safe_track = normalize_text(request.track).replace(" ", "_")
@@ -259,9 +231,7 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
             background_tasks.add_task(download_file_background, download_info['url'], full_path, meta, request.artworkUrl)
             return {"status": "Download started", "file": relative_path, "source": "Tidal"}
 
-    # ----------------------------------------------------
-    # 3. FALLBACK PARA SOULSEEK
-    # ----------------------------------------------------
+    # 2. Soulseek
     search_term = unidecode(f"{request.artist} {request.track}")
     init_resp = await search_slskd(search_term)
     search_id = init_resp['search_id']
@@ -271,14 +241,26 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
     highest_score = float('-inf')
     target_clean = normalize_text(f"{request.artist} {request.track}")
     
+    last_peer_count = -1
+    stable_checks = 0
+
     for i in range(22):
         await asyncio.sleep(2.0) 
         raw_results = await get_search_results(search_id)
         peer_count = len(raw_results)
+        
+        if peer_count > 0 and peer_count == last_peer_count: stable_checks += 1
+        else: stable_checks = 0
+        last_peer_count = peer_count
+
         if i % 3 == 0: print(f"   Check {i+1}/22: {peer_count} peers.")
 
-        has_perfect = best_candidate and best_candidate['score'] > 50000
-        if peer_count > 15 and has_perfect: break
+        # Saída Antecipada
+        if best_candidate and best_candidate['score'] > 50000:
+             if peer_count > 15: break # Perfect match (Free Slot)
+
+        if stable_checks >= 4 and peer_count > 0 and best_candidate:
+             break # Estabilizou
 
         for response in raw_results:
             if response.get('locked', False): continue
@@ -304,6 +286,10 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
                     elif ext == 'mp3': score += 1000
                     score += (speed / 1_000_000)
 
+                    if request.album:
+                         if fuzz.partial_ratio(normalize_text(request.album), normalize_text(fname)) > 85:
+                             score += 5000
+
                     if score > highest_score:
                         highest_score = score
                         best_candidate = {'username': response.get('username'), 'filename': fname, 'size': file['size'], 'score': score}
@@ -317,6 +303,7 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
 
     return await download_slskd(best_candidate['username'], best_candidate['filename'], best_candidate['size'])
 
+# --- Demais Rotas ---
 @app.post("/search/{query}")
 async def start_search_legacy(query: str): return await search_slskd(query)
 
@@ -336,7 +323,11 @@ async def queue_download(request: DownloadRequest):
 async def check_download_status(filename: str):
     try:
         path = AudioManager.find_local_file(filename)
-        if os.path.getsize(path) > 0: return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
+        size = os.path.getsize(path)
+        if "Tidal" in path and size > 1000000:
+             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Tidal Download"}
+        if size > 0 and "Tidal" not in path: 
+             return {"state": "Completed", "progress": 100.0, "speed": 0, "message": "Pronto"}
     except HTTPException: pass
     status = await get_transfer_status(filename)
     if status: return status
@@ -350,10 +341,7 @@ async def auto_download_best(request: AutoDownloadRequest):
 async def get_track_details(filename: str):
     full_path = AudioManager.find_local_file(filename)
     meta = AudioManager.get_audio_metadata(full_path)
-    
-    # ADICIONA A URL CURTA AO METADATA PARA O FLUTTER USAR NO DISCORD RPC
-    meta['coverProxyUrl'] = get_short_cover_url(filename)
-    
+    meta['coverProxyUrl'] = get_short_cover_url(filename) # PROXY PÚBLICO
     return meta
 
 @app.get("/lyrics")
@@ -401,50 +389,28 @@ async def stream_music(request: Request, filename: str, quality: str = Query("lo
 
 @app.post("/library/organize")
 async def organize_library(background_tasks: BackgroundTasks):
-    """
-    Dispara um processo em segundo plano para identificar músicas sem tags
-    na biblioteca e preencher metadados usando Tidal/YouTube.
-    """
     background_tasks.add_task(process_library_auto_tagging)
     return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
 
 async def process_library_auto_tagging():
     base_path = "/downloads"
     count = 0
-    
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
                 try:
-                    # Lê tags atuais
                     current_tags = AudioManager.get_audio_tags(full_path)
-                    
-                    # Se faltar Artista ou Título, é candidato a correção
                     if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
-                        print(f"📝 Identificando: {file}...")
-                        
-                        # Tenta limpar o nome do arquivo para busca
-                        clean_name = os.path.splitext(file)[0].replace("_", " ").replace("-", " ")
-                        clean_name = normalize_text(clean_name)
-                        
-                        # 1. Busca no Tidal (Prioridade)
+                        clean_name = normalize_text(os.path.splitext(file)[0].replace("_", " "))
                         results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
-                        
-                        # 2. Fallback YouTube Music
-                        if not results:
-                            results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
+                        if not results: results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
                         
                         if results:
                             best_match = results[0]
-                            # Verifica similaridade para não etiquetar errado
                             match_str = normalize_text(f"{best_match['artistName']} {best_match['trackName']}")
                             similarity = fuzz.token_set_ratio(clean_name, match_str)
-                            
                             if similarity > 80:
-                                print(f"   ✅ Match encontrado: {best_match['artistName']} - {best_match['trackName']} ({similarity}%)")
-                                
-                                # Baixa capa se houver
                                 cover_bytes = None
                                 if best_match.get('artworkUrl'):
                                     try:
@@ -452,49 +418,34 @@ async def process_library_auto_tagging():
                                             resp = await client.get(best_match['artworkUrl'])
                                             if resp.status_code == 200: cover_bytes = resp.content
                                     except: pass
-                                
-                                # Aplica Tags no Arquivo Físico
-                                meta = {
-                                    "title": best_match['trackName'],
-                                    "artist": best_match['artistName'],
-                                    "album": best_match['collectionName']
-                                }
+                                meta = {"title": best_match['trackName'], "artist": best_match['artistName'], "album": best_match['collectionName']}
                                 await run_in_threadpool(AudioManager.embed_metadata, full_path, meta, cover_bytes)
                                 count += 1
-                            else:
-                                print(f"   ⚠️ Match fraco ({similarity}%). Ignorando.")
-                except Exception as e:
-                    print(f"❌ Erro ao processar {file}: {e}")
-                    
+                except: pass
     print(f"✨ Auto-Tagging concluído. {count} arquivos atualizados.")
 
 @app.get("/library")
 async def get_library():
     base_path = "/downloads"
-    library: List[Dict] = []
+    library = []
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith(('.flac', '.mp3', '.m4a')):
                 full_path = os.path.join(root, file)
                 try:
                     tags = AudioManager.get_audio_tags(full_path)
-                    
                     title = tags.get('title') or os.path.splitext(file)[0]
                     artist = tags.get('artist') or "Desconhecido"
                     album = tags.get('album')
-                    
                     if artist == "Desconhecido":
                         parts = full_path.replace("\\", "/").split("/")
-                        if len(parts) >= 3:
-                            artist = parts[-3]
-                            
+                        if len(parts) >= 3: artist = parts[-3]
                     library.append({
                         "filename": file, 
                         "display_name": title,
                         "artist": artist,
                         "album": album,
                         "format": file.split('.')[-1].lower(),
-                        # ADICIONA O PROXY DA CAPA À LISTA DA BIBLIOTECA
                         "coverProxyUrl": get_short_cover_url(file) 
                     })
                 except: pass

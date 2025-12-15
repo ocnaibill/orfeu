@@ -74,6 +74,7 @@ services:
     volumes:
       - ./backend:/app
       - ./downloads:/downloads
+      - ./public_downloads:/downloads_public
     ports:
       - "8012:8000"
     environment:

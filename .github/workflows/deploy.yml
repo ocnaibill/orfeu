@@ -1,27 +1,19 @@
-name: Deploy Backend and Update Config
+name: Deploy Backend Only
 
 on:
   push:
     branches: ["main"]
     paths:
-      - "backend/**"
-      - "docker-compose.yml"
-      - ".github/workflows/deploy.yml"
-      - "backend/updates.json" # Aciona se o JSON for alterado manualmente
-      - "mobile_app/pubspec.yaml" # Aciona se a versão for alterada (para atualizar o JSON)
-
-  # Permite disparar manualmente na aba "Actions" do GitHub
+      - "backend/**" # Só se mudar código Python
+      - "docker-compose.yml" # Ou infraestrutura
+      # Note que removemos mobile_app e updates.json daqui
   workflow_dispatch:
 
 jobs:
-  # Job que cuida do deploy do Docker e do Backend
   deploy_backend:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Deploy Backend e Infra via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOMELAB_HOST }}
@@ -29,72 +21,12 @@ jobs:
           key: ${{ secrets.HOMELAB_SSH_KEY }}
           port: ${{ secrets.HOMELAB_PORT }}
           script: |
-            # 1. Navegar até a pasta do projeto
             cd ~/orfeu
-
-            # 2. Baixar as mudanças do GitHub
             git pull origin main
 
-            # 3. LIMPEZA PREVENTIVA
-            echo "🧹 Executando limpeza preventiva de containers..."
-            # O || true garante que o workflow não falhe se o container não existir
+            echo "🧹 Limpeza preventiva..."
             docker rm -f orfeu_backend orfeu_slskd orfeu_db orfeu_pgadmin orfeu_tunnel || true
 
-            # 4. Recriar o ambiente (Backend lê o novo updates.json)
-            echo "🚀 Subindo nova versão do Backend..."
-            # O --build garante que qualquer mudança no código Python seja compilada
+            echo "🚀 Atualizando Backend..."
             docker compose up -d --build
-
-            # 5. Limpeza de imagens antigas (opcional, economiza disco)
             docker image prune -f
-
-  # Job para sincronizar a versão do Flutter (pubspec) com o arquivo updates.json no servidor
-  update_config_json:
-    runs-on: ubuntu-latest
-    # Este job deve rodar mesmo que o deploy_backend falhe (a menos que a falha seja no checkout)
-    steps:
-      - uses: actions/checkout@v4
-
-      # 1. Obter a versão do pubspec.yaml
-      - name: Get App Version
-        id: get_version
-        run: |
-          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
-          echo "APP_VERSION=$VERSION" >> $GITHUB_OUTPUT
-
-      # 2. Atualizar Config JSON via SSH
-      - name: Update Config JSON no Homelab
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.HOMELAB_HOST }}
-          username: ${{ secrets.HOMELAB_USER }}
-          key: ${{ secrets.HOMELAB_SSH_KEY }}
-          port: ${{ secrets.HOMELAB_PORT }}
-          script: |
-            # Corrigido: Atribuição de variável limpa.
-            VERSION="${{ steps.get_version.outputs.APP_VERSION }}"
-            RELEASE_NOTES="Nova versão de desenvolvimento (CI/CD) v$VERSION."
-
-            # Gerar o updates.json NO SERVIDOR com a nova versão
-            cat <<EOF > ~/orfeu/backend/updates.json
-            {
-              "latest_version": "$VERSION",
-              "release_notes_pt": "$RELEASE_NOTES",
-              "platforms": {
-                "android": {
-                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk"
-                },
-                "windows": {
-                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip"
-                },
-                "macos": {
-                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip"
-                }
-              }
-            }
-            EOF
-            echo "✅ updates.json gerado no servidor para a versão $VERSION."
-
-            # Reiniciar o Backend para ler o novo JSON
-            docker compose restart backend
-            echo "Backend reiniciado para carregar nova configuração de atualização."
