@@ -1,7 +1,7 @@
 name: orfeu
 description: "Um player de música de alta fidelidade conectado ao Soulseek."
 publish_to: "none"
-version: 0.9.0+1
+version: 1.1.0+1
 
 environment:
   sdk: ">=3.2.0 <4.0.0"
@@ -17,6 +17,9 @@ dependencies:
   # --- Conectividade ---
   dio: ^5.5.0 # Cliente HTTP poderoso para falar com o Python
 
+  # --- Armazenamento Seguro  ---
+  flutter_secure_storage: ^9.0.0
+
   # --- Multimídia (O Coração do Orfeu) ---
   just_audio: ^0.9.38 # O Player de áudio robusto (suporta FLAC stream)
   just_audio_background: ^0.0.1-beta.13 # Para tocar música com o app fechado
@@ -24,7 +27,6 @@ dependencies:
 
   #--- Utilidades ---
   flutter_discord_rpc: ^1.1.0
-  # --- NOVAS DEPENDÊNCIAS PARA UPDATE E VERSÃO ---
   version: ^3.0.0
   package_info_plus: ^8.0.0
 
