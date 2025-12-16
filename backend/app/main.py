@@ -410,6 +410,7 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
     """
     Seção 'Novidades dos seus favoritos':
     Usa a DATA COMPLETA (YYYY-MM-DD) do Tidal para ordenar, garantindo precisão entre álbuns do mesmo ano.
+    Inclui logs detalhados para debug.
     """
     news = []
     
@@ -424,24 +425,33 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
             .all()
         
         top_artists = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
+        print(f"📊 [DEBUG] Top Artistas encontrados para {current_user.username}: {top_artists}")
         
         if top_artists:
             print(f"🌟 Buscando novidades para: {top_artists}")
             for artist in top_artists:
                 try:
                     # Busca 10 álbuns para ter histórico suficiente
+                    print(f"   🔎 Consultando Tidal para: {artist}")
                     results = await run_in_threadpool(TidalProvider.search_catalog, artist, 10, "album")
+                    print(f"      -> {len(results)} resultados brutos do Tidal.")
                     
                     if results:
                         # A. Filtra por nome do artista (Fuzzy)
-                        artist_albums = [
-                            r for r in results 
-                            if fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName'])) > 80
-                        ]
+                        artist_albums = []
+                        for r in results:
+                            # Normaliza e compara nomes para garantir que o álbum é DESTE artista
+                            # Ex: Busca "Queen", evita "Queen of the Stone Age"
+                            sim = fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName']))
+                            
+                            # Debug de similaridade para entender rejeições
+                            if sim <= 80:
+                                print(f"      [SKIP] {r['artistName']} != {artist} (Sim: {sim}%) - Album: {r['collectionName']}")
+                            else:
+                                artist_albums.append(r)
                         
                         # B. ORDENAÇÃO PRECISA POR DATA
                         # Usa 'releaseDate' (YYYY-MM-DD) se existir, senão usa 'year', senão '0000'
-                        # Strings ISO-8601 ordenam corretamente de forma alfabética
                         artist_albums.sort(
                             key=lambda x: x.get('releaseDate') or x.get('year') or "0000-00-00", 
                             reverse=True
@@ -462,6 +472,11 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
                                     "id": item['collectionId'],
                                     "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
                                 })
+                        else:
+                             print(f"   ⚠️ Nenhum álbum passou no filtro de artista para {artist}")
+                    else:
+                        print(f"   ⚠️ Tidal retornou lista vazia para {artist}")
+
                 except Exception as e:
                     print(f"⚠️ Erro buscando novidades de {artist}: {e}")
     except Exception as e:
@@ -470,7 +485,7 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
     # 3. Fallback Global (YTMusic)
     if len(news) < 3:
         try:
-            print("   Complementando com lançamentos globais (YTMusic)...")
+            print(f"   Complementando com lançamentos globais (YTMusic)... (Atual: {len(news)})")
             results = await run_in_threadpool(CatalogProvider.search_catalog, "New Releases", limit - len(news), "album")
             for item in results:
                 if not any(n['id'] == item['collectionId'] for n in news):
@@ -482,10 +497,12 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
                         "id": item['collectionId'],
                         "vibrantColorHex": "#4A00E0" 
                     })
-        except: pass
+        except Exception as e: 
+            print(f"❌ Erro no fallback YTMusic: {e}")
+            pass
             
+    print(f"✅ Retornando {len(news)} novidades.")
     return news
-
 
 # --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
