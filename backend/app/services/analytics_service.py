@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta
-# Importa os modelos a partir do pacote pai (app.models)
 from app import models
 
 class AnalyticsService:
@@ -123,3 +122,33 @@ class AnalyticsService:
         
         db.commit()
         return new_playlist
+    
+    @staticmethod
+    def get_recently_played(db: Session, user_id: int, limit: int = 10):
+        """
+        Retorna as últimas músicas ouvidas (Histórico Inverso).
+        Agrupa para não mostrar a mesma música 5x seguida.
+        """
+        # Subquery para pegar o MAX(id) de cada track no histórico recente
+        # Isso é uma forma simples de 'distinct' por track ordenado por tempo
+        history = db.query(models.ListenHistory.track_id, func.max(models.ListenHistory.played_at).label('last_played'))\
+            .filter(models.ListenHistory.user_id == user_id)\
+            .group_by(models.ListenHistory.track_id)\
+            .order_by(desc('last_played'))\
+            .limit(limit)\
+            .all()
+            
+        recent_tracks = []
+        for track_id, played_at in history:
+            t = db.query(models.Track).filter(models.Track.id == track_id).first()
+            if t:
+                recent_tracks.append({
+                    "type": "song", # Por enquanto retornamos como música, mas a UI de álbum aceita
+                    "title": t.title,
+                    "artist": t.artist,
+                    "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={t.filename}", # Endpoint de capa
+                    "filename": t.filename,
+                    "played_at": played_at
+                })
+        
+        return recent_tracks
