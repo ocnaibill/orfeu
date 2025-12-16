@@ -143,8 +143,9 @@ class _LibraryCard extends StatelessWidget {
             MaterialPageRoute(
                 builder: (_) => PlaylistDetailScreen(
                       title: item['name'],
-                      playlistId:
-                          isFavorite ? null : item['id'], // Null ID = Favoritos
+                      playlistId: isFavorite
+                          ? ''
+                          : item['id'].toString(), // Empty ID = Favoritos
                     )));
       },
       child: Column(

@@ -182,6 +182,32 @@ final userPlaylistsProvider = StateProvider<List<dynamic>>((ref) => []);
 final searchControllerProvider = Provider((ref) => SearchController(ref));
 final libraryControllerProvider = Provider((ref) => LibraryController(ref));
 
+// --- NOVOS PROVIDERS DA HOME ---
+final homeNewReleasesProvider = FutureProvider<List<dynamic>>((ref) async {
+  final dio = ref.read(dioProvider);
+  final resp = await dio.get('/home/new-releases');
+  return resp.data;
+});
+
+final homeContinueListeningProvider =
+    FutureProvider<List<dynamic>>((ref) async {
+  final dio = ref.read(dioProvider);
+  final resp = await dio.get('/home/continue-listening');
+  return resp.data;
+});
+
+final homeRecommendationsProvider = FutureProvider<List<dynamic>>((ref) async {
+  final dio = ref.read(dioProvider);
+  final resp = await dio.get('/home/recommendations');
+  return resp.data;
+});
+
+final homeTrajectoryProvider = FutureProvider<List<dynamic>>((ref) async {
+  final dio = ref.read(dioProvider);
+  final resp = await dio.get('/home/trajectory');
+  return resp.data;
+});
+
 class LibraryController {
   final Ref ref;
   LibraryController(this.ref);
@@ -198,7 +224,6 @@ class LibraryController {
     }
   }
 
-  // Busca lista de playlists criadas
   Future<void> fetchPlaylists() async {
     final dio = ref.read(dioProvider);
     try {
@@ -209,13 +234,11 @@ class LibraryController {
     }
   }
 
-  // Cria nova playlist
   Future<bool> createPlaylist(String name, bool isPublic) async {
     final dio = ref.read(dioProvider);
     try {
       await dio.post('/users/me/playlists',
           data: {"name": name, "is_public": isPublic});
-      // Atualiza a lista local
       await fetchPlaylists();
       return true;
     } catch (e) {
@@ -224,7 +247,6 @@ class LibraryController {
     }
   }
 
-  // Busca detalhes de uma playlist (tracks)
   Future<Map<String, dynamic>> getPlaylistDetails(int playlistId) async {
     final dio = ref.read(dioProvider);
     try {
@@ -254,16 +276,42 @@ class LibraryController {
       };
     }
 
+    // CORREÇÃO: Enviar duração e capa para o backend salvar corretamente
+    dynamic durationSec = 0;
+    if (track['durationMs'] != null) {
+      durationSec = (track['durationMs'] / 1000);
+    } else if (track['duration'] != null) {
+      durationSec = track['duration'];
+    }
+
+    // Tenta pegar a melhor capa disponível
+    final cover =
+        track['artworkUrl'] ?? track['imageUrl'] ?? track['cover'] ?? '';
+
     try {
       await dio.post('/users/me/favorites', data: {
         "filename": filename,
-        "title": track['display_name'] ?? track['trackName'],
+        "title": track['display_name'] ?? track['trackName'] ?? track['title'],
         "artist": track['artist'] ?? track['artistName'],
         "album": track['album'] ?? track['collectionName'],
+        "cover": cover, // Salva a capa
+        "duration": durationSec, // Salva a duração em segundos
       });
     } catch (e) {
       print("❌ Erro ao favoritar: $e");
       ref.read(favoriteTracksProvider.notifier).state = currentFavorites;
+    }
+  }
+
+  // --- REGISTRO DE HISTÓRICO ---
+  Future<void> logPlay(String filename, int seconds) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/users/me/history',
+          data: {"filename": filename, "duration_listened": seconds});
+      print("✅ Play registrado: $filename ($seconds s)");
+    } catch (e) {
+      print("⚠️ Erro ao registrar play: $e");
     }
   }
 }

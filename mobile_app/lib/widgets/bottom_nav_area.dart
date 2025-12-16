@@ -1,71 +1,42 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'dart:io' show Platform;
-import 'package:palette_generator/palette_generator.dart'; // <--- OBRIGATÓRIO: flutter pub add palette_generator
-import 'search_screen.dart';
-import 'library_screen.dart';
-import 'home_tab_v2.dart';
-import 'player_screen.dart';
-import '../services/update_service.dart';
+import 'package:palette_generator/palette_generator.dart';
 import '../providers.dart';
 import '../services/audio_service.dart';
+import '../screens/player_screen.dart';
 
-class HomeShell extends ConsumerStatefulWidget {
-  const HomeShell({super.key});
+/// Widget reutilizável que contém o MiniPlayer + Navbar
+/// Pode ser usado em qualquer tela para manter a navegação consistente
+class BottomNavArea extends ConsumerStatefulWidget {
+  final int selectedIndex;
+  final Function(int)? onNavTap;
+
+  const BottomNavArea({
+    super.key,
+    this.selectedIndex = 0,
+    this.onNavTap,
+  });
 
   @override
-  ConsumerState<HomeShell> createState() => _HomeShellState();
+  ConsumerState<BottomNavArea> createState() => _BottomNavAreaState();
 }
 
-class _HomeShellState extends ConsumerState<HomeShell> {
-  int _selectedIndex = 0;
-
-  final List<Widget> _screens = [
-    const HomeTabV2(),
-    const SearchScreen(),
-    const LibraryScreen(),
-  ];
-
-  // Estado local para a cor extraída da capa
-  Color _dynamicNavbarColor = Colors.black;
+class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
+  Color _dynamicColor = Colors.black;
   String? _lastProcessedImageUrl;
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkForUpdates();
-    });
-  }
-
-  void _checkForUpdates() async {
-    if (Platform.isIOS ||
-        Platform.isAndroid ||
-        Platform.isWindows ||
-        Platform.isMacOS) {
-      final updateService = ref.read(updateServiceProvider);
-      final updateInfo = await updateService.checkForUpdate();
-      if (updateInfo != null && mounted) {
-        // Dialog update...
-      }
-    }
-  }
-
-  /// LÓGICA DE EXTRAÇÃO DE COR (Client-Side)
-  /// Pega a cor "na hora" analisando a imagem
   void _updateColorLogic(Map<String, dynamic>? currentTrack) {
     if (currentTrack == null) {
-      if (_dynamicNavbarColor != Colors.black) {
+      if (_dynamicColor != Colors.black) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() => _dynamicNavbarColor = Colors.black);
+          if (mounted) setState(() => _dynamicColor = Colors.black);
         });
       }
       _lastProcessedImageUrl = null;
       return;
     }
 
-    // Prioriza URL da capa para extração
     String coverUrl =
         currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
     if (coverUrl.isEmpty && currentTrack['filename'] != null) {
@@ -75,7 +46,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
     if (coverUrl.isEmpty) return;
 
-    // Se a imagem mudou, extrai a nova cor
     if (coverUrl != _lastProcessedImageUrl) {
       _lastProcessedImageUrl = coverUrl;
       _extractPalette(coverUrl);
@@ -85,17 +55,14 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Future<void> _extractPalette(String url) async {
     try {
       final provider = NetworkImage(url);
-      // Gera a paleta a partir da imagem
       final palette = await PaletteGenerator.fromImageProvider(
         provider,
-        maximumColorCount: 20, // Otimização
+        maximumColorCount: 20,
       );
 
       if (mounted && _lastProcessedImageUrl == url) {
         setState(() {
-          // Tenta pegar a cor mais vibrante/destacada.
-          // Se não achar, tenta a dominante.
-          _dynamicNavbarColor = palette.vibrantColor?.color ??
+          _dynamicColor = palette.vibrantColor?.color ??
               palette.dominantColor?.color ??
               palette.darkVibrantColor?.color ??
               Colors.black;
@@ -111,45 +78,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final playerState = ref.watch(playerProvider);
     final currentTrack = playerState.currentTrack;
 
-    // Dispara a análise de cor
     _updateColorLogic(currentTrack);
 
-    // Usa a cor extraída ou preto
-    final uiColor = currentTrack != null ? _dynamicNavbarColor : Colors.black;
-    final double bottomAreaHeight = 59.0 + (currentTrack != null ? 78.0 : 0.0);
+    final uiColor = currentTrack != null ? _dynamicColor : Colors.black;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // Conteúdo Principal
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: bottomAreaHeight,
-            child: IndexedStack(
-              index: _selectedIndex,
-              children: _screens,
-            ),
-          ),
-
-          // Player + Navbar (Fixados embaixo)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (currentTrack != null)
-                  _buildMiniPlayer(context, ref, playerState, uiColor),
-                _buildCustomNavbar(context, uiColor),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (currentTrack != null)
+          _buildMiniPlayer(context, ref, playerState, uiColor),
+        _buildCustomNavbar(context, uiColor),
+      ],
     );
   }
 
@@ -158,7 +97,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final track = playerState.currentTrack!;
     final isPlaying = playerState.isPlaying;
 
-    // Correção: Fallback para display_name para evitar "Desconhecido"
     final title = track['title'] ??
         track['display_name'] ??
         track['trackName'] ??
@@ -182,7 +120,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         );
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 700), // Transição suave da cor
+        duration: const Duration(milliseconds: 700),
         curve: Curves.easeOut,
         width: double.infinity,
         height: 78,
@@ -193,7 +131,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         ),
         child: Stack(
           children: [
-            // Capa do Álbum
             Positioned(
               left: 33,
               top: 9,
@@ -210,7 +147,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                 ),
               ),
             ),
-            // Informações
             Positioned(
               left: 102,
               top: 9,
@@ -240,7 +176,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                 ],
               ),
             ),
-            // Controles
             Positioned(
               right: 21,
               top: 0,
@@ -281,8 +216,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   Widget _buildCustomNavbar(BuildContext context, Color backgroundColor) {
     return AnimatedContainer(
-      duration: const Duration(
-          milliseconds: 700), // Mesma duração do miniplayer para sincronia
+      duration: const Duration(milliseconds: 700),
       curve: Curves.easeOut,
       width: double.infinity,
       color: backgroundColor,
@@ -305,9 +239,16 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   Widget _buildNavItem(
       int index, String label, IconData iconData, double width, double height) {
-    final isSelected = _selectedIndex == index;
+    final isSelected = widget.selectedIndex == index;
     return GestureDetector(
-      onTap: () => setState(() => _selectedIndex = index),
+      onTap: () {
+        if (widget.onNavTap != null) {
+          widget.onNavTap!(index);
+        } else {
+          // Se não houver callback, volta para HomeShell e seleciona a tab
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        }
+      },
       behavior: HitTestBehavior.opaque,
       child: SizedBox(
         width: 100,
@@ -344,4 +285,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       ),
     );
   }
+}
+
+/// Calcula a altura do bottom area baseado no estado do player
+double getBottomNavAreaHeight(WidgetRef ref) {
+  final playerState = ref.watch(playerProvider);
+  final hasTrack = playerState.currentTrack != null;
+  return 59.0 + (hasTrack ? 78.0 : 0.0);
 }
