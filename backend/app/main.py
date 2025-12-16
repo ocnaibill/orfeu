@@ -604,42 +604,58 @@ async def search_catalog(
     query: str, 
     limit: int = 20, 
     offset: int = 0, 
-    type: str = Query("song", enum=["song", "album", "artist"]) # ADICIONADO 'artist'
+    type: str = Query("song", enum=["song", "album", "artist"]) 
 ):
-    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
+    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}, Limit: {limit}, Offset: {offset}]")
     results = []
     
-    # 1. Tenta TIDAL primeiro para QUALQUER tipo (song, album, artist)
-    try:
-        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
-        if tidal_results: 
-            results = tidal_results
-    except Exception as e: 
-        print(f"⚠️ Tidal falhou: {e}")
+    # Precisamos pedir (limit + offset) aos providers porque eles não suportam paginação real (stateful)
+    # e podem sempre retornar do início. Assim garantimos que temos itens suficientes para o slice final.
+    fetch_limit = limit + offset
 
-    # 2. Fallback para YTMusic/CatalogProvider se Tidal não retornar nada
+    # 1. Tenta TIDAL primeiro
+    try:
+        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, fetch_limit, type)
+        if tidal_results: 
+            print(f"   ✅ Tidal retornou {len(tidal_results)} resultados.")
+            results = tidal_results
+        else:
+            print("   ⚠️ Tidal retornou lista vazia.")
+    except Exception as e: 
+        print(f"   ❌ Erro no Tidal: {e}")
+
+    # 2. Fallback para YTMusic/CatalogProvider se Tidal falhar
     if not results:
         print("   -> Fallback para CatalogProvider (YTMusic)...")
-        yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
-        results = yt_results
+        try:
+            yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
+            if yt_results:
+                print(f"   ✅ YTMusic retornou {len(yt_results)} resultados.")
+                results = yt_results
+            else:
+                print("   ⚠️ YTMusic retornou lista vazia.")
+        except Exception as e:
+            print(f"   ❌ Erro no YTMusic: {e}")
 
-    # 3. Paginação Manual (se necessário, pois Providers já limitam, mas o merge pode variar)
-    final_page = results
-    if len(results) > limit:
-         start = offset
-         end = offset + limit
-         if start < len(results): 
-             final_page = results[start:end]
-         else: 
-             final_page = []
+    # 3. Paginação Manual Robusta
+    # Garante que o slice respeite os limites da lista retornada
+    total_items = len(results)
+    final_page = []
+    
+    if total_items > offset:
+        end = offset + limit
+        final_page = results[offset : end]
+    
+    print(f"   📤 Retornando {len(final_page)} itens (Offset: {offset}, Total Bruto: {total_items})")
 
-    # 4. Verifica downloads locais (Apenas para músicas por enquanto)
+    # 4. Verifica downloads locais
     for item in final_page:
         if item.get('type') == 'song':
-            local_file = find_local_match(item['artistName'], item['trackName'])
+            local_file = find_local_match(item.get('artistName', ''), item.get('trackName', ''))
             item['isDownloaded'] = local_file is not None
             item['filename'] = local_file
         else:
+            # Artistas e álbuns não têm arquivo único associado dessa forma
             item['isDownloaded'] = False
             item['filename'] = None
 
