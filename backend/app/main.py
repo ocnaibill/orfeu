@@ -367,6 +367,69 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
         "tracks": tracks_data
     }
 
+
+# --- ROTAS DA HOME (FEED & ANALYTICS) - RESTAURADAS ---
+@app.get("/home/continue-listening")
+def get_continue_listening(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return AnalyticsService.get_recently_played(db, current_user.id, limit)
+
+@app.get("/home/trajectory")
+def get_trajectory(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    retro_playlists = db.query(models.Playlist)\
+        .filter(models.Playlist.user_id == current_user.id, models.Playlist.name.like("Retrospectiva%"))\
+        .order_by(models.Playlist.created_at.desc())\
+        .all()
+    return [{
+        "id": p.id,
+        "title": p.name,
+        "artist": "Orfeu Rewind",
+        "imageUrl": f"https://ui-avatars.com/api/?name={quote(p.name)}&background=D4AF37&color=000&size=300",
+        "type": "playlist"
+    } for p in retro_playlists]
+
+@app.get("/home/recommendations")
+async def get_recommendations(limit: int = 10):
+    try:
+        results = await run_in_threadpool(TidalProvider.search_catalog, "Top Hits", limit, "album")
+        recommendations = []
+        for item in results:
+            recommendations.append({
+                "title": item['collectionName'],
+                "artist": item['artistName'],
+                "imageUrl": item['artworkUrl'],
+                "type": "album",
+                "id": item['collectionId']
+            })
+        return recommendations
+    except: return []
+
+@app.get("/home/new-releases")
+async def get_new_releases(limit: int = 10):
+    try:
+        results = await run_in_threadpool(TidalProvider.search_catalog, "New Music", limit, "album")
+        news = []
+        for item in results:
+            news.append({
+                "title": item['collectionName'],
+                "artist": item['artistName'],
+                "imageUrl": item['artworkUrl'],
+                "type": "album",
+                "id": item['collectionId'],
+                "vibrantColorHex": "#4A00E0" 
+            })
+        return news
+    except: return []
+
+# --- ANALYTICS (PERFIL) ---
+@app.get("/users/me/analytics/summary")
+def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return AnalyticsService.get_user_stats(db, current_user.id, days)
+
+@app.get("/users/me/analytics/top-tracks")
+def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
+
+
 # --- ANALYTICS ---
 
 @app.get("/users/me/analytics/summary")
