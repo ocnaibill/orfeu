@@ -288,6 +288,7 @@ def get_favorites(db: Session = Depends(get_db), current_user: models.User = Dep
         "display_name": t.title,
         "artist": t.artist,
         "album": t.album,
+        "duration": t.duration,
         "format": t.filename.split('.')[-1] if t.filename else "",
         "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
         "isFavorite": True
@@ -358,6 +359,7 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
             "display_name": t.title,
             "artist": t.artist,
             "album": t.album,
+            "duration": t.duration,
             "format": t.filename.split('.')[-1] if t.filename else "",
             "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
             "id": t.id,
@@ -931,4 +933,5 @@ async def get_library():
                         "coverProxyUrl": get_short_cover_url(file) 
                     })
                 except: pass
+
     return library
