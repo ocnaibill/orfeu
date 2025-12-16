@@ -2,185 +2,501 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
+import '../services/discord_service.dart';
 
-// Providers de Analytics
-final userStatsProvider =
-    FutureProvider.family<Map<String, dynamic>, int>((ref, days) async {
-  final dio = ref.watch(dioProvider);
-  final resp = await dio
-      .get('/users/me/analytics/summary', queryParameters: {'days': days});
-  return resp.data;
-});
-
-final topTracksProvider = FutureProvider<List<dynamic>>((ref) async {
-  final dio = ref.read(dioProvider);
-  final resp = await dio.get('/users/me/analytics/top-tracks?limit=5');
-  return resp.data;
-});
-
-class ProfileScreen extends ConsumerWidget {
+class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Padrão 30 dias
-    final statsAsync = ref.watch(userStatsProvider(30));
-    final topTracksAsync = ref.watch(topTracksProvider);
+  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+  // Estados locais para configurações (Simulação de persistência)
+  bool _shareHistory = true;
+  bool _discordRpc = true;
+  String _streamQuality = 'lossless'; // low, medium, high, lossless
+
+  @override
+  Widget build(BuildContext context) {
+    // Dados do usuário (Mock ou do AuthProvider)
+    final authState = ref.watch(authProvider);
+    final userName = authState.username ?? "Usuário";
+    final userImage = "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"; // Mock de avatar
+
+    // Estatísticas (Mock)
+    const int playlistCount = 12;
+    const int genreCount = 8;
+    const int artistCount = 145;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        title: Text("Seu Perfil",
-            style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.transparent,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.redAccent),
-            onPressed: () {
-              ref.read(authProvider.notifier).logout();
-              Navigator.pop(context); // Fecha o modal/tela
-            },
-          )
-        ],
-      ),
+      backgroundColor: Colors.black,
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // --- Cabeçalho do Usuário ---
-            const CircleAvatar(
-              radius: 40,
-              backgroundColor: Color(0xFFD4AF37),
-              child: Icon(Icons.person, size: 40, color: Colors.black),
-            ),
-            const SizedBox(height: 16),
-            Text("Olá, Audiófilo!",
-                style: GoogleFonts.outfit(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white)),
-            const Text("Aqui está o seu resumo mensal.",
-                style: TextStyle(color: Colors.white54)),
+            const SizedBox(height: 45), // Espaço seguro topo
 
-            const SizedBox(height: 30),
-
-            // --- Cards de Estatísticas ---
-            statsAsync.when(
-              data: (stats) => Row(
+            // --- 0. TOP BAR (Voltar + Logout) ---
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _buildStatCard(
-                      "Minutos", "${stats['total_minutes']}", Icons.timer),
-                  const SizedBox(width: 12),
-                  _buildStatCard(
-                      "Plays", "${stats['total_plays']}", Icons.play_arrow),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(), 
+                    alignment: Alignment.centerLeft,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.logout, color: Colors.redAccent),
+                    tooltip: "Sair",
+                    onPressed: () {
+                      ref.read(authProvider.notifier).logout();
+                      Navigator.pop(context); // Fecha a tela atual
+                    },
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    alignment: Alignment.centerRight,
+                  ),
                 ],
               ),
-              loading: () =>
-                  const LinearProgressIndicator(color: Color(0xFFD4AF37)),
-              error: (err, _) =>
-                  Text("Erro: $err", style: const TextStyle(color: Colors.red)),
             ),
 
-            const SizedBox(height: 30),
+            const SizedBox(height: 20), // "20px abaixo do botão de voltar"
 
-            // --- Top Artista ---
-            statsAsync.when(
-              data: (stats) => Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [Color(0xFFD4AF37), Color(0xFFA08020)]),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("ARTISTA DO MÊS",
-                        style: TextStyle(
-                            color: Colors.black54,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12)),
-                    Text(stats['top_artist'] ?? "Ninguém... ainda",
-                        style: GoogleFonts.outfit(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.black)),
-                    Text("${stats['top_artist_plays']} reproduções",
-                        style: const TextStyle(
-                            color: Colors.black87,
-                            fontWeight: FontWeight.w500)),
-                  ],
-                ),
+            // --- BLOCO TOPO: PERFIL (ESQ) + ESTATÍSTICAS (DIR) ---
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 33), // "33px de distancia de seus respectivos cantos"
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start, // Alinha pelo topo
+                children: [
+                  // --- CONTEINER 1: FOTO, NOME, BOTÃO ---
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.center, // Centraliza botão em relação a foto+nome
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 50,
+                            height: 50,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              image: DecorationImage(
+                                image: NetworkImage(userImage),
+                                fit: BoxFit.cover,
+                              ),
+                              color: Colors.grey[800],
+                            ),
+                          ),
+                          const SizedBox(width: 10), // "10px a direita da foto"
+                          
+                          Text(
+                            userName,
+                            style: GoogleFonts.firaSans(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                      
+                      const SizedBox(height: 10), // "10px abaixo da foto"
+
+                      // Botão Editar Perfil
+                      GestureDetector(
+                        onTap: () => _showEditProfileModal(context, userName),
+                        child: Container(
+                          width: 130,
+                          height: 35,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFD9D9D9).withOpacity(0.60),
+                            borderRadius: BorderRadius.circular(17.5),
+                          ),
+                          child: Text(
+                            "Editar perfil",
+                            style: GoogleFonts.firaSans(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600, // SemiBold
+                              color: Colors.black,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // --- CONTEINER 2: ESTATÍSTICAS ---
+                  // Usamos Flexible/FittedBox para garantir que caiba em telas estreitas
+                  Flexible(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildStatItem("Playlists", playlistCount.toString()),
+                          _buildStatSeparator(),
+                          _buildStatItem("Gêneros", genreCount.toString()),
+                          _buildStatSeparator(),
+                          _buildStatItem("Artistas", artistCount.toString()),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              loading: () => const SizedBox(),
-              error: (_, __) => const SizedBox(),
             ),
 
-            const SizedBox(height: 30),
+            const SizedBox(height: 70), // "70px abaixo"
 
-            // --- Top Músicas ---
-            Text("Mais Ouvidas",
-                style: GoogleFonts.outfit(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white)),
-            const SizedBox(height: 10),
+            // --- 3. CONFIGURAÇÕES ---
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 33),
+              child: Column(
+                children: [
+                  _buildSettingsTile(
+                    label: "Privacidade",
+                    onTap: () => _showPrivacyModal(context),
+                  ),
+                  const SizedBox(height: 15), 
+                  
+                  _buildSettingsTile(
+                    label: "Idioma",
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Em breve")));
+                    },
+                  ),
+                  const SizedBox(height: 15),
 
-            topTracksAsync.when(
-              data: (tracks) => Column(
-                children: tracks
-                    .map<Widget>((t) => ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: Text("${tracks.indexOf(t) + 1}",
-                              style: const TextStyle(
-                                  color: Color(0xFFD4AF37),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16)),
-                          title: Text(t['display_name'],
-                              style: const TextStyle(color: Colors.white)),
-                          subtitle: Text(t['artist'],
-                              style: const TextStyle(color: Colors.white54)),
-                          trailing: Text("${t['plays']} plays",
-                              style: const TextStyle(
-                                  color: Colors.white38, fontSize: 12)),
-                        ))
-                    .toList(),
+                  _buildSettingsTile(
+                    label: "Qualidade do Streaming",
+                    onTap: () => _showQualityModal(context),
+                  ),
+                  const SizedBox(height: 15),
+
+                  _buildSettingsTile(
+                    label: "Downloads",
+                    onTap: () => _showDownloadsModal(context),
+                  ),
+                ],
               ),
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => const Text("Sem dados."),
-            )
+            ),
+
+            const SizedBox(height: 50), // "50px abaixo das opções"
+
+            // --- 4. CARD VIBE MUSICAL ---
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 33),
+              child: GestureDetector(
+                onTap: () {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Calculando sua vibe...")));
+                },
+                child: Container(
+                  height: 120,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            "Sua Vibe Musical",
+                            style: GoogleFonts.firaSans(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            "Ver estatísticas",
+                            style: GoogleFonts.firaSans(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w400,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Icon(Icons.auto_graph, color: Colors.white, size: 40),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 50), // Margem final
           ],
         ),
       ),
     );
   }
 
-  Widget _buildStatCard(String label, String value, IconData icon) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white10),
+  // --- WIDGETS AUXILIARES ---
+
+  Widget _buildStatItem(String label, String count) {
+    return Column(
+      children: [
+        Text(
+          count,
+          style: GoogleFonts.firaSans(
+            fontSize: 24,
+            fontWeight: FontWeight.w600, // SemiBold
+            color: Colors.white,
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        Text(
+          label,
+          style: GoogleFonts.firaSans(
+            fontSize: 14,
+            fontWeight: FontWeight.w600, // SemiBold
+            color: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatSeparator() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 10), // "10 de gap"
+      height: 40,
+      width: 2,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(2), // "Arredondada"
+      ),
+    );
+  }
+
+  Widget _buildSettingsTile({required String label, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 50, // Altura estimada para clique confortável
+        color: Colors.transparent, // Hitbox
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Icon(icon, color: const Color(0xFFD4AF37), size: 20),
-            const SizedBox(height: 8),
-            Text(value,
-                style: GoogleFonts.outfit(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white)),
-            Text(label,
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            Text(
+              label,
+              style: GoogleFonts.firaSans(
+                fontSize: 16,
+                fontWeight: FontWeight.normal, // Regular
+                color: Colors.white,
+              ),
+            ),
+            const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 16),
           ],
         ),
       ),
+    );
+  }
+
+  // --- MODAIS ---
+
+  void _showEditProfileModal(BuildContext context, String currentName) {
+    final nameCtrl = TextEditingController(text: currentName);
+    final emailCtrl = TextEditingController(text: "usuario@email.com"); // Mock
+    final passCtrl = TextEditingController();
+    final oldPassCtrl = TextEditingController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+            left: 20, right: 20, top: 20
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Editar Perfil", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              const SizedBox(height: 20),
+              _buildTextField("Nome de Exibição", nameCtrl),
+              _buildTextField("Email", emailCtrl),
+              const Divider(color: Colors.white24, height: 30),
+              Text("Alterar Senha", style: GoogleFonts.firaSans(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              const SizedBox(height: 10),
+              _buildTextField("Senha Atual", oldPassCtrl, isPassword: true),
+              _buildTextField("Nova Senha", passCtrl, isPassword: true),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFD4AF37),
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: () {
+                    // Implementar lógica de update no AuthController
+                    Navigator.pop(context);
+                  },
+                  child: const Text("Salvar Alterações"),
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTextField(String label, TextEditingController controller, {bool isPassword = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        obscureText: isPassword,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.white54),
+          enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+          focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFFD4AF37))),
+        ),
+      ),
+    );
+  }
+
+  void _showPrivacyModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateModal) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Privacidade", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 20),
+                  SwitchListTile(
+                    title: Text("Histórico de Reprodução", style: GoogleFonts.firaSans(color: Colors.white)),
+                    subtitle: Text("Usado para retrospectivas e rankings.", style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)),
+                    activeColor: const Color(0xFFD4AF37),
+                    value: _shareHistory,
+                    onChanged: (val) {
+                      setState(() => _shareHistory = val); // Atualiza tela principal
+                      setStateModal(() => _shareHistory = val); // Atualiza modal
+                    },
+                  ),
+                  SwitchListTile(
+                    title: Text("Discord Rich Presence", style: GoogleFonts.firaSans(color: Colors.white)),
+                    subtitle: Text("Mostrar o que estou ouvindo no Discord (PC).", style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)),
+                    activeColor: const Color(0xFFD4AF37),
+                    value: _discordRpc,
+                    onChanged: (val) {
+                      setState(() => _discordRpc = val);
+                      setStateModal(() => _discordRpc = val);
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showQualityModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Qualidade do Streaming", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              const SizedBox(height: 20),
+              ...['low', 'medium', 'high', 'lossless'].map((q) {
+                return RadioListTile<String>(
+                  title: Text(q.toUpperCase(), style: GoogleFonts.firaSans(color: Colors.white)),
+                  subtitle: Text(
+                    q == 'lossless' ? "Original (FLAC)" : "MP3 (Compressão)", 
+                    style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)
+                  ),
+                  activeColor: const Color(0xFFD4AF37),
+                  value: q,
+                  groupValue: _streamQuality,
+                  onChanged: (val) {
+                    setState(() => _streamQuality = val!);
+                    Navigator.pop(context);
+                  },
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showDownloadsModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Downloads", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              const SizedBox(height: 20),
+              ListTile(
+                leading: const Icon(Icons.sd_storage, color: Colors.white),
+                title: Text("Armazenamento Usado", style: GoogleFonts.firaSans(color: Colors.white)),
+                trailing: Text("1.2 GB", style: GoogleFonts.firaSans(color: Colors.white54)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                title: Text("Apagar todos os downloads", style: GoogleFonts.firaSans(color: Colors.redAccent)),
+                onTap: () {
+                  // Lógica futura de limpeza
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Downloads limpos (Simulação)")));
+                },
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

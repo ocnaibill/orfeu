@@ -174,11 +174,10 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
     return GestureDetector(
       onTap: () {
+        // ATUALIZADO: Usa a rota com transição fluida (Slide Up)
+        // Isso combina com o Dismissible (Slide Down) na PlayerScreen
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => const PlayerScreen(),
-            fullscreenDialog: true,
-          ),
+          PlayerScreen.createRoute(),
         );
       },
       child: AnimatedContainer(
