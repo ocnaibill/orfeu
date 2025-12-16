@@ -28,6 +28,7 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 from app.services.analytics_service import AnalyticsService
+from app.services.release_date_provider import ReleaseDateProvider
 
 
 
@@ -409,9 +410,10 @@ async def get_recommendations(limit: int = 10):
 async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
     Seção 'Novidades dos seus favoritos':
-    Usa CatalogProvider (YTMusic) para descobrir os álbuns (maior abrangência).
-    Usa TidalProvider (Tidal) para enriquecer com DATA EXATA (YYYY-MM-DD) e Capa HQ.
-    Ordena precisamente por data.
+    1. Pega Top Artistas.
+    2. Busca álbuns no YTMusic (maior abrangência).
+    3. Filtra pelo ano mais recente.
+    4. Se houver empate no ano, usa ReleaseDateProvider (iTunes) para pegar a data exata.
     """
     news = []
     
@@ -431,73 +433,68 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
             print(f"🌟 Buscando novidades para: {top_artists}")
             for artist in top_artists:
                 try:
-                    # A. Descoberta via YTMusic (Mais tolerante a nomes de artista)
-                    # Busca 5 álbuns
-                    results = await run_in_threadpool(CatalogProvider.search_catalog, artist, 5, "album")
+                    # A. Busca álbuns no YTMusic (Garante que acha tudo)
+                    results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
                     
                     if results:
-                        # Filtra apenas álbuns que realmente são desse artista (Fuzzy > 80%)
+                        # Filtra por nome do artista
                         artist_albums = [
                             r for r in results 
                             if fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName'])) > 80
                         ]
                         
-                        # B. Enriquecimento via Tidal (Para pegar Data Exata)
-                        for album in artist_albums:
-                            # Se a data for só o ano (padrão YTMusic), tenta refinar no Tidal
-                            if len(album.get('releaseDate', '')) <= 4:
-                                try:
-                                    # Busca específica pelo NOME DO ÁLBUM no Tidal
-                                    tidal_matches = await run_in_threadpool(
-                                        TidalProvider.search_catalog, 
-                                        album['collectionName'], 
-                                        5, 
-                                        "album"
-                                    )
-                                    # Encontra o match do mesmo artista
-                                    for tm in tidal_matches:
-                                        if fuzz.token_set_ratio(tm['artistName'], artist) > 85:
-                                            # BINGO! Temos data precisa e capa melhor
-                                            album['releaseDate'] = tm['releaseDate']
-                                            album['artworkUrl'] = tm['artworkUrl']
-                                            album['year'] = tm['year']
-                                            print(f"   ✨ Data refinada para {album['collectionName']}: {album['releaseDate']}")
-                                            break
-                                except: pass
+                        if not artist_albums: continue
 
-                        # C. Ordena por Data Decrescente (ISO-8601 YYYY-MM-DD funciona alfabeticamente)
-                        artist_albums.sort(
-                            key=lambda x: x.get('releaseDate') or x.get('year') or "0000-00-00", 
-                            reverse=True
-                        )
+                        # B. Encontra o ano mais recente (String comparison works for years)
+                        # Ex: "2025" > "2024"
+                        artist_albums.sort(key=lambda x: x.get('year') or "0000", reverse=True)
+                        latest_year = artist_albums[0].get('year')
                         
-                        if artist_albums:
-                            item = artist_albums[0] # O mais recente
-                            
-                            # Evita duplicatas
-                            if not any(n['title'] == item['collectionName'] for n in news):
-                                news.append({
-                                    "title": item['collectionName'],
-                                    "artist": item['artistName'],
-                                    "imageUrl": item['artworkUrl'],
-                                    "type": "album",
-                                    "id": item['collectionId'], # ID do YTMusic (alfanumérico)
-                                    "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
-                                })
-                except Exception as e:
-                    print(f"⚠️ Erro buscando novidades de {artist}: {e}")
-    except Exception as e:
-        print(f"❌ Erro ao processar favoritos: {e}")
+                        # Filtra apenas os álbuns desse ano mais recente
+                        candidates = [a for a in artist_albums if a.get('year') == latest_year]
+                        
+                        winner = candidates[0]
 
-    # 3. Fallback Global (Top Albums no YTMusic)
+                        # C. TIRA-TEIMA: Se houver mais de um álbum no mesmo ano mais recente
+                        if len(candidates) > 1:
+                            print(f"   ⚔️ Empate em {latest_year} para {artist}. Buscando datas exatas...")
+                            
+                            # Busca data exata para cada candidato
+                            for cand in candidates:
+                                exact_date = await run_in_threadpool(
+                                    ReleaseDateProvider.get_exact_date, 
+                                    artist, 
+                                    cand['collectionName']
+                                )
+                                cand['releaseDate'] = exact_date or f"{latest_year}-01-01" # Fallback para 1 de jan se falhar
+                                print(f"      -> {cand['collectionName']}: {cand['releaseDate']}")
+
+                            # Reordena pela data completa ISO (YYYY-MM-DD)
+                            candidates.sort(key=lambda x: x['releaseDate'], reverse=True)
+                            winner = candidates[0]
+                        
+                        # Adiciona o vencedor à lista final
+                        if not any(n['title'] == winner['collectionName'] for n in news):
+                            news.append({
+                                "title": winner['collectionName'],
+                                "artist": winner['artistName'],
+                                "imageUrl": winner['artworkUrl'],
+                                "type": "album",
+                                "id": winner['collectionId'],
+                                "vibrantColorHex": f"#{hash(winner['artistName']) & 0xFFFFFF:06x}"
+                            })
+
+                except Exception as e:
+                    print(f"⚠️ Erro processando {artist}: {e}")
+    except Exception as e:
+        print(f"❌ Erro geral favoritos: {e}")
+
+    # 3. Fallback Global
     if len(news) < 3:
         try:
-            print(f"   Complementando com Top Albums globais (YTMusic)... (Atual: {len(news)})")
-            # Mudança de 'New Releases' para 'Top Albums' ou 'Hits' para garantir resultados
-            results = await run_in_threadpool(CatalogProvider.search_catalog, "Top Albums", 10, "album")
-            
+            print("   Complementando com Top Albums globais...")
+            results = await run_in_threadpool(CatalogProvider.search_catalog, "Top Albums", "album", 10)
             for item in results:
-                # Adiciona se não for duplicado
                 if not any(n['title'] == item['collectionName'] for n in news):
                     news.append({
                         "title": item['collectionName'],
@@ -508,10 +505,8 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
                         "vibrantColorHex": "#4A00E0" 
                     })
                     if len(news) >= limit: break
-        except Exception as e: 
-            print(f"❌ Erro no fallback YTMusic: {e}")
+        except: pass
             
-    print(f"✅ Retornando {len(news)} novidades.")
     return news
 
 # --- ANALYTICS (PERFIL) ---
