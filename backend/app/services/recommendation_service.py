@@ -4,13 +4,12 @@ from rapidfuzz import fuzz
 from unidecode import unidecode
 import random
 
-# IMPORTANTE: Continuamos usando o ReleaseDateProvider aqui dentro!
 from app.services.release_date_provider import ReleaseDateProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 
 def normalize_text(text: str) -> str:
-    """Helper local para normalização (substituindo o import quebrado)"""
+    """Helper local para normalização"""
     if not text: return ""
     return unidecode(text.lower().replace("$", "s").replace("&", "and")).strip()
 
@@ -18,8 +17,8 @@ class MusicRecommender:
     """
     Gerencia a lógica de recomendação:
     1. Favoritos (Ouro) - Verifica ano e faz tira-teima de data usando ReleaseDateProvider.
-    2. Relacionados/Gênero (Prata) - Busca artistas similares.
-    3. Global (Bronze/Fallback) - Top Charts.
+    2. Relacionados (Prata) - Busca artistas similares (futuro).
+    3. SEM FALLBACK GLOBAL PARA ESTA ROTA.
     """
 
     async def get_new_releases(self, top_artists: list[str], limit: int = 10) -> list[dict]:
@@ -28,25 +27,15 @@ class MusicRecommender:
 
         # --- FASE 1: Artistas Favoritos (Ouro) ---
         if top_artists:
-            print(f"🌟 Buscando novidades para favoritos: {top_artists}")
+            print(f"🌟 Buscando novidades estritas para: {top_artists}")
             favorites_news = await self._process_artists_list(top_artists)
             self._add_unique(news, favorites_news, seen_titles)
 
-        # --- FASE 2: Artistas Relacionados (Prata) ---
+        # --- FASE 2: Artistas Relacionados (Prata - Opcional) ---
         if len(news) < limit:
-            # Aqui você pode implementar a lógica de buscar artistas similares no futuro
-            # Por enquanto, focamos nos favoritos e fallback global
+            # Espaço reservado para buscar "Similares" no futuro, 
+            # mas SEM preencher com Top Global.
             pass
-
-        # --- FASE 3: Fallback Global (Bronze) ---
-        if len(news) < 5: 
-            print("🌍 Complementando com Top Albums globais...")
-            try:
-                global_results = await run_in_threadpool(CatalogProvider.search_catalog, "Top Albums", "album", 10)
-                formatted_global = [self._format_item(item, is_global=True) for item in global_results]
-                self._add_unique(news, formatted_global, seen_titles)
-            except Exception as e:
-                print(f"⚠️ Erro no fallback global: {e}")
 
         return news[:limit]
 
@@ -62,11 +51,18 @@ class MusicRecommender:
                 results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
                 if not results: continue
 
-                # 2. Filtra por nome (Fuzzy Match)
-                artist_albums = [
-                    r for r in results 
-                    if fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName'])) > 80
-                ]
+                # 2. Filtra por nome (STRICT MATCH)
+                # Mudança Crítica: Usamos token_sort_ratio > 90 para evitar falsos positivos
+                # Isso impede que "Laufey" dê match com "The Moon" ou bandas aleatórias
+                artist_clean = normalize_text(artist)
+                artist_albums = []
+                
+                for r in results:
+                    r_artist_clean = normalize_text(r['artistName'])
+                    # Verifica match muito forte ou contêm o nome exato
+                    if fuzz.token_sort_ratio(artist_clean, r_artist_clean) > 90 or artist_clean == r_artist_clean:
+                        artist_albums.append(r)
+                
                 if not artist_albums: continue
 
                 # 3. Encontra o ano mais recente
