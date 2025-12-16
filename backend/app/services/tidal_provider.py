@@ -64,6 +64,9 @@ class TidalProvider:
                 elif item.get('artists'):
                     artist_name = item['artists'][0].get('name')
 
+                release_date = str(item.get('releaseDate', '')) # Ex: "2025-08-22"
+                year = release_date[:4] if len(release_date) >= 4 else ""
+
                 if type == "song":
                     album_name = item.get('album', {}).get('title', 'Single')
                     normalized_results.append({
@@ -74,6 +77,7 @@ class TidalProvider:
                         "artworkUrl": artwork_url,
                         "previewUrl": None,
                         "year": "", 
+                        "releaseDate": release_date,
                         "isLossless": item.get('audioQuality') == 'LOSSLESS',
                         "source": "Tidal",
                         "tidalId": item.get('id') 
@@ -86,6 +90,7 @@ class TidalProvider:
                         "artistName": artist_name,
                         "artworkUrl": artwork_url,
                         "year": str(item.get('releaseDate', ''))[:4],
+                        "releaseDate": release_date,
                         "trackCount": item.get('numberOfTracks'),
                         "source": "Tidal"
                     })

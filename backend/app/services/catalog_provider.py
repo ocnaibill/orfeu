@@ -24,9 +24,11 @@ class CatalogProvider:
                 artist_data = item.get('artists', [{}])
                 artist_name = artist_data[0].get('name', 'Desconhecido')
                 
-                # CORREÇÃO DO ANO:
-                # Garante que seja string vazia se for None ou não existir
+                # CORREÇÃO DO ANO/DATA:
+                # O YouTube Music na busca geralmente retorna apenas o Ano (ex: "2025")
+                # Mapeamos para releaseDate para manter compatibilidade com o algoritmo de ordenação do main.py
                 year = str(item.get('year') or '').strip()
+                release_date = year # Fallback, já que a busca não traz YYYY-MM-DD
                 
                 if type == "song":
                     album_data = item.get('album', {})
@@ -40,6 +42,7 @@ class CatalogProvider:
                         "artworkUrl": artwork_url,
                         "previewUrl": None, 
                         "year": year, 
+                        "releaseDate": release_date, # Compatibilidade
                         "videoId": item.get('videoId')
                     })
                 
@@ -51,6 +54,7 @@ class CatalogProvider:
                         "artistName": artist_name,
                         "artworkUrl": artwork_url,
                         "year": year,
+                        "releaseDate": release_date, # Compatibilidade
                         "trackCount": 0
                     })
 
@@ -71,7 +75,6 @@ class CatalogProvider:
             tracks = []
             # CORREÇÃO NUMERAÇÃO:
             # Usamos enumerate(start=1) para garantir numeração sequencial correta (1, 2, 3...)
-            # baseada na ordem que o YouTube entrega.
             for i, track in enumerate(album.get('tracks', []), start=1):
                 if not track.get('title'): continue
 
@@ -82,21 +85,25 @@ class CatalogProvider:
                 duration_sec = track.get('duration_seconds', 0)
                 
                 tracks.append({
-                    "trackNumber": i, # Agora usa o índice do loop + 1
+                    "trackNumber": i, 
                     "trackName": track.get('title'),
                     "artistName": artist_name,
                     "collectionName": album.get('title'),
-                    "durationMs": int(duration_sec) * 1000, # Garante int
+                    "durationMs": int(duration_sec) * 1000, 
                     "previewUrl": None,
                     "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else ""
                 })
-
+            
+            # Tenta extrair ano ou data mais completa se disponível nos detalhes
+            year = str(album.get('year') or '')
+            
             return {
                 "collectionId": browse_id,
                 "collectionName": album.get('title'),
                 "artistName": album['artists'][0]['name'] if album.get('artists') else "Vários",
                 "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else "",
-                "year": str(album.get('year') or ''),
+                "year": year,
+                "releaseDate": year, # Mantém compatibilidade
                 "tracks": tracks
             }
         except Exception as e:

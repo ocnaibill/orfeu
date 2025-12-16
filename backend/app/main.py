@@ -404,12 +404,12 @@ async def get_recommendations(limit: int = 10):
         return recommendations
     except: return []
 
-# --- NOVA LÓGICA: NOVIDADES PERSONALIZADAS ---
+# --- NOVIDADES PERSONALIZADAS ---
 @app.get("/home/new-releases")
 async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
     Seção 'Novidades dos seus favoritos':
-    Usa CatalogProvider (YTMusic) para buscar álbuns, pois lida melhor com busca por Artista.
+    Usa a DATA COMPLETA (YYYY-MM-DD) do Tidal para ordenar, garantindo precisão entre álbuns do mesmo ano.
     """
     news = []
     
@@ -425,24 +425,43 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
         
         top_artists = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
         
-        # 2. Busca Álbuns Recentes (YTMusic)
         if top_artists:
             print(f"🌟 Buscando novidades para: {top_artists}")
             for artist in top_artists:
                 try:
-                    # MUDANÇA: Usa CatalogProvider em vez de TidalProvider para melhor 'match' de artista
-                    results = await run_in_threadpool(CatalogProvider.search_catalog, artist, 1, "album")
+                    # Busca 10 álbuns para ter histórico suficiente
+                    results = await run_in_threadpool(TidalProvider.search_catalog, artist, 10, "album")
+                    
                     if results:
-                        item = results[0]
-                        if not any(n['id'] == item['collectionId'] for n in news):
-                            news.append({
-                                "title": item['collectionName'],
-                                "artist": item['artistName'],
-                                "imageUrl": item['artworkUrl'],
-                                "type": "album",
-                                "id": item['collectionId'],
-                                "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
-                            })
+                        # A. Filtra por nome do artista (Fuzzy)
+                        artist_albums = [
+                            r for r in results 
+                            if fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName'])) > 80
+                        ]
+                        
+                        # B. ORDENAÇÃO PRECISA POR DATA
+                        # Usa 'releaseDate' (YYYY-MM-DD) se existir, senão usa 'year', senão '0000'
+                        # Strings ISO-8601 ordenam corretamente de forma alfabética
+                        artist_albums.sort(
+                            key=lambda x: x.get('releaseDate') or x.get('year') or "0000-00-00", 
+                            reverse=True
+                        )
+                        
+                        if artist_albums:
+                            item = artist_albums[0] # O mais recente
+                            
+                            # Log para debug
+                            print(f"   📅 Recente de {artist}: {item['collectionName']} ({item.get('releaseDate')})")
+
+                            if not any(n['id'] == item['collectionId'] for n in news):
+                                news.append({
+                                    "title": item['collectionName'],
+                                    "artist": item['artistName'],
+                                    "imageUrl": item['artworkUrl'],
+                                    "type": "album",
+                                    "id": item['collectionId'],
+                                    "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
+                                })
                 except Exception as e:
                     print(f"⚠️ Erro buscando novidades de {artist}: {e}")
     except Exception as e:
@@ -466,6 +485,7 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
         except: pass
             
     return news
+
 
 # --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
