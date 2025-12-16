@@ -601,27 +601,39 @@ async def proxy_cover_art(hash_id: str):
 # --- BUSCA ---
 @app.get("/search/catalog")
 async def search_catalog(
-    query: str, limit: int = 20, offset: int = 0, type: str = Query("song", enum=["song", "album"])
+    query: str, 
+    limit: int = 20, 
+    offset: int = 0, 
+    type: str = Query("song", enum=["song", "album", "artist"]) # ADICIONADO 'artist'
 ):
     print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
     results = []
-    if type == "song":
-        try:
-            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
-            if tidal_results: results = tidal_results
-        except Exception as e: print(f"⚠️ Tidal falhou: {e}")
+    
+    # 1. Tenta TIDAL primeiro para QUALQUER tipo (song, album, artist)
+    try:
+        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
+        if tidal_results: 
+            results = tidal_results
+    except Exception as e: 
+        print(f"⚠️ Tidal falhou: {e}")
 
+    # 2. Fallback para YTMusic/CatalogProvider se Tidal não retornar nada
     if not results:
+        print("   -> Fallback para CatalogProvider (YTMusic)...")
         yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
         results = yt_results
 
+    # 3. Paginação Manual (se necessário, pois Providers já limitam, mas o merge pode variar)
     final_page = results
     if len(results) > limit:
          start = offset
          end = offset + limit
-         if start < len(results): final_page = results[start:end]
-         else: final_page = []
+         if start < len(results): 
+             final_page = results[start:end]
+         else: 
+             final_page = []
 
+    # 4. Verifica downloads locais (Apenas para músicas por enquanto)
     for item in final_page:
         if item.get('type') == 'song':
             local_file = find_local_match(item['artistName'], item['trackName'])
