@@ -409,9 +409,7 @@ async def get_recommendations(limit: int = 10):
 async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
     Seção 'Novidades dos seus favoritos':
-    1. Busca os top 5 artistas mais ouvidos pelo usuário.
-    2. Busca o álbum mais recente de cada um no Tidal.
-    3. Se não tiver histórico, retorna "New Music" global.
+    Usa CatalogProvider (YTMusic) para buscar álbuns, pois lida melhor com busca por Artista.
     """
     news = []
     
@@ -427,16 +425,15 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
         
         top_artists = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
         
-        # 2. Busca Álbuns Recentes para cada Artista
+        # 2. Busca Álbuns Recentes (YTMusic)
         if top_artists:
             print(f"🌟 Buscando novidades para: {top_artists}")
             for artist in top_artists:
                 try:
-                    # Busca álbuns do artista no Tidal (limit=1 pega o mais relevante/recente)
-                    results = await run_in_threadpool(TidalProvider.search_catalog, artist, 1, "album")
+                    # MUDANÇA: Usa CatalogProvider em vez de TidalProvider para melhor 'match' de artista
+                    results = await run_in_threadpool(CatalogProvider.search_catalog, artist, 1, "album")
                     if results:
                         item = results[0]
-                        # Filtra duplicatas (caso o mesmo álbum apareça)
                         if not any(n['id'] == item['collectionId'] for n in news):
                             news.append({
                                 "title": item['collectionName'],
@@ -444,7 +441,6 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
                                 "imageUrl": item['artworkUrl'],
                                 "type": "album",
                                 "id": item['collectionId'],
-                                # Gera cor vibrante baseada no nome do artista (hash simples para consistência)
                                 "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
                             })
                 except Exception as e:
@@ -452,11 +448,11 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
     except Exception as e:
         print(f"❌ Erro ao processar favoritos: {e}")
 
-    # 3. Fallback (Se a lista estiver vazia ou pequena)
+    # 3. Fallback Global (YTMusic)
     if len(news) < 3:
         try:
-            print("   Complementando com lançamentos globais...")
-            results = await run_in_threadpool(TidalProvider.search_catalog, "New Music", limit - len(news), "album")
+            print("   Complementando com lançamentos globais (YTMusic)...")
+            results = await run_in_threadpool(CatalogProvider.search_catalog, "New Releases", limit - len(news), "album")
             for item in results:
                 if not any(n['id'] == item['collectionId'] for n in news):
                     news.append({
