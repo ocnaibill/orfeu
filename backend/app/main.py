@@ -29,6 +29,8 @@ from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 from app.services.analytics_service import AnalyticsService
 from app.services.release_date_provider import ReleaseDateProvider
+from app.services.recommendation_service import MusicRecommender
+
 
 
 
@@ -410,104 +412,31 @@ async def get_recommendations(limit: int = 10):
 async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
     Seção 'Novidades dos seus favoritos':
-    1. Pega Top Artistas.
-    2. Busca álbuns no YTMusic (maior abrangência).
-    3. Filtra pelo ano mais recente.
-    4. Se houver empate no ano, usa ReleaseDateProvider (iTunes) para pegar a data exata.
+    Delega a lógica de busca, filtro de ano e 'tira-teima' de datas para o MusicRecommender.
     """
-    news = []
-    
-    # 1. Identifica Top Artistas
     try:
+        # 1. Identifica Top Artistas (Query mantida no Controller para acesso ao DB)
         top_artists_query = db.query(models.Track.artist, func.count(models.ListenHistory.id).label('count'))\
             .join(models.ListenHistory)\
             .filter(models.ListenHistory.user_id == current_user.id)\
             .group_by(models.Track.artist)\
             .order_by(desc('count'))\
-            .limit(5)\
+            .limit(10)\
             .all()
         
-        top_artists = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
+        # Lista limpa de strings
+        top_artists_names = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
         
-        if top_artists:
-            print(f"🌟 Buscando novidades para: {top_artists}")
-            for artist in top_artists:
-                try:
-                    # A. Busca álbuns no YTMusic (Garante que acha tudo)
-                    results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
-                    
-                    if results:
-                        # Filtra por nome do artista
-                        artist_albums = [
-                            r for r in results 
-                            if fuzz.partial_ratio(normalize_text(artist), normalize_text(r['artistName'])) > 80
-                        ]
-                        
-                        if not artist_albums: continue
-
-                        # B. Encontra o ano mais recente (String comparison works for years)
-                        # Ex: "2025" > "2024"
-                        artist_albums.sort(key=lambda x: x.get('year') or "0000", reverse=True)
-                        latest_year = artist_albums[0].get('year')
-                        
-                        # Filtra apenas os álbuns desse ano mais recente
-                        candidates = [a for a in artist_albums if a.get('year') == latest_year]
-                        
-                        winner = candidates[0]
-
-                        # C. TIRA-TEIMA: Se houver mais de um álbum no mesmo ano mais recente
-                        if len(candidates) > 1:
-                            print(f"   ⚔️ Empate em {latest_year} para {artist}. Buscando datas exatas...")
-                            
-                            # Busca data exata para cada candidato
-                            for cand in candidates:
-                                exact_date = await run_in_threadpool(
-                                    ReleaseDateProvider.get_exact_date, 
-                                    artist, 
-                                    cand['collectionName']
-                                )
-                                cand['releaseDate'] = exact_date or f"{latest_year}-01-01" # Fallback para 1 de jan se falhar
-                                print(f"      -> {cand['collectionName']}: {cand['releaseDate']}")
-
-                            # Reordena pela data completa ISO (YYYY-MM-DD)
-                            candidates.sort(key=lambda x: x['releaseDate'], reverse=True)
-                            winner = candidates[0]
-                        
-                        # Adiciona o vencedor à lista final
-                        if not any(n['title'] == winner['collectionName'] for n in news):
-                            news.append({
-                                "title": winner['collectionName'],
-                                "artist": winner['artistName'],
-                                "imageUrl": winner['artworkUrl'],
-                                "type": "album",
-                                "id": winner['collectionId'],
-                                "vibrantColorHex": f"#{hash(winner['artistName']) & 0xFFFFFF:06x}"
-                            })
-
-                except Exception as e:
-                    print(f"⚠️ Erro processando {artist}: {e}")
-    except Exception as e:
-        print(f"❌ Erro geral favoritos: {e}")
-
-    # 3. Fallback Global
-    if len(news) < 3:
-        try:
-            print("   Complementando com Top Albums globais...")
-            results = await run_in_threadpool(CatalogProvider.search_catalog, "Top Albums", "album", 10)
-            for item in results:
-                if not any(n['title'] == item['collectionName'] for n in news):
-                    news.append({
-                        "title": item['collectionName'],
-                        "artist": item['artistName'],
-                        "imageUrl": item['artworkUrl'],
-                        "type": "album",
-                        "id": item['collectionId'],
-                        "vibrantColorHex": "#4A00E0" 
-                    })
-                    if len(news) >= limit: break
-        except: pass
+        # 2. Chama o Recomendador Inteligente
+        recommender = MusicRecommender()
+        news = await recommender.get_new_releases(top_artists_names, limit=limit)
             
-    return news
+        return news
+    except Exception as e:
+        print(f"❌ Erro crítico em new-releases: {e}")
+        # Fallback de emergência simples para não quebrar a home
+        return []
+
 
 # --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
