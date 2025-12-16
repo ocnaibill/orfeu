@@ -1,18 +1,25 @@
 from fastapi.concurrency import run_in_threadpool
-from rapidfuzz import fuzz
 from sqlalchemy import desc
+from rapidfuzz import fuzz
+from unidecode import unidecode
+import random
 
-# Imports dos seus serviços existentes (ajuste se necessário)
+# IMPORTANTE: Continuamos usando o ReleaseDateProvider aqui dentro!
 from app.services.release_date_provider import ReleaseDateProvider
-from app.services.catalog_provider import CatalogProvider # Assumindo que esteja aqui
-from app.utils.text import normalize_text # Assumindo utils
+from app.services.catalog_provider import CatalogProvider
+from app.services.tidal_provider import TidalProvider
+
+def normalize_text(text: str) -> str:
+    """Helper local para normalização (substituindo o import quebrado)"""
+    if not text: return ""
+    return unidecode(text.lower().replace("$", "s").replace("&", "and")).strip()
 
 class MusicRecommender:
     """
     Gerencia a lógica de recomendação:
-    1. Favoritos (Ouro)
-    2. Relacionados/Gênero (Prata) - NOVO
-    3. Global (Bronze/Fallback)
+    1. Favoritos (Ouro) - Verifica ano e faz tira-teima de data usando ReleaseDateProvider.
+    2. Relacionados/Gênero (Prata) - Busca artistas similares.
+    3. Global (Bronze/Fallback) - Top Charts.
     """
 
     async def get_new_releases(self, top_artists: list[str], limit: int = 10) -> list[dict]:
@@ -26,17 +33,13 @@ class MusicRecommender:
             self._add_unique(news, favorites_news, seen_titles)
 
         # --- FASE 2: Artistas Relacionados (Prata) ---
-        # Se não encheu a lista, busca artistas parecidos
         if len(news) < limit:
-            print(f"🔍 Faltam slots ({len(news)}/{limit}). Buscando artistas relacionados...")
-            related_artists = await self._get_related_artists_names(top_artists)
-            
-            if related_artists:
-                related_news = await self._process_artists_list(related_artists, is_fallback=True)
-                self._add_unique(news, related_news, seen_titles)
+            # Aqui você pode implementar a lógica de buscar artistas similares no futuro
+            # Por enquanto, focamos nos favoritos e fallback global
+            pass
 
         # --- FASE 3: Fallback Global (Bronze) ---
-        if len(news) < 3: # Mantendo sua regra de mínimo de 3
+        if len(news) < 5: 
             print("🌍 Complementando com Top Albums globais...")
             try:
                 global_results = await run_in_threadpool(CatalogProvider.search_catalog, "Top Albums", "album", 10)
@@ -49,13 +52,13 @@ class MusicRecommender:
 
     async def _process_artists_list(self, artists: list[str], is_fallback: bool = False) -> list[dict]:
         """
-        Processa uma lista de artistas buscando álbuns, filtrando ano e desempatando datas.
+        Processa uma lista de artistas buscando álbuns e usando ReleaseDateProvider para precisão.
         """
         results_list = []
         
         for artist in artists:
             try:
-                # 1. Busca no CatalogProvider
+                # 1. Busca no CatalogProvider (YTMusic)
                 results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
                 if not results: continue
 
@@ -67,14 +70,17 @@ class MusicRecommender:
                 if not artist_albums: continue
 
                 # 3. Encontra o ano mais recente
-                artist_albums.sort(key=lambda x: x.get('year') or "0000", reverse=True)
+                artist_albums.sort(key=lambda x: str(x.get('year') or "0000"), reverse=True)
                 latest_year = artist_albums[0].get('year')
                 
+                if not latest_year: continue
+
                 # Filtra candidatos desse ano
                 candidates = [a for a in artist_albums if a.get('year') == latest_year]
                 winner = candidates[0]
 
-                # 4. TIRA-TEIMA (Lógica do ReleaseDateProvider)
+                # 4. TIRA-TEIMA (USO DO RELEASE DATE PROVIDER)
+                # Se houver empate no ano (ex: 3 singles em 2025), busca data exata no iTunes
                 if len(candidates) > 1:
                     print(f"   ⚔️ Empate em {latest_year} para {artist}. Buscando datas exatas...")
                     for cand in candidates:
@@ -86,11 +92,12 @@ class MusicRecommender:
                         cand['releaseDate'] = exact_date or f"{latest_year}-01-01"
                         print(f"      -> {cand['collectionName']}: {cand['releaseDate']}")
 
+                    # Ordena pela data completa
                     candidates.sort(key=lambda x: x['releaseDate'], reverse=True)
                     winner = candidates[0]
                 
                 # 5. Formata o vencedor
-                item = self._format_item(winner, is_fallback)
+                item = self._format_item(winner, is_fallback=is_fallback)
                 results_list.append(item)
 
             except Exception as e:
@@ -98,17 +105,6 @@ class MusicRecommender:
                 continue
         
         return results_list
-
-    async def _get_related_artists_names(self, source_artists: list[str]) -> list[str]:
-        """
-        Tenta descobrir artistas relacionados.
-        OBS: Como o CatalogProvider (YTMusic) não retorna 'related' facilmente na busca padrão,
-        podemos tentar buscar playlists de 'Radio' ou usar uma lógica de gênero se disponível.
-        Por enquanto, vamos simular buscando 'Similar to [Artist]' ou retornando vazio para não quebrar.
-        """
-        # TODO: Implementar lógica real se o CatalogProvider permitir.
-        # Exemplo simples: Se o artista é X, tenta buscar "X Radio" e pegar os artistas das primeiras faixas.
-        return [] 
 
     def _format_item(self, winner: dict, is_global: bool = False, is_fallback: bool = False) -> dict:
         color = "#4A00E0" if is_global else f"#{hash(winner['artistName']) & 0xFFFFFF:06x}"
@@ -119,11 +115,12 @@ class MusicRecommender:
             "type": "album",
             "id": winner['collectionId'],
             "vibrantColorHex": color,
-            "tags": ["Recomendado"] if is_fallback else []
+            "tags": ["Global"] if is_global else []
         }
 
     def _add_unique(self, target_list, new_items, seen_set):
         for item in new_items:
-            if item['title'] not in seen_set:
+            key = f"{item['title']}-{item['artist']}"
+            if key not in seen_set:
                 target_list.append(item)
-                seen_set.add(item['title'])
+                seen_set.add(key)

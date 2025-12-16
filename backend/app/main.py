@@ -432,6 +432,7 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
         news = await recommender.get_new_releases(top_artists_names, limit=limit)
             
         return news
+
     except Exception as e:
         print(f"❌ Erro crítico em new-releases: {e}")
         # Fallback de emergência simples para não quebrar a home
