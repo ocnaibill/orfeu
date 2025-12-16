@@ -1,62 +1,86 @@
 from ytmusicapi import YTMusic
+import traceback
 
 class CatalogProvider:
     # Inicializa sem autenticação (apenas busca pública)
     yt = YTMusic()
 
     @staticmethod
-    def search_catalog(query: str, type: str = "song", limit: int = 40):
+    def search_catalog(query: str, type: str = "song"):
         """
-        Busca músicas ou álbuns no YouTube Music.
+        Busca músicas, álbuns ou artistas no YouTube Music.
         """
-        filter_type = "songs" if type == "song" else "albums"
-        
         try:
-            # Pede mais resultados para permitir paginação
-            raw_results = CatalogProvider.yt.search(query, filter=filter_type, limit=100)
+            # Mapeamento correto dos filtros
+            filter_map = {
+                "song": "songs",
+                "album": "albums",
+                "artist": "artists"
+            }
+            search_filter = filter_map.get(type, "songs")
+            
+            # Pede mais resultados para permitir paginação/filtragem
+            raw_results = CatalogProvider.yt.search(query, filter=search_filter, limit=40)
             
             normalized_results = []
             
             for item in raw_results:
-                thumbnails = item.get('thumbnails', [])
-                artwork_url = thumbnails[-1]['url'] if thumbnails else ""
-                
-                artist_data = item.get('artists', [{}])
-                artist_name = artist_data[0].get('name', 'Desconhecido')
-                
-                # CORREÇÃO DO ANO/DATA:
-                # O YouTube Music na busca geralmente retorna apenas o Ano (ex: "2025")
-                # Mapeamos para releaseDate para manter compatibilidade com o algoritmo de ordenação do main.py
-                year = str(item.get('year') or '').strip()
-                release_date = year # Fallback, já que a busca não traz YYYY-MM-DD
-                
-                if type == "song":
-                    album_data = item.get('album', {})
-                    album_name = album_data.get('name') if album_data else "Single"
+                try:
+                    thumbnails = item.get('thumbnails', [])
+                    artwork_url = thumbnails[-1]['url'] if thumbnails else ""
                     
-                    normalized_results.append({
-                        "type": "song",
-                        "trackName": item.get('title'),
-                        "artistName": artist_name,
-                        "collectionName": album_name,
-                        "artworkUrl": artwork_url,
-                        "previewUrl": None, 
-                        "year": year, 
-                        "releaseDate": release_date, # Compatibilidade
-                        "videoId": item.get('videoId')
-                    })
-                
-                elif type == "album":
-                    normalized_results.append({
-                        "type": "album",
-                        "collectionId": item.get('browseId'),
-                        "collectionName": item.get('title'),
-                        "artistName": artist_name,
-                        "artworkUrl": artwork_url,
-                        "year": year,
-                        "releaseDate": release_date, # Compatibilidade
-                        "trackCount": 0
-                    })
+                    # --- ARTISTA ---
+                    if type == "artist" and item.get('resultType') == 'artist':
+                        normalized_results.append({
+                            "type": "artist",
+                            "artistName": item.get('artist'),
+                            "artistId": item.get('browseId'),
+                            "artworkUrl": artwork_url,
+                            "source": "YTMusic"
+                        })
+                    
+                    # --- ÁLBUM ---
+                    elif type == "album" and item.get('resultType') == 'album':
+                        artist_name = "Vários"
+                        if item.get('artists'):
+                            artist_name = item['artists'][0].get('name')
+                        
+                        year = str(item.get('year') or '').strip()
+                        
+                        normalized_results.append({
+                            "type": "album",
+                            "collectionId": item.get('browseId'),
+                            "collectionName": item.get('title'),
+                            "artistName": artist_name,
+                            "artworkUrl": artwork_url,
+                            "year": year,
+                            "releaseDate": year, # Compatibilidade
+                            "trackCount": 0,
+                            "source": "YTMusic"
+                        })
+                        
+                    # --- MÚSICA ---
+                    elif type == "song" and item.get('resultType') == 'song':
+                        artist_data = item.get('artists', [{}])
+                        artist_name = artist_data[0].get('name', 'Desconhecido')
+                        
+                        album_data = item.get('album', {})
+                        album_name = album_data.get('name') if album_data else "Single"
+                        
+                        normalized_results.append({
+                            "type": "song",
+                            "trackName": item.get('title'),
+                            "artistName": artist_name,
+                            "collectionName": album_name,
+                            "artworkUrl": artwork_url,
+                            "previewUrl": None, 
+                            "year": "", # Geralmente vazio em search songs
+                            "videoId": item.get('videoId'),
+                            "source": "YTMusic"
+                        })
+                except Exception as e:
+                    print(f"⚠️ Item YTMusic ignorado: {e}")
+                    continue
 
             return normalized_results
 
@@ -73,8 +97,7 @@ class CatalogProvider:
             album = CatalogProvider.yt.get_album(browse_id)
             
             tracks = []
-            # CORREÇÃO NUMERAÇÃO:
-            # Usamos enumerate(start=1) para garantir numeração sequencial correta (1, 2, 3...)
+            # Enumera a partir de 1 para trackNumber
             for i, track in enumerate(album.get('tracks', []), start=1):
                 if not track.get('title'): continue
 
@@ -94,7 +117,6 @@ class CatalogProvider:
                     "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else ""
                 })
             
-            # Tenta extrair ano ou data mais completa se disponível nos detalhes
             year = str(album.get('year') or '')
             
             return {
@@ -103,7 +125,7 @@ class CatalogProvider:
                 "artistName": album['artists'][0]['name'] if album.get('artists') else "Vários",
                 "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else "",
                 "year": year,
-                "releaseDate": year, # Mantém compatibilidade
+                "releaseDate": year,
                 "tracks": tracks
             }
         except Exception as e:
