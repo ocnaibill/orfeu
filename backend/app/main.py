@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from sqlalchemy import func, desc
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 from .database import engine, get_db, Base
@@ -39,7 +40,7 @@ from . import models, auth_utils
 models.Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI(title="Orfeu API", version="2.2.0")
+app = FastAPI(title="Orfeu API", version="2.4.0")
 
 # Esquema de Segurança
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -368,7 +369,7 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
     }
 
 
-# --- ROTAS DA HOME (FEED & ANALYTICS) - RESTAURADAS ---
+# --- ROTAS DA HOME (FEED & ANALYTICS)  ---
 @app.get("/home/continue-listening")
 def get_continue_listening(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return AnalyticsService.get_recently_played(db, current_user.id, limit)
@@ -403,22 +404,72 @@ async def get_recommendations(limit: int = 10):
         return recommendations
     except: return []
 
+# --- NOVA LÓGICA: NOVIDADES PERSONALIZADAS ---
 @app.get("/home/new-releases")
-async def get_new_releases(limit: int = 10):
+async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Seção 'Novidades dos seus favoritos':
+    1. Busca os top 5 artistas mais ouvidos pelo usuário.
+    2. Busca o álbum mais recente de cada um no Tidal.
+    3. Se não tiver histórico, retorna "New Music" global.
+    """
+    news = []
+    
+    # 1. Identifica Top Artistas
     try:
-        results = await run_in_threadpool(TidalProvider.search_catalog, "New Music", limit, "album")
-        news = []
-        for item in results:
-            news.append({
-                "title": item['collectionName'],
-                "artist": item['artistName'],
-                "imageUrl": item['artworkUrl'],
-                "type": "album",
-                "id": item['collectionId'],
-                "vibrantColorHex": "#4A00E0" 
-            })
-        return news
-    except: return []
+        top_artists_query = db.query(models.Track.artist, func.count(models.ListenHistory.id).label('count'))\
+            .join(models.ListenHistory)\
+            .filter(models.ListenHistory.user_id == current_user.id)\
+            .group_by(models.Track.artist)\
+            .order_by(desc('count'))\
+            .limit(5)\
+            .all()
+        
+        top_artists = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
+        
+        # 2. Busca Álbuns Recentes para cada Artista
+        if top_artists:
+            print(f"🌟 Buscando novidades para: {top_artists}")
+            for artist in top_artists:
+                try:
+                    # Busca álbuns do artista no Tidal (limit=1 pega o mais relevante/recente)
+                    results = await run_in_threadpool(TidalProvider.search_catalog, artist, 1, "album")
+                    if results:
+                        item = results[0]
+                        # Filtra duplicatas (caso o mesmo álbum apareça)
+                        if not any(n['id'] == item['collectionId'] for n in news):
+                            news.append({
+                                "title": item['collectionName'],
+                                "artist": item['artistName'],
+                                "imageUrl": item['artworkUrl'],
+                                "type": "album",
+                                "id": item['collectionId'],
+                                # Gera cor vibrante baseada no nome do artista (hash simples para consistência)
+                                "vibrantColorHex": f"#{hash(item['artistName']) & 0xFFFFFF:06x}"
+                            })
+                except Exception as e:
+                    print(f"⚠️ Erro buscando novidades de {artist}: {e}")
+    except Exception as e:
+        print(f"❌ Erro ao processar favoritos: {e}")
+
+    # 3. Fallback (Se a lista estiver vazia ou pequena)
+    if len(news) < 3:
+        try:
+            print("   Complementando com lançamentos globais...")
+            results = await run_in_threadpool(TidalProvider.search_catalog, "New Music", limit - len(news), "album")
+            for item in results:
+                if not any(n['id'] == item['collectionId'] for n in news):
+                    news.append({
+                        "title": item['collectionName'],
+                        "artist": item['artistName'],
+                        "imageUrl": item['artworkUrl'],
+                        "type": "album",
+                        "id": item['collectionId'],
+                        "vibrantColorHex": "#4A00E0" 
+                    })
+        except: pass
+            
+    return news
 
 # --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
@@ -429,23 +480,6 @@ def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user
 def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
 
-
-# --- ANALYTICS ---
-
-@app.get("/users/me/analytics/summary")
-def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    """
-    Retorna resumo: Total minutos, Top Artista, Total Plays.
-    Padrão: Últimos 30 dias.
-    """
-    return AnalyticsService.get_user_stats(db, current_user.id, days)
-
-@app.get("/users/me/analytics/top-tracks")
-def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    """
-    Retorna as músicas mais ouvidas.
-    """
-    return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
 
 @app.get("/analytics/rankings")
 def get_global_rankings(db: Session = Depends(get_db)):
