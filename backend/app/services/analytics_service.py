@@ -29,12 +29,34 @@ class AnalyticsService:
             .order_by(desc('count'))\
             .first()
 
+        # Conta artistas únicos ouvidos
+        unique_artists = db.query(func.count(func.distinct(models.Track.artist)))\
+            .join(models.ListenHistory)\
+            .filter(
+                models.ListenHistory.user_id == user_id,
+                models.ListenHistory.played_at >= start_date,
+                models.Track.artist != None,
+                models.Track.artist != "Desconhecido"
+            ).scalar() or 0
+
+        # Conta gêneros únicos ouvidos
+        unique_genres = db.query(func.count(func.distinct(models.Track.genre)))\
+            .join(models.ListenHistory)\
+            .filter(
+                models.ListenHistory.user_id == user_id,
+                models.ListenHistory.played_at >= start_date,
+                models.Track.genre != None,
+                models.Track.genre != ""
+            ).scalar() or 0
+
         return {
             "period_days": days,
             "total_minutes": total_minutes,
             "total_plays": total_plays,
             "top_artist": top_artist[0] if top_artist else "Nenhum",
-            "top_artist_plays": top_artist[1] if top_artist else 0
+            "top_artist_plays": top_artist[1] if top_artist else 0,
+            "unique_artists": unique_artists,
+            "unique_genres": unique_genres
         }
 
     @staticmethod

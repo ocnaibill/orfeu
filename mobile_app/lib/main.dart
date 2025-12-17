@@ -4,8 +4,14 @@ import 'theme/app_theme.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'providers.dart';
+import 'services/background_audio_handler.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Inicializa o serviço de áudio em segundo plano
+  await initAudioService();
+  
   runApp(const ProviderScope(child: OrfeuApp()));
 }
 

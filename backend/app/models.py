@@ -28,9 +28,37 @@ class Track(Base):
     album = Column(String, index=True)
     duration = Column(Float)
     genre = Column(String, nullable=True)
+    tidal_id = Column(Integer, nullable=True, index=True)  # Link para ID do Tidal
     
     bitrate = Column(Integer, nullable=True)
     format = Column(String, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DownloadedTrack(Base):
+    """
+    Tabela para mapear IDs de serviços externos (Tidal, YTMusic) para arquivos locais.
+    Resolve o problema de músicas diferentes com mesmo nome serem mapeadas para o mesmo arquivo.
+    """
+    __tablename__ = "downloaded_tracks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Identificadores externos (pelo menos um deve estar preenchido)
+    tidal_id = Column(Integer, nullable=True, unique=True, index=True)
+    ytmusic_id = Column(String, nullable=True, unique=True, index=True)
+    
+    # Metadados para fallback e display
+    title = Column(String, index=True)
+    artist = Column(String, index=True)
+    album = Column(String, nullable=True)
+    
+    # Caminho do arquivo local (relativo a /downloads)
+    local_path = Column(String, unique=True, index=True)
+    
+    # Metadados técnicos
+    source = Column(String)  # 'Tidal', 'Soulseek', 'YTMusic'
+    file_hash = Column(String, nullable=True)  # SHA256 do arquivo para integridade
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -202,6 +202,12 @@ final homeRecommendationsProvider = FutureProvider<List<dynamic>>((ref) async {
   return resp.data;
 });
 
+final homeDiscoverProvider = FutureProvider<List<dynamic>>((ref) async {
+  final dio = ref.read(dioProvider);
+  final resp = await dio.get('/home/discover');
+  return resp.data;
+});
+
 final homeTrajectoryProvider = FutureProvider<List<dynamic>>((ref) async {
   final dio = ref.read(dioProvider);
   final resp = await dio.get('/home/trajectory');
@@ -461,3 +467,97 @@ class SearchController {
     }
   }
 }
+
+// --- PROFILE STATS PROVIDER ---
+class ProfileStats {
+  final int playlistCount;
+  final int genreCount;
+  final int artistCount;
+  final int totalMinutes;
+  final int totalPlays;
+  final String topArtist;
+  final bool isLoading;
+  final String? error;
+
+  ProfileStats({
+    this.playlistCount = 0,
+    this.genreCount = 0,
+    this.artistCount = 0,
+    this.totalMinutes = 0,
+    this.totalPlays = 0,
+    this.topArtist = "Nenhum",
+    this.isLoading = true,
+    this.error,
+  });
+
+  ProfileStats copyWith({
+    int? playlistCount,
+    int? genreCount,
+    int? artistCount,
+    int? totalMinutes,
+    int? totalPlays,
+    String? topArtist,
+    bool? isLoading,
+    String? error,
+  }) {
+    return ProfileStats(
+      playlistCount: playlistCount ?? this.playlistCount,
+      genreCount: genreCount ?? this.genreCount,
+      artistCount: artistCount ?? this.artistCount,
+      totalMinutes: totalMinutes ?? this.totalMinutes,
+      totalPlays: totalPlays ?? this.totalPlays,
+      topArtist: topArtist ?? this.topArtist,
+      isLoading: isLoading ?? this.isLoading,
+      error: error ?? this.error,
+    );
+  }
+}
+
+class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
+  final Ref ref;
+  
+  ProfileStatsNotifier(this.ref) : super(ProfileStats()) {
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      state = state.copyWith(isLoading: true, error: null);
+      
+      final token = ref.read(authTokenProvider);
+      if (token == null) {
+        state = state.copyWith(isLoading: false, error: "Não autenticado");
+        return;
+      }
+
+      final dio = Dio();
+      dio.options.headers['Authorization'] = 'Bearer $token';
+      dio.options.baseUrl = baseUrl;
+
+      // Faz as requisições em paralelo
+      final results = await Future.wait([
+        dio.get('/users/me/analytics/summary').catchError((e) => Response(requestOptions: RequestOptions(), data: {})),
+        dio.get('/playlists').catchError((e) => Response(requestOptions: RequestOptions(), data: [])),
+      ]);
+
+      final analyticsData = results[0].data as Map<String, dynamic>? ?? {};
+      final playlistsData = results[1].data as List? ?? [];
+
+      state = ProfileStats(
+        playlistCount: playlistsData.length,
+        genreCount: analyticsData['unique_genres'] ?? 0,
+        artistCount: analyticsData['unique_artists'] ?? 0,
+        totalMinutes: analyticsData['total_minutes'] ?? 0,
+        totalPlays: analyticsData['total_plays'] ?? 0,
+        topArtist: analyticsData['top_artist'] ?? "Nenhum",
+        isLoading: false,
+      );
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+}
+
+final profileStatsProvider = StateNotifierProvider<ProfileStatsNotifier, ProfileStats>((ref) {
+  return ProfileStatsNotifier(ref);
+});

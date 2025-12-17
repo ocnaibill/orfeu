@@ -26,8 +26,8 @@ class HomeTabV2 extends ConsumerWidget {
     ref.invalidate(homeNewReleasesProvider);
     ref.invalidate(homeContinueListeningProvider);
     ref.invalidate(homeRecommendationsProvider);
+    ref.invalidate(homeDiscoverProvider);
     ref.invalidate(homeTrajectoryProvider);
-    // Também atualiza estatísticas se necessário, mas elas estão na ProfileScreen
   }
 
   @override
@@ -37,6 +37,7 @@ class HomeTabV2 extends ConsumerWidget {
     final newReleases = ref.watch(homeNewReleasesProvider);
     final continueListening = ref.watch(homeContinueListeningProvider);
     final recommendations = ref.watch(homeRecommendationsProvider);
+    final discover = ref.watch(homeDiscoverProvider);
     final trajectory = ref.watch(homeTrajectoryProvider);
 
     return Scaffold(
@@ -210,6 +211,58 @@ class HomeTabV2 extends ConsumerWidget {
                 height: 210,
                 child: recommendations.when(
                   data: (data) {
+                    return ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 33),
+                      itemCount: data.length,
+                      separatorBuilder: (ctx, i) => const SizedBox(width: 12),
+                      itemBuilder: (ctx, i) {
+                        final item = data[i];
+                        return GestureDetector(
+                          onTap: () => _openContent(context, item, ref),
+                          child: StandardAlbumCard(
+                            title: item['title'],
+                            artist: item['artist'],
+                            imageUrl: item['imageUrl'],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                  loading: () => const Center(
+                      child:
+                          CircularProgressIndicator(color: Color(0xFFD4AF37))),
+                  error: (_, __) => const SizedBox(),
+                ),
+              ),
+
+              // --- SEÇÃO: DESCOBERTAS ---
+              const SizedBox(height: 24),
+              const Padding(
+                  padding: EdgeInsets.only(left: 33),
+                  child: Text("Descobertas da semana",
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white))),
+              const SizedBox(height: 6),
+              const Padding(
+                  padding: EdgeInsets.only(left: 33),
+                  child: Text("Artistas novos para você",
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.white54))),
+              const SizedBox(height: 18),
+
+              SizedBox(
+                height: 210,
+                child: discover.when(
+                  data: (data) {
+                    if (data.isEmpty) {
+                      return const Center(
+                          child: Text("Ouça mais músicas para personalizarmos",
+                              style: TextStyle(color: Colors.white38)));
+                    }
                     return ListView.separated(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 33),

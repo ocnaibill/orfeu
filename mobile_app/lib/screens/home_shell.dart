@@ -153,10 +153,23 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     );
   }
 
+  /// Verifica se uma cor é considerada clara (luminosidade alta)
+  bool _isLightColor(Color color) {
+    // Usa fórmula de luminância relativa
+    // https://www.w3.org/TR/WCAG20/#relativeluminancedef
+    final luminance = color.computeLuminance();
+    return luminance > 0.5; // Threshold para cores claras
+  }
+
   Widget _buildMiniPlayer(BuildContext context, WidgetRef ref,
       PlayerState playerState, Color backgroundColor) {
     final track = playerState.currentTrack!;
     final isPlaying = playerState.isPlaying;
+    
+    // Detecta se a cor de fundo é clara para adaptar ícones/texto
+    final isLight = _isLightColor(backgroundColor);
+    final contentColor = isLight ? Colors.black : Colors.white;
+    final secondaryColor = isLight ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7);
 
     // Correção: Fallback para display_name para evitar "Desconhecido"
     final title = track['title'] ??
@@ -225,7 +238,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                       style: GoogleFonts.firaSans(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: Colors.white,
+                          color: contentColor,
                           height: 1.0)),
                   const SizedBox(height: 3),
                   Text(artist,
@@ -234,7 +247,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                       style: GoogleFonts.firaSans(
                           fontSize: 14,
                           fontWeight: FontWeight.w300,
-                          color: Colors.white.withOpacity(0.7),
+                          color: secondaryColor,
                           height: 1.0)),
                 ],
               ),
@@ -247,8 +260,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               child: Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.skip_previous_rounded,
-                        color: Colors.white, size: 28),
+                    icon: Icon(Icons.skip_previous_rounded,
+                        color: contentColor, size: 28),
                     onPressed: () =>
                         ref.read(playerProvider.notifier).previous(),
                   ),
@@ -258,15 +271,15 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                         isPlaying
                             ? Icons.pause_rounded
                             : Icons.play_arrow_rounded,
-                        color: Colors.white,
+                        color: contentColor,
                         size: 32),
                     onPressed: () =>
                         ref.read(playerProvider.notifier).togglePlay(),
                   ),
                   const SizedBox(width: 8),
                   IconButton(
-                    icon: const Icon(Icons.skip_next_rounded,
-                        color: Colors.white, size: 28),
+                    icon: Icon(Icons.skip_next_rounded,
+                        color: contentColor, size: 28),
                     onPressed: () => ref.read(playerProvider.notifier).next(),
                   ),
                 ],

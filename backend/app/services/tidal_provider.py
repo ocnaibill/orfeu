@@ -89,7 +89,8 @@ class TidalProvider:
                         "year": "", 
                         "isLossless": item.get('audioQuality') == 'LOSSLESS',
                         "source": "Tidal",
-                        "tidalId": item.get('id') 
+                        "tidalId": item.get('id'),
+                        "genre": None  # Tidal não retorna gênero em search, preenchido depois se baixado
                     })
                 elif type == "album":
                     normalized_results.append({
@@ -243,4 +244,131 @@ class TidalProvider:
 
         except Exception as e:
             print(f"❌ Erro Tidal Album Details: {e}")
+            raise e
+
+    @staticmethod
+    def get_artist_details(artist_id: str):
+        """
+        Busca detalhes do artista e sua discografia pelo ID do Tidal.
+        Retorna álbuns filtrados por ID do artista (não apenas nome).
+        """
+        try:
+            with httpx.Client() as client:
+                headers = {"User-Agent": "Mozilla/5.0"}
+                
+                # 1. Busca info básica do artista
+                artist_info = {}
+                try:
+                    resp = client.get(f"{TidalProvider.BASE_API}/artist/", 
+                                     params={"id": artist_id}, headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        data = resp.json().get('data', {})
+                        picture = data.get('picture', '')
+                        artist_info = {
+                            "artistId": artist_id,
+                            "artistName": data.get('name', 'Artista'),
+                            "artworkUrl": f"{TidalProvider.CDN_URL}/{picture.replace('-', '/')}/750x750.jpg" if picture else "",
+                            "bio": data.get('bio', ''),
+                        }
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar info do artista: {e}")
+                
+                # 2. Busca álbuns do artista (endpoint dedicado)
+                albums = []
+                try:
+                    resp = client.get(f"{TidalProvider.BASE_API}/artist/albums", 
+                                     params={"id": artist_id, "limit": 50, "offset": 0}, 
+                                     headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        items = resp.json().get('data', {}).get('items', [])
+                        for item in items:
+                            cover = item.get('cover', '')
+                            release_date = str(item.get('releaseDate', ''))
+                            
+                            # Filtra por ID do artista principal (não apenas nome)
+                            item_artist_id = str(item.get('artist', {}).get('id', ''))
+                            if item_artist_id != artist_id:
+                                # Verifica se é colaboração (aparece em 'artists')
+                                artists_list = item.get('artists', [])
+                                is_collaboration = any(str(a.get('id')) == artist_id for a in artists_list)
+                                if not is_collaboration:
+                                    continue  # Pula itens que não são do artista
+                            
+                            albums.append({
+                                "type": "album",
+                                "collectionId": str(item.get('id')),
+                                "collectionName": item.get('title'),
+                                "artistName": item.get('artist', {}).get('name', 'Vários'),
+                                "artistId": item_artist_id,
+                                "artworkUrl": f"{TidalProvider.CDN_URL}/{cover.replace('-', '/')}/640x640.jpg" if cover else "",
+                                "year": release_date[:4] if release_date else "",
+                                "releaseDate": release_date,
+                                "trackCount": item.get('numberOfTracks', 0),
+                                "source": "Tidal"
+                            })
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar álbuns do artista: {e}")
+                
+                # 3. Busca singles/EPs
+                singles = []
+                try:
+                    resp = client.get(f"{TidalProvider.BASE_API}/artist/albums", 
+                                     params={"id": artist_id, "limit": 50, "offset": 0, "filter": "EPSANDSINGLES"}, 
+                                     headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        items = resp.json().get('data', {}).get('items', [])
+                        for item in items:
+                            cover = item.get('cover', '')
+                            release_date = str(item.get('releaseDate', ''))
+                            
+                            singles.append({
+                                "type": "single",
+                                "collectionId": str(item.get('id')),
+                                "collectionName": item.get('title'),
+                                "artistName": item.get('artist', {}).get('name', 'Vários'),
+                                "artworkUrl": f"{TidalProvider.CDN_URL}/{cover.replace('-', '/')}/640x640.jpg" if cover else "",
+                                "year": release_date[:4] if release_date else "",
+                                "releaseDate": release_date,
+                                "trackCount": item.get('numberOfTracks', 0),
+                                "source": "Tidal"
+                            })
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar singles: {e}")
+                
+                # 4. Busca top tracks do artista
+                top_tracks = []
+                try:
+                    resp = client.get(f"{TidalProvider.BASE_API}/artist/toptracks", 
+                                     params={"id": artist_id, "limit": 10}, 
+                                     headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        items = resp.json().get('data', {}).get('items', [])
+                        for item in items:
+                            album_cover = item.get('album', {}).get('cover', '')
+                            top_tracks.append({
+                                "type": "song",
+                                "trackName": item.get('title'),
+                                "artistName": item.get('artist', {}).get('name', 'Vários'),
+                                "collectionName": item.get('album', {}).get('title', 'Single'),
+                                "artworkUrl": f"{TidalProvider.CDN_URL}/{album_cover.replace('-', '/')}/640x640.jpg" if album_cover else "",
+                                "tidalId": item.get('id'),
+                                "isLossless": item.get('audioQuality') == 'LOSSLESS',
+                                "source": "Tidal"
+                            })
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar top tracks: {e}")
+                
+                # 5. Ordena por data de lançamento (mais recente primeiro)
+                albums.sort(key=lambda x: x.get('releaseDate', '0000'), reverse=True)
+                singles.sort(key=lambda x: x.get('releaseDate', '0000'), reverse=True)
+                
+                return {
+                    "artist": artist_info,
+                    "albums": albums,
+                    "singles": singles,
+                    "topTracks": top_tracks
+                }
+                
+        except Exception as e:
+            print(f"❌ Erro Tidal Artist Details: {e}")
             raise e

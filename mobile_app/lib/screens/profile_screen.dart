@@ -19,15 +19,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Dados do usuário (Mock ou do AuthProvider)
+    // Dados do usuário (do AuthProvider)
     final authState = ref.watch(authProvider);
     final userName = authState.username ?? "Usuário";
-    final userImage = "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"; // Mock de avatar
+    final userImage = "https://ui-avatars.com/api/?name=${Uri.encodeComponent(userName)}&background=D4AF37&color=000&size=300";
 
-    // Estatísticas (Mock)
-    const int playlistCount = 12;
-    const int genreCount = 8;
-    const int artistCount = 145;
+    // Estatísticas reais do backend
+    final profileStats = ref.watch(profileStatsProvider);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -135,20 +133,29 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   // --- CONTEINER 2: ESTATÍSTICAS ---
                   // Usamos Flexible/FittedBox para garantir que caiba em telas estreitas
                   Flexible(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerRight,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _buildStatItem("Playlists", playlistCount.toString()),
-                          _buildStatSeparator(),
-                          _buildStatItem("Gêneros", genreCount.toString()),
-                          _buildStatSeparator(),
-                          _buildStatItem("Artistas", artistCount.toString()),
-                        ],
-                      ),
-                    ),
+                    child: profileStats.isLoading
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFFD4AF37),
+                          ),
+                        )
+                      : FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _buildStatItem("Playlists", profileStats.playlistCount.toString()),
+                              _buildStatSeparator(),
+                              _buildStatItem("Gêneros", profileStats.genreCount.toString()),
+                              _buildStatSeparator(),
+                              _buildStatItem("Artistas", profileStats.artistCount.toString()),
+                            ],
+                          ),
+                        ),
                   ),
                 ],
               ),

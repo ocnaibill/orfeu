@@ -1,8 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:just_audio/just_audio.dart';
+import 'package:audio_service/audio_service.dart';
 import 'dart:async';
+import 'dart:math';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../providers.dart';
 import 'discord_service.dart';
+import 'background_audio_handler.dart';
+
+// --- MODO DE LOOP ---
+enum LoopMode { off, one, all }
 
 // --- ESTADO DO PLAYER ---
 class PlayerState {
@@ -11,6 +18,10 @@ class PlayerState {
   final Duration position;
   final Duration duration;
   final bool isBuffering;
+  final bool isShuffleEnabled;
+  final LoopMode loopMode;
+  final List<Map<String, dynamic>> queue;
+  final int currentIndex;
 
   PlayerState({
     this.isPlaying = false,
@@ -18,6 +29,10 @@ class PlayerState {
     this.position = Duration.zero,
     this.duration = Duration.zero,
     this.isBuffering = false,
+    this.isShuffleEnabled = false,
+    this.loopMode = LoopMode.off,
+    this.queue = const [],
+    this.currentIndex = 0,
   });
 
   PlayerState copyWith({
@@ -26,6 +41,10 @@ class PlayerState {
     Duration? position,
     Duration? duration,
     bool? isBuffering,
+    bool? isShuffleEnabled,
+    LoopMode? loopMode,
+    List<Map<String, dynamic>>? queue,
+    int? currentIndex,
   }) {
     return PlayerState(
       isPlaying: isPlaying ?? this.isPlaying,
@@ -33,166 +52,286 @@ class PlayerState {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       isBuffering: isBuffering ?? this.isBuffering,
+      isShuffleEnabled: isShuffleEnabled ?? this.isShuffleEnabled,
+      loopMode: loopMode ?? this.loopMode,
+      queue: queue ?? this.queue,
+      currentIndex: currentIndex ?? this.currentIndex,
     );
   }
+  
+  bool get hasNext => currentIndex < queue.length - 1;
+  bool get hasPrevious => currentIndex > 0;
 }
 
 // --- NOTIFIER DO PLAYER ---
 class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   final Ref ref;
-  late AudioPlayer _audioPlayer;
   final DiscordService _discord = DiscordService();
-  final Stopwatch _sessionTimer = Stopwatch();
-
-  List<Map<String, dynamic>> _queue = [];
-  int _currentIndex = 0;
-  String _currentQuality = 'lossless';
+  
+  // Fila original (sem shuffle) para restaurar ordem
+  List<Map<String, dynamic>> _originalQueue = [];
+  
+  // Tracking para histórico de reprodução
+  String? _lastTrackedFilename;
+  int _currentTrackPlayedSeconds = 0;
+  bool _historyLoggedForCurrentTrack = false;
+  static const int _historyThresholdSeconds = 30; // Registra após 30s de reprodução
+  
+  StreamSubscription? _playbackSubscription;
+  StreamSubscription? _mediaItemSubscription;
+  StreamSubscription? _positionSubscription;
+  StreamSubscription? _durationSubscription;
+  Timer? _historyTrackingTimer;
 
   AudioPlayerNotifier(this.ref) : super(PlayerState()) {
     _init();
   }
 
   void _init() {
-    _audioPlayer = AudioPlayer();
     _discord.init();
-
-    _audioPlayer.playerStateStream.listen((playerState) {
-      final isPlaying = playerState.playing;
-      final processingState = playerState.processingState;
-
+    _startHistoryTracking();
+    
+    // Escuta mudanças do estado de playback
+    _playbackSubscription = audioHandler.playbackState.listen((playbackState) {
+      final isPlaying = playbackState.playing;
+      final processingState = playbackState.processingState;
+      
       state = state.copyWith(
         isPlaying: isPlaying,
-        isBuffering: processingState == ProcessingState.buffering ||
-            processingState == ProcessingState.loading,
+        isBuffering: processingState == AudioProcessingState.buffering ||
+                     processingState == AudioProcessingState.loading,
+        position: playbackState.position,
+        currentIndex: playbackState.queueIndex ?? state.currentIndex,
       );
-
-      if (isPlaying) {
-        _sessionTimer.start();
-      } else {
-        _sessionTimer.stop();
-      }
-
+      
       _updateDiscord();
     });
-
-    _audioPlayer.positionStream.listen((pos) {
+    
+    // Escuta mudanças do item de mídia atual
+    _mediaItemSubscription = audioHandler.mediaItem.listen((mediaItem) {
+      if (mediaItem != null) {
+        final trackData = audioHandler.getCurrentTrackData();
+        if (trackData != null) {
+          state = state.copyWith(
+            currentTrack: trackData,
+            duration: mediaItem.duration ?? Duration.zero,
+          );
+          _updateDiscord();
+        }
+      }
+    });
+    
+    // Escuta posição via stream do player interno
+    _positionSubscription = audioHandler.player.positionStream.listen((pos) {
       state = state.copyWith(position: pos);
     });
-
-    _audioPlayer.durationStream.listen((dur) {
-      if (dur != null) state = state.copyWith(duration: dur);
-    });
-
-    _audioPlayer.currentIndexStream.listen((index) {
-      if (index != null && index < _queue.length && _currentIndex != index) {
-        _logSessionAndReset();
-        _currentIndex = index;
-        _updateCurrentTrack();
+    
+    // Escuta duração
+    _durationSubscription = audioHandler.player.durationStream.listen((dur) {
+      if (dur != null) {
+        state = state.copyWith(duration: dur);
       }
     });
   }
 
-  // --- AÇÕES ---
+  // --- AÇÕES PÚBLICAS ---
 
+  /// Toca uma fila de músicas
   Future<void> playContext({
     required List<Map<String, dynamic>> queue,
     required int initialIndex,
     bool shuffle = false,
   }) async {
-    if (_queue.isNotEmpty &&
-        _currentIndex < _queue.length &&
-        queue.isNotEmpty &&
+    // Verifica se já está tocando a mesma música
+    if (_originalQueue.isNotEmpty &&
         initialIndex < queue.length &&
-        _queue[_currentIndex]['filename'] == queue[initialIndex]['filename'] &&
+        state.currentTrack != null &&
+        state.currentIndex < _originalQueue.length &&
+        _originalQueue[state.currentIndex]['filename'] == queue[initialIndex]['filename'] &&
         state.isPlaying) {
       return;
     }
 
-    _queue = List.from(queue);
-    _currentIndex = initialIndex;
-
-    final validItems = _queue.where((i) => i['filename'] != null).toList();
-    if (validItems.isEmpty) return;
-
-    final targetTrack = validItems[initialIndex];
-    state = state.copyWith(
-      currentTrack: targetTrack,
-      isBuffering: true,
-      position: Duration.zero,
-      duration: Duration.zero,
-    );
-    _updateDiscord();
-
-    try {
-      final playlist = ConcatenatingAudioSource(
-        children: validItems.map((item) {
-          final filename = Uri.encodeComponent(item['filename'] ?? '');
-          final url =
-              '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-          return AudioSource.uri(Uri.parse(url), tag: item);
-        }).toList(),
-      );
-
-      await _audioPlayer.setAudioSource(playlist, initialIndex: initialIndex);
-
-      if (shuffle) {
-        await _audioPlayer.setShuffleModeEnabled(true);
-      } else {
-        await _audioPlayer.setShuffleModeEnabled(false);
-      }
-
-      _audioPlayer.play();
-    } catch (e) {
-      print("❌ Erro no AudioService: $e");
-      state = state.copyWith(isBuffering: false, isPlaying: false);
+    // Guarda fila original
+    _originalQueue = List.from(queue);
+    
+    List<Map<String, dynamic>> playQueue;
+    int playIndex = initialIndex;
+    
+    if (shuffle) {
+      // Embaralha mantendo a música selecionada no início
+      playQueue = _shuffleWithFirst(queue, initialIndex);
+      playIndex = 0;
+    } else {
+      playQueue = List.from(queue);
     }
+    
+    // Atualiza estado local
+    state = state.copyWith(
+      queue: playQueue,
+      currentIndex: playIndex,
+      isShuffleEnabled: shuffle,
+      isBuffering: true,
+    );
+    
+    // Envia para o audio handler
+    await audioHandler.playQueue(
+      tracks: playQueue,
+      initialIndex: playIndex,
+      shuffle: false, // Já embaralhamos manualmente
+    );
+  }
+
+  /// Toca uma música específica (cria fila de 1 item)
+  Future<void> playSingle(Map<String, dynamic> track) async {
+    await playContext(queue: [track], initialIndex: 0);
   }
 
   void togglePlay() {
     if (state.isPlaying) {
-      _audioPlayer.pause();
+      audioHandler.pause();
     } else {
-      _audioPlayer.play();
+      audioHandler.play();
     }
   }
 
-  void next() => _audioPlayer.hasNext ? _audioPlayer.seekToNext() : null;
-  void previous() =>
-      _audioPlayer.hasPrevious ? _audioPlayer.seekToPrevious() : null;
-  void seek(Duration pos) => _audioPlayer.seek(pos);
+  void pause() => audioHandler.pause();
+  void play() => audioHandler.play();
 
-  Future<void> changeQuality(String quality) async {
-    if (_currentQuality == quality) return;
-    _currentQuality = quality;
-
-    final currentPos = state.position;
-    final currentIndex = _audioPlayer.currentIndex ?? 0;
-
-    await playContext(queue: _queue, initialIndex: currentIndex);
-    await _audioPlayer.seek(currentPos);
+  void next() {
+    if (state.loopMode == LoopMode.one) {
+      // No modo loop one, next vai para próxima mesmo assim
+      audioHandler.skipToNext();
+    } else if (state.hasNext) {
+      audioHandler.skipToNext();
+    } else if (state.loopMode == LoopMode.all && state.queue.isNotEmpty) {
+      // Volta ao início da fila
+      audioHandler.skipToQueueItem(0);
+    }
   }
 
-  String get currentQuality => _currentQuality;
+  void previous() {
+    // Se está no começo da música (< 3s), volta para anterior
+    if (state.position.inSeconds < 3 && state.hasPrevious) {
+      audioHandler.skipToPrevious();
+    } else if (state.position.inSeconds < 3 && state.loopMode == LoopMode.all) {
+      // Vai para última música se loop all
+      audioHandler.skipToQueueItem(state.queue.length - 1);
+    } else {
+      // Volta ao início da música atual
+      seek(Duration.zero);
+    }
+  }
+
+  void seek(Duration pos) => audioHandler.seek(pos);
+
+  /// Pula para uma música específica na fila
+  void skipToIndex(int index) {
+    if (index >= 0 && index < state.queue.length) {
+      audioHandler.skipToQueueItem(index);
+      state = state.copyWith(currentIndex: index);
+    }
+  }
+
+  /// Alterna shuffle
+  void toggleShuffle() {
+    final newShuffleState = !state.isShuffleEnabled;
+    
+    if (newShuffleState) {
+      // Ativa shuffle - embaralha a fila mantendo a atual no início
+      final currentTrack = state.currentTrack;
+      final currentIndex = state.queue.indexWhere(
+        (t) => t['filename'] == currentTrack?['filename']
+      );
+      
+      if (currentIndex >= 0) {
+        final shuffled = _shuffleWithFirst(state.queue, currentIndex);
+        state = state.copyWith(
+          queue: shuffled,
+          currentIndex: 0,
+          isShuffleEnabled: true,
+        );
+        // Recarrega a fila no handler
+        audioHandler.playQueue(tracks: shuffled, initialIndex: 0);
+      }
+    } else {
+      // Desativa shuffle - restaura ordem original
+      final currentTrack = state.currentTrack;
+      final originalIndex = _originalQueue.indexWhere(
+        (t) => t['filename'] == currentTrack?['filename']
+      );
+      
+      state = state.copyWith(
+        queue: List.from(_originalQueue),
+        currentIndex: originalIndex >= 0 ? originalIndex : 0,
+        isShuffleEnabled: false,
+      );
+      // Recarrega a fila no handler
+      audioHandler.playQueue(
+        tracks: _originalQueue,
+        initialIndex: originalIndex >= 0 ? originalIndex : 0,
+      );
+    }
+  }
+
+  /// Alterna modo de loop
+  void toggleLoop() {
+    final modes = LoopMode.values;
+    final currentIdx = modes.indexOf(state.loopMode);
+    final nextMode = modes[(currentIdx + 1) % modes.length];
+    
+    state = state.copyWith(loopMode: nextMode);
+    
+    // Configura no audio handler
+    final audioServiceMode = {
+      LoopMode.off: AudioServiceRepeatMode.none,
+      LoopMode.one: AudioServiceRepeatMode.one,
+      LoopMode.all: AudioServiceRepeatMode.all,
+    }[nextMode]!;
+    
+    audioHandler.setRepeatMode(audioServiceMode);
+  }
+
+  /// Adiciona uma música à fila
+  void addToQueue(Map<String, dynamic> track) {
+    final newQueue = [...state.queue, track];
+    _originalQueue.add(track);
+    state = state.copyWith(queue: newQueue);
+  }
+
+  /// Remove uma música da fila
+  void removeFromQueue(int index) {
+    if (index < 0 || index >= state.queue.length) return;
+    if (index == state.currentIndex) return; // Não remove a atual
+    
+    final newQueue = List<Map<String, dynamic>>.from(state.queue);
+    newQueue.removeAt(index);
+    
+    var newCurrentIndex = state.currentIndex;
+    if (index < state.currentIndex) {
+      newCurrentIndex--;
+    }
+    
+    state = state.copyWith(queue: newQueue, currentIndex: newCurrentIndex);
+  }
+
+  Future<void> changeQuality(String quality) async {
+    await audioHandler.changeQuality(quality);
+  }
+
+  String get currentQuality => audioHandler.currentQuality;
 
   // --- INTERNOS ---
 
-  void _updateCurrentTrack() {
-    if (_currentIndex < _queue.length) {
-      final track = _queue[_currentIndex];
-      state = state.copyWith(currentTrack: track);
-      _updateDiscord();
-    }
-  }
-
-  void _logSessionAndReset() {
-    final track = state.currentTrack;
-    if (track != null && _sessionTimer.elapsed.inSeconds > 10) {
-      final filename = track['filename'];
-      final seconds = _sessionTimer.elapsed.inSeconds;
-      ref.read(libraryControllerProvider).logPlay(filename, seconds);
-    }
-    _sessionTimer.reset();
-    if (state.isPlaying) _sessionTimer.start();
+  /// Embaralha uma lista mantendo um item específico no início
+  List<Map<String, dynamic>> _shuffleWithFirst(
+    List<Map<String, dynamic>> list,
+    int firstIndex,
+  ) {
+    final result = List<Map<String, dynamic>>.from(list);
+    final first = result.removeAt(firstIndex);
+    result.shuffle(Random());
+    return [first, ...result];
   }
 
   void _updateDiscord() {
@@ -208,7 +347,6 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
 
     String? coverUrl = track['imageUrl'] ?? track['artworkUrl'];
 
-    // CORREÇÃO: Verifica também se a string está vazia, não só null
     if ((coverUrl == null || coverUrl.isEmpty) && track['filename'] != null) {
       final encoded = Uri.encodeComponent(track['filename']);
       coverUrl = '$baseUrl/cover?filename=$encoded';
@@ -225,11 +363,77 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     );
   }
 
+  // --- TRACKING DE HISTÓRICO ---
+  
+  void _startHistoryTracking() {
+    // Timer que roda a cada segundo enquanto está tocando
+    _historyTrackingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _trackPlaybackProgress();
+    });
+  }
+
+  void _trackPlaybackProgress() {
+    final track = state.currentTrack;
+    if (track == null) return;
+
+    final currentFilename = track['filename'] as String?;
+    if (currentFilename == null) return;
+
+    // Detecta mudança de música
+    if (currentFilename != _lastTrackedFilename) {
+      _lastTrackedFilename = currentFilename;
+      _currentTrackPlayedSeconds = 0;
+      _historyLoggedForCurrentTrack = false;
+    }
+
+    // Só conta se estiver tocando
+    if (state.isPlaying && !_historyLoggedForCurrentTrack) {
+      _currentTrackPlayedSeconds++;
+      
+      // Registra no histórico após o threshold
+      if (_currentTrackPlayedSeconds >= _historyThresholdSeconds) {
+        _logToHistory(track, _currentTrackPlayedSeconds);
+        _historyLoggedForCurrentTrack = true;
+      }
+    }
+  }
+
+  Future<void> _logToHistory(Map<String, dynamic> track, int durationListened) async {
+    try {
+      final token = ref.read(authTokenProvider);
+      if (token == null) return;
+
+      final filename = track['filename'] as String?;
+      if (filename == null) return;
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/users/me/history'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'filename': filename,
+          'duration_listened': durationListened,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        print('📊 Histórico registrado: ${track['title']} ($durationListened s)');
+      }
+    } catch (e) {
+      print('⚠️ Erro ao registrar histórico: $e');
+    }
+  }
+
   @override
   void dispose() {
-    _logSessionAndReset();
+    _playbackSubscription?.cancel();
+    _mediaItemSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _durationSubscription?.cancel();
+    _historyTrackingTimer?.cancel();
     _discord.dispose();
-    _audioPlayer.dispose();
     super.dispose();
   }
 }
