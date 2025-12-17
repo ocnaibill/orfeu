@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import '../providers.dart';
+import '../services/audio_service.dart';
 import 'player_screen.dart';
 
 /// Tela que mostra as top tracks de um gênero musical.
