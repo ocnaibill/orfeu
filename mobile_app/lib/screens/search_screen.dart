@@ -693,7 +693,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
         ],
       ),
-    );
+    ),
+  );
   }
 
   // Card para Artistas
