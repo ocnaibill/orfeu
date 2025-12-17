@@ -8,7 +8,7 @@ import '../providers.dart';
 /// Integra just_audio com audio_service para controles de mídia do sistema.
 class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final AudioPlayer _player = AudioPlayer();
-  final Ref? _ref;
+  Ref? _ref;  // Mutável para permitir setRef() após inicialização
   
   // Estado da fila
   List<MediaItem> _mediaQueue = [];
@@ -30,6 +30,12 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
 
   OrfeuAudioHandler({Ref? ref}) : _ref = ref {
     _init();
+  }
+  
+  /// Define o Ref para permitir downloads sob demanda
+  void setRef(Ref ref) {
+    _ref = ref;
+    print('✅ Ref configurado no AudioHandler');
   }
 
   void _init() {
@@ -61,6 +67,8 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
             if (mediaIndex >= 0 && mediaIndex < _mediaQueue.length) {
               _currentIndex = mediaIndex;
               mediaItem.add(_mediaQueue[mediaIndex]);
+              // Pré-carrega a próxima música
+              _preloadNextTrack();
             }
           }
         },
@@ -174,18 +182,17 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       return;
     }
     
-    // Encontra próxima track com filename
-    int nextIndex = _currentIndex + 1;
-    while (nextIndex < _mediaQueue.length && _playerIndexMap[nextIndex] < 0) {
-      print('⏭️ Pulando track $nextIndex (sem filename)');
-      nextIndex++;
-    }
+    final nextIndex = _currentIndex + 1;
     
-    if (nextIndex >= _mediaQueue.length) {
-      print('⚠️ Nenhuma próxima track com filename disponível');
+    // Verifica se a próxima track tem filename
+    if (_playerIndexMap[nextIndex] < 0) {
+      // Não tem filename - precisa fazer download
+      print('📥 Próxima track sem filename, iniciando download...');
+      await _downloadAndPlayTrack(nextIndex);
       return;
     }
     
+    // Tem filename - toca normalmente
     _currentIndex = nextIndex;
     final playerIndex = _playerIndexMap[nextIndex];
     
@@ -196,8 +203,226 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       _broadcastState(_player.playbackEvent);
       await _player.play();
       print('⏭️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex, playerIndex: $playerIndex)');
+      
+      // Pré-carrega a próxima
+      _preloadNextTrack();
     } catch (e) {
       print('❌ Erro no skipToNext: $e');
+    }
+  }
+  
+  /// Faz download de uma track e a reproduz
+  Future<void> _downloadAndPlayTrack(int index) async {
+    if (index < 0 || index >= _fullQueue.length) return;
+    
+    final track = _fullQueue[index];
+    final trackName = track['trackName'] ?? track['title'] ?? 'Música';
+    final artistName = track['artistName'] ?? track['artist'] ?? 'Artista';
+    
+    print('📥 Baixando: $trackName - $artistName');
+    
+    // Atualiza UI para mostrar que está carregando
+    _currentIndex = index;
+    mediaItem.add(_mediaQueue[index]);
+    
+    // Emite estado de buffering
+    playbackState.add(playbackState.value.copyWith(
+      processingState: AudioProcessingState.loading,
+      queueIndex: index,
+    ));
+    
+    try {
+      // Usa o SearchController para fazer o download
+      if (_ref != null) {
+        final searchCtrl = _ref!.read(searchControllerProvider);
+        final filename = await searchCtrl.smartDownload(track);
+        
+        if (filename != null) {
+          print('✅ Download concluído: $filename');
+          
+          // Atualiza o filename na fila
+          _fullQueue[index]['filename'] = filename;
+          
+          // Reconstrói a playlist com a nova track
+          await _rebuildPlaylistAndPlay(index);
+        } else {
+          print('❌ Download falhou, tentando próxima...');
+          // Tenta a próxima música
+          if (index + 1 < _mediaQueue.length) {
+            await _downloadAndPlayTrack(index + 1);
+          } else {
+            // Sem mais músicas, para
+            playbackState.add(playbackState.value.copyWith(
+              processingState: AudioProcessingState.idle,
+            ));
+          }
+        }
+      }
+    } catch (e) {
+      print('❌ Erro no download: $e');
+      // Tenta a próxima música
+      if (index + 1 < _mediaQueue.length) {
+        await _downloadAndPlayTrack(index + 1);
+      }
+    }
+  }
+  
+  /// Reconstrói a playlist do player e toca a música especificada
+  Future<void> _rebuildPlaylistAndPlay(int targetIndex) async {
+    // Recria o mapeamento de índices
+    _playerIndexMap = [];
+    int playerIdx = 0;
+    for (int i = 0; i < _fullQueue.length; i++) {
+      if (_fullQueue[i]['filename'] != null) {
+        _playerIndexMap.add(playerIdx);
+        playerIdx++;
+      } else {
+        _playerIndexMap.add(-1);
+      }
+    }
+    
+    // Filtra tracks com filename
+    final validTracks = _fullQueue.where((t) => t['filename'] != null).toList();
+    
+    if (validTracks.isEmpty) {
+      print('⚠️ Nenhuma track válida para reproduzir');
+      return;
+    }
+    
+    // Prepara nova playlist
+    final playlist = ConcatenatingAudioSource(
+      children: validTracks.map((track) {
+        final filename = Uri.encodeComponent(track['filename'] ?? '');
+        final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
+        return AudioSource.uri(Uri.parse(url));
+      }).toList(),
+    );
+    
+    // Calcula índice no player para a track alvo
+    final targetPlayerIndex = _playerIndexMap[targetIndex];
+    
+    if (targetPlayerIndex < 0) {
+      print('⚠️ Track alvo ainda não tem filename válido');
+      return;
+    }
+    
+    await _player.setAudioSource(playlist, initialIndex: targetPlayerIndex);
+    _currentIndex = targetIndex;
+    
+    // Atualiza MediaItem
+    _mediaQueue = _fullQueue.map((track) => _createMediaItem(track)).toList();
+    queue.add(_mediaQueue);
+    mediaItem.add(_mediaQueue[targetIndex]);
+    
+    // Toca
+    await _player.play();
+    _broadcastState(_player.playbackEvent);
+    
+    print('▶️ Tocando: ${_mediaQueue[targetIndex].title}');
+    
+    // Pré-carrega a próxima
+    _preloadNextTrack();
+  }
+  
+  // Flag para evitar múltiplos downloads simultâneos
+  bool _isPreloading = false;
+  
+  /// Pré-carrega a próxima música da fila em background
+  Future<void> _preloadNextTrack() async {
+    // Evita múltiplos downloads simultâneos
+    if (_isPreloading) return;
+    
+    final nextIndex = _currentIndex + 1;
+    
+    // Verifica se há próxima música
+    if (nextIndex >= _fullQueue.length) {
+      print('📋 Fim da fila, nada para pré-carregar');
+      return;
+    }
+    
+    // Verifica se já tem filename
+    if (_fullQueue[nextIndex]['filename'] != null) {
+      print('✅ Próxima música já está baixada');
+      return;
+    }
+    
+    // Verifica se temos o ref para fazer download
+    if (_ref == null) {
+      print('⚠️ Ref não disponível para pré-carregamento');
+      return;
+    }
+    
+    _isPreloading = true;
+    
+    final track = _fullQueue[nextIndex];
+    final trackName = track['trackName'] ?? track['title'] ?? 'Música';
+    final artistName = track['artistName'] ?? track['artist'] ?? 'Artista';
+    
+    print('📥 Pré-carregando próxima: $trackName - $artistName');
+    
+    try {
+      final searchCtrl = _ref!.read(searchControllerProvider);
+      final filename = await searchCtrl.smartDownload(track);
+      
+      if (filename != null) {
+        print('✅ Pré-carregamento concluído: $filename');
+        
+        // Atualiza o filename na fila
+        _fullQueue[nextIndex]['filename'] = filename;
+        
+        // Atualiza o mapeamento de índices
+        _updatePlayerIndexMap();
+        
+        // Adiciona à playlist do player sem interromper a reprodução atual
+        await _addTrackToPlaylist(nextIndex, filename);
+      }
+    } catch (e) {
+      print('⚠️ Erro no pré-carregamento: $e');
+    } finally {
+      _isPreloading = false;
+    }
+  }
+  
+  /// Atualiza o mapeamento de índices após download
+  void _updatePlayerIndexMap() {
+    _playerIndexMap = [];
+    int playerIdx = 0;
+    for (int i = 0; i < _fullQueue.length; i++) {
+      if (_fullQueue[i]['filename'] != null) {
+        _playerIndexMap.add(playerIdx);
+        playerIdx++;
+      } else {
+        _playerIndexMap.add(-1);
+      }
+    }
+  }
+  
+  /// Adiciona uma track à playlist do player em tempo real
+  Future<void> _addTrackToPlaylist(int queueIndex, String filename) async {
+    try {
+      final audioSource = _player.audioSource;
+      if (audioSource is ConcatenatingAudioSource) {
+        final encodedFilename = Uri.encodeComponent(filename);
+        final url = '$baseUrl/stream?filename=$encodedFilename&quality=$_currentQuality';
+        
+        // Encontra a posição correta na playlist
+        // (após todas as tracks com índice menor que já estão na playlist)
+        int insertPosition = 0;
+        for (int i = 0; i < queueIndex; i++) {
+          if (_playerIndexMap[i] >= 0) {
+            insertPosition++;
+          }
+        }
+        
+        await audioSource.insert(insertPosition, AudioSource.uri(Uri.parse(url)));
+        
+        // Atualiza o mapeamento (precisa recalcular após inserção)
+        _updatePlayerIndexMap();
+        
+        print('✅ Track adicionada à playlist na posição $insertPosition');
+      }
+    } catch (e) {
+      print('⚠️ Erro ao adicionar track à playlist: $e');
     }
   }
 
@@ -218,19 +443,17 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       return;
     }
     
-    // Encontra track anterior com filename
-    int prevIndex = _currentIndex - 1;
-    while (prevIndex >= 0 && _playerIndexMap[prevIndex] < 0) {
-      print('⏮️ Pulando track $prevIndex (sem filename)');
-      prevIndex--;
-    }
+    final prevIndex = _currentIndex - 1;
     
-    if (prevIndex < 0) {
-      await _player.seek(Duration.zero);
-      print('⚠️ Nenhuma track anterior com filename, voltou ao início');
+    // Verifica se a track anterior tem filename
+    if (_playerIndexMap[prevIndex] < 0) {
+      // Não tem filename - precisa fazer download
+      print('📥 Track anterior sem filename, iniciando download...');
+      await _downloadAndPlayTrack(prevIndex);
       return;
     }
     
+    // Tem filename - toca normalmente
     _currentIndex = prevIndex;
     final playerIndex = _playerIndexMap[prevIndex];
     
@@ -240,7 +463,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       mediaItem.add(_mediaQueue[_currentIndex]);
       _broadcastState(_player.playbackEvent);
       await _player.play();
-      print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex, playerIndex: $playerIndex)');
+      print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
     } catch (e) {
       print('❌ Erro no skipToPrevious: $e');
     }
@@ -249,7 +472,6 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   @override
   Future<void> skipToQueueItem(int index) async {
     print('🎵 skipToQueueItem: $index (total: ${_mediaQueue.length})');
-    
     if (index < 0 || index >= _mediaQueue.length) {
       print('⚠️ Índice inválido para skipToQueueItem');
       return;
@@ -257,13 +479,13 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     
     // Verifica se a track tem filename
     if (_playerIndexMap[index] < 0) {
-      print('⚠️ Track no índice $index não tem filename ainda');
-      // Ainda atualiza o currentIndex e mediaItem para UI
-      _currentIndex = index;
-      mediaItem.add(_mediaQueue[index]);
+      // Não tem filename - precisa fazer download
+      print('📥 Track sem filename, iniciando download...');
+      await _downloadAndPlayTrack(index);
       return;
     }
     
+    // Tem filename - toca normalmente
     _currentIndex = index;
     final playerIndex = _playerIndexMap[index];
     
@@ -274,6 +496,9 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       _broadcastState(_player.playbackEvent);
       await _player.play();
       print('✅ Pulou para: ${_mediaQueue[index].title}');
+      
+      // Pré-carrega a próxima
+      _preloadNextTrack();
     } catch (e) {
       print('❌ Erro em skipToQueueItem: $e');
     }
@@ -381,6 +606,9 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       }
 
       play();
+      
+      // Pré-carrega a próxima música
+      _preloadNextTrack();
     } catch (e, stack) {
       print('❌ Erro em playQueue: $e');
       print('Stack: $stack');

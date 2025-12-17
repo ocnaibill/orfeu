@@ -91,6 +91,9 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   void _init() {
     _discord.init();
     _startHistoryTracking();
+    
+    // Configura o ref no audioHandler para permitir downloads sob demanda
+    audioHandler.setRef(ref);
 
     // Escuta mudanças do estado de playback
     _playbackSubscription = audioHandler.playbackState.listen((playbackState) {
