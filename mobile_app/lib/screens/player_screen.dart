@@ -1,933 +1,610 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:dio/dio.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'dart:async';
-import 'dart:io'; // Para checar Platform
+import 'package:palette_generator/palette_generator.dart';
+import 'dart:ui'; // Para ImageFilter
+import 'dart:math' as math;
 import '../providers.dart';
-// Importa o serviço novo
-import '../services/discord_service.dart';
+import '../services/audio_service.dart';
+import 'artist_screen.dart';
+import 'album_screen.dart';
 
 class PlayerScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic>? item;
-  final List<Map<String, dynamic>> queue;
+  final List<Map<String, dynamic>>? queue;
   final int initialIndex;
   final bool shuffle;
 
-  PlayerScreen({
+  const PlayerScreen({
     super.key,
     this.item,
-    List<Map<String, dynamic>>? queue,
+    this.queue,
     this.initialIndex = 0,
     this.shuffle = false,
-  }) : queue = queue ?? (item != null ? [item] : []);
+  });
 
-  @override
-  ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
-}
-
-class LyricLine {
-  final Duration startTime;
-  Duration duration;
-  final String text;
-
-  LyricLine(this.startTime, this.text,
-      {this.duration = const Duration(seconds: 5)});
-}
-
-class _PlayerScreenState extends ConsumerState<PlayerScreen> {
-  late AudioPlayer _audioPlayer;
-  bool _isPlaying = false;
-  String _currentQuality = 'lossless';
-
-  // Metadados do item ATUAL
-  Map<String, dynamic>? _metadata;
-  Map<String, dynamic>? _currentItem;
-
-  // Lyrics
-  bool _showLyrics = false;
-  List<LyricLine> _lyrics = [];
-  bool _loadingLyrics = false;
-  String? _plainLyrics;
-  int _currentLyricIndex = -1;
-  final ScrollController _lyricsScrollController = ScrollController();
-
-  // Discord RPC
-  final DiscordService _discord = DiscordService();
-
-  @override
-  void initState() {
-    super.initState();
-    _audioPlayer = AudioPlayer();
-
-    // Inicializa o Discord (Só vai rodar se for Desktop)
-    _discord.init();
-
-    _initPlayer();
-
-    // Listener de estado (Play/Pause)
-    _audioPlayer.playerStateStream.listen((state) {
-      if (mounted) {
-        setState(() {
-          _isPlaying = state.playing;
-        });
-        _updateDiscordPresence(); // Atualiza Discord quando pausa/toca
-      }
-    });
-
-    // Listener de mudança de faixa (Avançar/Recuar na playlist)
-    _audioPlayer.currentIndexStream.listen((index) {
-      if (index != null && index < widget.queue.length) {
-        _onTrackChanged(widget.queue[index]);
-      }
-    });
-
-    // Listener de Lyrics
-    _audioPlayer.positionStream.listen((pos) {
-      if (_showLyrics && _lyrics.isNotEmpty) {
-        _syncLyrics(pos);
-      }
-    });
-  }
-
-  // Função auxiliar para atualizar o Discord
-  void _updateDiscordPresence() {
-    // Só atualiza se tivermos metadados carregados
-    if (_currentItem == null) return;
-
-    // Tenta pegar dados do metadata (mais preciso) ou do item da lista
-    final title =
-        _metadata?['title'] ?? _currentItem!['display_name'] ?? 'Música';
-    final artist = _metadata?['artist'] ?? _currentItem!['artist'] ?? 'Artista';
-    final album = _metadata?['album'] ?? _currentItem!['album'] ?? 'Álbum';
-
-    // NOVO: Pega a URL curta da capa do metadados, gerada pelo backend
-    final coverProxyUrl = _metadata?['coverProxyUrl'];
-
-    _discord.updateActivity(
-      track: title,
-      artist: artist,
-      album: album,
-      duration: _audioPlayer.duration ?? Duration.zero,
-      position: _audioPlayer.position,
-      isPlaying: _isPlaying,
-      coverUrl: coverProxyUrl, // PASSA A URL CURTA DO PROXY
-    );
-  }
-
-  // Chamado quando a faixa muda (automática ou manual)
-  void _onTrackChanged(Map<String, dynamic> item) {
-    if (_currentItem == item) return;
-
-    setState(() {
-      _currentItem = item;
-      _metadata = null; // Limpa metadados anteriores
-      _lyrics = []; // Limpa letra anterior
-      _plainLyrics = null;
-      _currentLyricIndex = -1;
-    });
-
-    _fetchMetadata(item);
-  }
-
-  Future<void> _initPlayer() async {
-    try {
-      // Monta a Playlist
-      final playlist = ConcatenatingAudioSource(
-        children: widget.queue.map((item) {
-          final filename = Uri.encodeComponent(item['filename'] ?? '');
-          final url =
-              '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-
-          return AudioSource.uri(
-            Uri.parse(url),
-            tag: item,
-          );
-        }).toList(),
-      );
-
-      await _audioPlayer.setAudioSource(playlist,
-          initialIndex: widget.initialIndex);
-
-      if (widget.shuffle) {
-        await _audioPlayer.setShuffleModeEnabled(true);
-      }
-
-      _audioPlayer.play();
-    } catch (e) {
-      print("Erro player: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro ao iniciar fila: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _fetchMetadata(Map<String, dynamic> item) async {
-    try {
-      final dio = Dio(BaseOptions(baseUrl: baseUrl));
-      final filename = Uri.encodeComponent(item['filename'] ?? '');
-
-      // Busca metadados técnicos (Bitrate, etc) E A COVER PROXY URL
-      final resp = await dio.get('/metadata?filename=$filename');
-      if (mounted) {
-        setState(() => _metadata = resp.data);
-        _updateDiscordPresence(); // Atualiza Discord assim que tivermos os dados reais
-      }
-
-      _fetchLyrics(item);
-    } catch (e) {
-      print("Erro metadados: $e");
-      // Se falhar, tenta atualizar com o que tem
-      _updateDiscordPresence();
-    }
-  }
-
-  Future<void> _fetchLyrics(Map<String, dynamic> item) async {
-    setState(() => _loadingLyrics = true);
-    try {
-      final dio = Dio(BaseOptions(baseUrl: baseUrl));
-      final filename = Uri.encodeComponent(item['filename'] ?? '');
-      final resp = await dio.get('/lyrics?filename=$filename');
-
-      final synced = resp.data['syncedLyrics'];
-      final plain = resp.data['plainLyrics'];
-
-      if (synced != null && synced.toString().isNotEmpty) {
-        _parseLrc(synced);
-      } else {
-        setState(
-            () => _plainLyrics = plain ?? "Letra não disponível sincronizada.");
-      }
-    } catch (e) {
-      setState(() => _plainLyrics = "Letra não encontrada.");
-    } finally {
-      if (mounted) setState(() => _loadingLyrics = false);
-    }
-  }
-
-  void _parseLrc(String lrc) {
-    final lines = lrc.split('\n');
-    final List<LyricLine> parsed = [];
-    final RegExp regex = RegExp(r'^\[(\d{2}):(\d{2})\.(\d{2})\](.*)');
-
-    for (var line in lines) {
-      final match = regex.firstMatch(line);
-      if (match != null) {
-        final min = int.parse(match.group(1)!);
-        final sec = int.parse(match.group(2)!);
-        final ms = int.parse(match.group(3)!);
-        final text = match.group(4)!.trim();
-
-        if (text.isNotEmpty) {
-          parsed.add(LyricLine(
-              Duration(minutes: min, seconds: sec, milliseconds: ms * 10),
-              text));
-        }
-      }
-    }
-
-    // Calcular durações estimadas para o KaraokeText
-    for (int i = 0; i < parsed.length; i++) {
-      if (i < parsed.length - 1) {
-        parsed[i].duration = parsed[i + 1].startTime - parsed[i].startTime;
-      } else {
-        parsed[i].duration = const Duration(seconds: 5);
-      }
-    }
-
-    setState(() => _lyrics = parsed);
-  }
-
-  void _syncLyrics(Duration position) {
-    int index = -1;
-    for (int i = 0; i < _lyrics.length; i++) {
-      if (_lyrics[i].startTime <= position) {
-        // Verifica se ainda está dentro da duração da linha (ou é a última)
-        if (i == _lyrics.length - 1 || position < _lyrics[i + 1].startTime) {
-          index = i;
-          break;
-        }
-      }
-    }
-
-    if (index != _currentLyricIndex && index != -1) {
-      setState(() {
-        _currentLyricIndex = index;
-      });
-      _scrollToCurrentLine();
-    }
-  }
-
-  // --- Scroll Matemático Preciso ---
-  void _scrollToCurrentLine() {
-    if (!_lyricsScrollController.hasClients || _currentLyricIndex == -1) return;
-
-    double screenHeight = MediaQuery.of(context).size.height;
-    double screenWidth = MediaQuery.of(context).size.width;
-    double contentWidth = screenWidth - 48; // Padding horizontal (24*2)
-
-    double listTopPadding = screenHeight * 0.45;
-
-    double accumulatedHeight = 0;
-    for (int i = 0; i < _currentLyricIndex; i++) {
-      accumulatedHeight +=
-          _measureTextHeight(_lyrics[i].text, false, contentWidth);
-    }
-
-    double currentItemHeight = _measureTextHeight(
-        _lyrics[_currentLyricIndex].text, true, contentWidth);
-
-    double targetOffset =
-        (listTopPadding + accumulatedHeight + (currentItemHeight / 2)) -
-            (screenHeight / 3) +
-            20;
-
-    if (targetOffset < 0) targetOffset = 0;
-
-    _lyricsScrollController.animateTo(
-      targetOffset,
-      duration: const Duration(milliseconds: 700),
-      curve: Curves.easeInOutCubic,
-    );
-  }
-
-  // Helper para medir altura do texto
-  double _measureTextHeight(String text, bool isActive, double maxWidth) {
-    final span = TextSpan(
-      text: text,
-      style: GoogleFonts.outfit(
-        fontSize: isActive ? 28 : 22,
-        fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
-        height: 1.3,
+  // --- ROTA DE TRANSIÇÃO FLUIDA (Slide Up/Down) ---
+  static Route createRoute({
+    Map<String, dynamic>? item,
+    List<Map<String, dynamic>>? queue,
+    int initialIndex = 0,
+    bool shuffle = false,
+  }) {
+    return PageRouteBuilder(
+      opaque: false, // OBRIGATÓRIO: Permite ver a tela anterior durante o drag/transição
+      transitionDuration: const Duration(milliseconds: 400),
+      reverseTransitionDuration: const Duration(milliseconds: 400),
+      pageBuilder: (context, animation, secondaryAnimation) => PlayerScreen(
+        item: item,
+        queue: queue,
+        initialIndex: initialIndex,
+        shuffle: shuffle,
       ),
-    );
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        const begin = Offset(0.0, 1.0); // Começa em baixo
+        const end = Offset.zero;       // Termina no centro
+        const curve = Curves.easeOutCubic; // Curva suave
 
-    final tp = TextPainter(
-      text: span,
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    );
+        var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+        var offsetAnimation = animation.drive(tween);
 
-    tp.layout(maxWidth: maxWidth);
-    return tp.height + 32.0; // + Padding
-  }
-
-  void _changeQuality(String quality) {
-    if (_currentQuality == quality) return;
-    setState(() {
-      _currentQuality = quality;
-      _isPlaying = false;
-    });
-
-    // Recarrega
-    final currentPos = _audioPlayer.position;
-    final currentIndex = _audioPlayer.currentIndex;
-
-    _initPlayer().then((_) async {
-      if (currentIndex != null && currentIndex < widget.queue.length) {
-        await _audioPlayer.seek(currentPos, index: currentIndex);
-      }
-    });
-
-    if (mounted) Navigator.pop(context);
-  }
-
-  String _getQualityLabel(String q) {
-    switch (q) {
-      case 'low':
-        return 'Baixa';
-      case 'medium':
-        return 'Média';
-      case 'high':
-        return 'Alta';
-      case 'lossless':
-        return 'Lossless';
-      default:
-        return 'Desconhecido';
-    }
-  }
-
-  String _getQualityDescription(String q) {
-    switch (q) {
-      case 'low':
-        return 'MP3 128kbps (Economia de dados)';
-      case 'medium':
-        return 'MP3 192kbps (Equilibrado)';
-      case 'high':
-        return 'MP3 320kbps (Alta fidelidade)';
-      case 'lossless':
-        return 'Arquivo Original (Sem compressão)';
-      default:
-        return '';
-    }
-  }
-
-  void _showQualitySelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      isScrollControlled: true,
-      builder: (context) {
-        return SingleChildScrollView(
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-            margin: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("Qualidade do Áudio",
-                          style: GoogleFonts.outfit(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white)),
-                      IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white54),
-                          onPressed: () => Navigator.pop(context)),
-                    ],
-                  ),
-                ),
-                if (_metadata != null)
-                  Container(
-                    margin: const EdgeInsets.symmetric(vertical: 16),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.05),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white10)),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.info_outline,
-                            color: Color(0xFFD4AF37), size: 20),
-                        const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                                "Qualidade Atual: ${_getQualityLabel(_currentQuality)}",
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold)),
-                            Text(
-                                _currentQuality == 'lossless'
-                                    ? "${_metadata!['tech_label']} • Original"
-                                    : "Convertido de ${_metadata!['tech_label']}",
-                                style: const TextStyle(
-                                    color: Colors.white54, fontSize: 12)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                const Divider(color: Colors.white10),
-                ...['low', 'medium', 'high', 'lossless'].map((q) {
-                  final isSelected = _currentQuality == q;
-                  return ListTile(
-                    leading: Icon(
-                        isSelected
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                        color: isSelected
-                            ? const Color(0xFFD4AF37)
-                            : Colors.white24),
-                    title: Text(_getQualityLabel(q),
-                        style: TextStyle(
-                            color: isSelected
-                                ? const Color(0xFFD4AF37)
-                                : Colors.white)),
-                    subtitle: Text(_getQualityDescription(q),
-                        style: TextStyle(
-                            color: Colors.white.withOpacity(0.4),
-                            fontSize: 12)),
-                    onTap: () => _changeQuality(q),
-                  );
-                }),
-              ],
-            ),
-          ),
-        );
+        return SlideTransition(position: offsetAnimation, child: child);
       },
     );
   }
 
   @override
+  ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProviderStateMixin {
+  List<Color> _gradientColors = [Colors.black, const Color(0xFF1A1A1A)];
+  bool _colorsExtracted = false;
+  
+  late AnimationController _bgController;
+  late Animation<Alignment> _topAlignmentAnim;
+  late Animation<Alignment> _bottomAlignmentAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _bgController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat(reverse: true);
+    
+    _topAlignmentAnim = TweenSequence<Alignment>([
+      TweenSequenceItem(tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft), weight: 1),
+    ]).animate(_bgController);
+
+    _bottomAlignmentAnim = TweenSequence<Alignment>([
+      TweenSequenceItem(tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight), weight: 1),
+    ]).animate(_bgController);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initPlayback();
+    });
+  }
+
+  @override
   void dispose() {
-    _discord.clear(); // Limpa o status no Discord ao fechar
-    _discord.dispose();
-    _audioPlayer.dispose();
-    _lyricsScrollController.dispose();
+    _bgController.dispose();
     super.dispose();
+  }
+
+  void _initPlayback() {
+    final playerNotifier = ref.read(playerProvider.notifier);
+    
+    List<Map<String, dynamic>> targetQueue = [];
+    if (widget.queue != null && widget.queue!.isNotEmpty) {
+      targetQueue = widget.queue!;
+    } else if (widget.item != null) {
+      targetQueue = [widget.item!];
+    }
+
+    if (targetQueue.isNotEmpty) {
+      playerNotifier.playContext(
+        queue: targetQueue, 
+        initialIndex: widget.initialIndex,
+        shuffle: widget.shuffle
+      );
+    }
+  }
+
+  Future<void> _extractColors(String? url) async {
+    if (url == null || url.isEmpty || _colorsExtracted) return;
+    try {
+      final palette = await PaletteGenerator.fromImageProvider(
+        NetworkImage(url),
+        maximumColorCount: 20,
+      );
+      if (mounted) {
+        setState(() {
+          final darkVibrant = palette.darkVibrantColor?.color ?? Colors.black;
+          final vibrant = palette.vibrantColor?.color ?? const Color(0xFF4A00E0);
+          final muted = palette.mutedColor?.color ?? const Color(0xFF1A1A1A);
+          
+          _gradientColors = [
+            darkVibrant.withOpacity(0.8),
+            vibrant.withOpacity(0.6),
+            muted.withOpacity(0.8),
+            Colors.black
+          ];
+          _colorsExtracted = true;
+        });
+      }
+    } catch (e) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_currentItem == null && widget.queue.isEmpty) {
-      return Scaffold(
-          backgroundColor: Colors.black,
-          body: Center(
-              child: Text("Erro: Fila Vazia",
-                  style: TextStyle(color: Colors.white))));
+    final playerState = ref.watch(playerProvider);
+    final notifier = ref.read(playerProvider.notifier);
+    final currentTrack = playerState.currentTrack;
+
+    if (currentTrack != null) {
+      final coverUrl = currentTrack['imageUrl'] ?? currentTrack['artworkUrl'];
+      _extractColors(coverUrl); 
     }
 
-    // Se _currentItem ainda for nulo (primeira carga), usa o inicial da fila
-    final displayItem = _currentItem ??
-        (widget.queue.isNotEmpty ? widget.queue[widget.initialIndex] : {});
+    if (currentTrack == null) {
+      return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))));
+    }
 
-    final filenameEncoded = Uri.encodeComponent(displayItem['filename'] ?? '');
-    final coverUrl = '$baseUrl/cover?filename=$filenameEncoded';
+    final coverUrl = currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
+    final title = currentTrack['trackName'] ?? currentTrack['title'] ?? 'Sem Título';
+    final artist = currentTrack['artistName'] ?? currentTrack['artist'] ?? 'Desconhecido';
+    final duration = playerState.duration;
+    final position = playerState.position;
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-            icon: const Icon(Icons.keyboard_arrow_down),
-            onPressed: () => Navigator.pop(context)),
-        title: Text(_showLyrics ? "Letra" : "Tocando Agora",
-            style: GoogleFonts.outfit(fontSize: 14, letterSpacing: 2)),
-        centerTitle: true,
-        actions: [
-          IconButton(
-              icon: Icon(_showLyrics ? Icons.music_note : Icons.lyrics,
-                  color: _showLyrics ? const Color(0xFFD4AF37) : Colors.white),
-              onPressed: () {
-                setState(() => _showLyrics = !_showLyrics);
-                if (_showLyrics)
-                  WidgetsBinding.instance
-                      .addPostFrameCallback((_) => _scrollToCurrentLine());
-              })
-        ],
-      ),
-      extendBodyBehindAppBar: true,
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF1A1A1A), Colors.black]),
-        ),
-        child: Column(
+    // --- DISMISSIBLE (Arrastar para Baixo) ---
+    return Dismissible(
+      key: const Key('player_screen_dismiss'),
+      direction: DismissDirection.down,
+      onDismissed: (_) {
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black, // Fundo base
+        body: Stack(
           children: [
-            Expanded(
-              child: _showLyrics
-                  ? _buildLyricsView(coverUrl)
-                  : _buildCoverView(coverUrl),
+            // 1. Fundo "Lava Lamp" Animado
+            AnimatedBuilder(
+              animation: _bgController,
+              builder: (context, child) {
+                return Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: _topAlignmentAnim.value,
+                      end: _bottomAlignmentAnim.value,
+                      colors: _gradientColors,
+                    ),
+                  ),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                    child: Container(color: Colors.black.withOpacity(0.3)),
+                  ),
+                );
+              },
             ),
-            _buildPlayerControls(),
+
+            // 2. Conteúdo Principal
+            SizedBox.expand(
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(), // Melhor experiência de toque
+                child: SizedBox(
+                  height: 852, // Referência de layout
+                  child: Stack(
+                    alignment: Alignment.topCenter,
+                    children: [
+                      // CAPA
+                      Positioned(
+                        top: 140,
+                        child: Hero(
+                          tag: 'player_cover',
+                          child: Container(
+                            width: 250, height: 250,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [
+                                BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, offset: const Offset(0, 10))
+                              ],
+                              image: coverUrl.isNotEmpty 
+                                  ? DecorationImage(image: NetworkImage(coverUrl), fit: BoxFit.cover)
+                                  : null,
+                              color: Colors.grey[900],
+                            ),
+                            child: coverUrl.isEmpty ? const Icon(Icons.music_note, color: Colors.white24, size: 80) : null,
+                          ),
+                        ),
+                      ),
+
+                      // TÍTULO
+                      Positioned(
+                        top: 420,
+                        left: 33, right: 80,
+                        child: GestureDetector(
+                          onTap: () => _showNavigationModal(context, currentTrack),
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.firaSans(
+                              fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      // ARTISTA
+                      Positioned(
+                        top: 450,
+                        left: 33, right: 80,
+                        child: GestureDetector(
+                          onTap: () => _showNavigationModal(context, currentTrack),
+                          child: Text(
+                            artist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.firaSans(
+                              fontSize: 24, fontWeight: FontWeight.w300, color: Colors.white.withOpacity(0.9)
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      // AÇÕES LATERAIS
+                      Positioned(
+                        top: 430,
+                        right: 33,
+                        child: Row(
+                          children: [
+                            _buildGlassActionButton(
+                              icon: Icons.favorite_border, 
+                              onTap: () {
+                                ref.read(libraryControllerProvider).toggleFavorite(currentTrack);
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Adicionado às curtidas")));
+                              }
+                            ),
+                            const SizedBox(width: 10),
+                            _buildGlassActionButton(
+                              icon: Icons.more_horiz, 
+                              onTap: () => _showOptionsModal(context, currentTrack)
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // BARRA DE PROGRESSO
+                      Positioned(
+                        top: 510,
+                        child: SizedBox(
+                          width: 250,
+                          child: Column(
+                            children: [
+                              LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final double progress = (duration.inMilliseconds > 0) 
+                                      ? position.inMilliseconds / duration.inMilliseconds 
+                                      : 0.0;
+                                  return GestureDetector(
+                                    onHorizontalDragUpdate: (details) {
+                                      final seekPos = (details.localPosition.dx / constraints.maxWidth) * duration.inMilliseconds;
+                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
+                                    },
+                                    onTapUp: (details) {
+                                      final seekPos = (details.localPosition.dx / constraints.maxWidth) * duration.inMilliseconds;
+                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
+                                    },
+                                    child: Stack(
+                                      children: [
+                                        Container(
+                                          height: 7,
+                                          width: double.infinity,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.4),
+                                            borderRadius: BorderRadius.circular(3.5),
+                                          ),
+                                        ),
+                                        FractionallySizedBox(
+                                          widthFactor: progress.clamp(0.0, 1.0),
+                                          child: Container(
+                                            height: 7,
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius: BorderRadius.circular(3.5),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                              ),
+                              const SizedBox(height: 5),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(_formatDuration(position), style: GoogleFonts.firaSans(color: Colors.white, fontSize: 12)),
+                                  Text("-${_formatDuration(duration - position)}", style: GoogleFonts.firaSans(color: Colors.white, fontSize: 12)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      // QUALIDADE
+                      Positioned(
+                        top: 545,
+                        child: GestureDetector(
+                          onTap: () => _showQualitySelector(context, notifier),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(15),
+                              border: Border.all(color: Colors.white24)
+                            ),
+                            child: Text(
+                              notifier.currentQuality.toUpperCase(),
+                              style: GoogleFonts.firaSans(color: const Color(0xFFD4AF37), fontSize: 10, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      // CONTROLES DE MÍDIA
+                      Positioned(
+                        top: 600,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.skip_previous_rounded, color: Colors.white, size: 40),
+                              onPressed: notifier.previous,
+                            ),
+                            const SizedBox(width: 20),
+                            Container(
+                              height: 70, width: 70,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.white.withOpacity(0.1),
+                              ),
+                              child: IconButton(
+                                icon: Icon(playerState.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white, size: 50),
+                                onPressed: notifier.togglePlay,
+                              ),
+                            ),
+                            const SizedBox(width: 20),
+                            IconButton(
+                              icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 40),
+                              onPressed: notifier.next,
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // BOTÕES INFERIORES
+                      Positioned(
+                        bottom: 40,
+                        left: 0, right: 0,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.shuffle, color: Colors.white54, size: 24),
+                              onPressed: () {},
+                            ),
+                            const SizedBox(width: 20),
+                            _buildBottomButton(Icons.lyrics, "Letras", () {}),
+                            const SizedBox(width: 40),
+                            _buildBottomButton(Icons.speaker_group, "Saída", () {}),
+                            const SizedBox(width: 40),
+                            _buildBottomButton(Icons.queue_music, "Fila", () {
+                               _showQueueModal(context, playerState.currentTrack, []);
+                            }),
+                            const SizedBox(width: 20),
+                            IconButton(
+                              icon: const Icon(Icons.repeat, color: Colors.white54, size: 24),
+                              onPressed: () {},
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // 3. BOTÃO DE VOLTAR (AGORA NO TOPO DA PILHA VISUAL)
+            // Está fora do SingleChildScrollView e por último no Stack para garantir o clique
+            Positioned(
+              top: 50, left: 20,
+              child: IconButton(
+                icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 30),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // ... (Resto das views _buildPlayerControls, _buildCoverView, _buildLyricsView, etc. continuam iguais ao anterior, pois o foco aqui foi a lógica do Discord) ...
-  // [MANTER O CÓDIGO DA INTERFACE IGUAL AO ANTERIOR PARA ECONOMIZAR ESPAÇO, JÁ QUE A LÓGICA DE UI NÃO MUDOU]
-
-  // (Replica as funções de UI do código anterior para garantir que compile)
-  Widget _buildPlayerControls() {
-    return Container(
-      padding: const EdgeInsets.only(bottom: 40, left: 24, right: 24, top: 20),
-      decoration: BoxDecoration(
-          gradient: LinearGradient(
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: [Colors.black, Colors.black.withOpacity(0.0)],
-              stops: const [0.5, 1.0])),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          StreamBuilder<Duration>(
-            stream: _audioPlayer.positionStream,
-            builder: (context, snapshot) {
-              final pos = snapshot.data ?? Duration.zero;
-              final dur = _audioPlayer.duration ?? Duration.zero;
-              return Column(
-                children: [
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                        trackHeight: 2,
-                        thumbShape:
-                            const RoundSliderThumbShape(enabledThumbRadius: 6),
-                        overlayShape:
-                            const RoundSliderOverlayShape(overlayRadius: 14)),
-                    child: Slider(
-                      value: pos.inSeconds
-                          .toDouble()
-                          .clamp(0, dur.inSeconds.toDouble()),
-                      max: dur.inSeconds.toDouble() > 0
-                          ? dur.inSeconds.toDouble()
-                          : 1,
-                      activeColor: const Color(0xFFD4AF37),
-                      inactiveColor: Colors.white10,
-                      onChanged: (v) =>
-                          _audioPlayer.seek(Duration(seconds: v.toInt())),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(_formatDuration(pos),
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 12)),
-                        Text(_formatDuration(dur),
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 12)),
-                      ],
-                    ),
-                  )
-                ],
-              );
-            },
+  // ... (Widgets auxiliares mantidos iguais, apenas certifique-se de que estão no arquivo) ...
+  Widget _buildGlassActionButton({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+          child: Container(
+            width: 30, height: 30,
+            decoration: BoxDecoration(
+              color: _gradientColors[1].withOpacity(0.3),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: Colors.white, size: 18),
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              IconButton(
-                  icon: const Icon(Icons.skip_previous_rounded,
-                      size: 36, color: Colors.white),
-                  onPressed: _audioPlayer.hasPrevious
-                      ? _audioPlayer.seekToPrevious
-                      : null),
-              const SizedBox(width: 20),
-              CircleAvatar(
-                radius: 35,
-                backgroundColor: Colors.white,
-                child: IconButton(
-                  icon: Icon(
-                      _isPlaying
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
-                      color: Colors.black,
-                      size: 40),
-                  onPressed: () {
-                    if (_isPlaying)
-                      _audioPlayer.pause();
-                    else
-                      _audioPlayer.play();
-                  },
-                ),
-              ),
-              const SizedBox(width: 20),
-              IconButton(
-                  icon: const Icon(Icons.skip_next_rounded,
-                      size: 36, color: Colors.white),
-                  onPressed:
-                      _audioPlayer.hasNext ? _audioPlayer.seekToNext : null),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildCoverView(String coverUrl) {
-    return LayoutBuilder(builder: (context, constraints) {
-      // Verifica se é favorito usando o provider
-      final favorites = ref.watch(favoriteTracksProvider);
-      final filename = _currentItem?['filename'];
-      final isFavorite = filename != null && favorites.contains(filename);
-
-      return SingleChildScrollView(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minHeight: constraints.maxHeight),
-          child: SafeArea(
-            top: true,
-            bottom: false,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const SizedBox(height: 20),
-                Container(
-                    height: 300,
-                    width: 300,
-                    decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: const [
-                          BoxShadow(
-                              color: Colors.black45,
-                              blurRadius: 20,
-                              spreadRadius: 5)
-                        ]),
-                    clipBehavior: Clip.antiAlias,
-                    child: Image.network(coverUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            Container(color: Colors.white10))),
-                const SizedBox(height: 40),
-                // Título e Artista + Coração
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      // Textos (Expanded para não quebrar layout)
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                                _metadata?['title'] ??
-                                    _currentItem?['display_name'] ??
-                                    '...',
-                                style: GoogleFonts.outfit(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis),
-                            Text(
-                                _metadata?['artist'] ??
-                                    _currentItem?['artist'] ??
-                                    "...",
-                                style: GoogleFonts.outfit(
-                                    fontSize: 18, color: Colors.white54),
-                                maxLines: 1),
-                          ],
-                        ),
-                      ),
-                      // BOTÃO DE FAVORITO
-                      IconButton(
-                        icon: Icon(
-                          isFavorite ? Icons.favorite : Icons.favorite_border,
-                          color: isFavorite
-                              ? const Color(0xFFD4AF37)
-                              : Colors.white54,
-                          size: 32,
-                        ),
-                        onPressed: () {
-                          if (_currentItem != null) {
-                            ref
-                                .read(libraryControllerProvider)
-                                .toggleFavorite(_currentItem!);
-                          }
-                        },
-                      )
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                GestureDetector(
-                  onTap: _showQualitySelector,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                        color: const Color(0xFFD4AF37).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                            color: const Color(0xFFD4AF37).withOpacity(0.3))),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.tune,
-                            size: 14, color: Color(0xFFD4AF37)),
-                        const SizedBox(width: 8),
-                        Text(_getQualityLabel(_currentQuality).toUpperCase(),
-                            style: const TextStyle(
-                                color: Color(0xFFD4AF37),
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1)),
-                      ],
-                    ),
-                  ),
-                ),
-                if (_metadata != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text(
-                      _metadata!['tech_label'] ?? "",
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      );
-    });
+  Widget _buildBottomButton(IconData icon, String tooltip, VoidCallback onTap) {
+    return IconButton(
+      icon: Icon(icon, color: Colors.white, size: 28),
+      tooltip: tooltip,
+      onPressed: onTap,
+    );
   }
 
-  Widget _buildLyricsView(String coverUrl) {
-    // Mesma implementação do código anterior
-    double screenHeight = MediaQuery.of(context).size.height;
-    return Column(children: [
-      SafeArea(
-          bottom: false,
-          child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
-              child: Row(children: [
-                ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(coverUrl,
-                        width: 60,
-                        height: 60,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                            color: Colors.white10, width: 60, height: 60))),
-                const SizedBox(width: 16),
-                Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Text(
-                          _metadata?['title'] ??
-                              _currentItem?['display_name'] ??
-                              '...',
-                          style: GoogleFonts.outfit(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
-                      Text(
-                          _metadata?['artist'] ??
-                              _currentItem?['artist'] ??
-                              "...",
-                          style: GoogleFonts.outfit(
-                              fontSize: 14, color: Colors.white54)),
-                    ]))
-              ]))),
-      const Divider(color: Colors.white10, height: 1),
-      Expanded(
-          child: _loadingLyrics
-              ? const Center(
-                  child: CircularProgressIndicator(color: Color(0xFFD4AF37)))
-              : _lyrics.isNotEmpty
-                  ? ShaderMask(
-                      shaderCallback: (rect) => const LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                Colors.transparent,
-                                Colors.black,
-                                Colors.black,
-                                Colors.transparent
-                              ],
-                              stops: [
-                                0.0,
-                                0.2,
-                                0.8,
-                                1.0
-                              ]).createShader(rect),
-                      blendMode: BlendMode.dstIn,
-                      child: ListView.builder(
-                          controller: _lyricsScrollController,
-                          padding: EdgeInsets.symmetric(
-                              vertical: screenHeight * 0.45, horizontal: 24),
-                          itemCount: _lyrics.length,
-                          itemBuilder: (context, index) {
-                            final line = _lyrics[index];
-                            final isActive = index == _currentLyricIndex;
-                            return RepaintBoundary(
-                                child: GestureDetector(
-                                    onTap: () {
-                                      _audioPlayer.seek(line.startTime);
-                                      setState(
-                                          () => _currentLyricIndex = index);
-                                    },
-                                    child: AnimatedOpacity(
-                                        duration:
-                                            const Duration(milliseconds: 500),
-                                        curve: Curves.easeInOut,
-                                        opacity: isActive ? 1.0 : 0.5,
-                                        child: Padding(
-                                            padding: const EdgeInsets.only(
-                                                bottom: 24.0),
-                                            child: isActive
-                                                ? KaraokeText(
-                                                    text: line.text,
-                                                    startTime: line.startTime,
-                                                    duration: line.duration,
-                                                    playerStream: _audioPlayer
-                                                        .positionStream)
-                                                : Text(line.text,
-                                                    textAlign: TextAlign.center,
-                                                    style: GoogleFonts.outfit(
-                                                        fontSize: 22,
-                                                        fontWeight:
-                                                            FontWeight.w500,
-                                                        color:
-                                                            Colors.white))))));
-                          }))
-                  : Center(
-                      child: Padding(
-                          padding: const EdgeInsets.all(24.0),
-                          child: Text(_plainLyrics ?? "Letra não encontrada.",
-                              style: const TextStyle(
-                                  color: Colors.white54, fontSize: 16),
-                              textAlign: TextAlign.center))))
-    ]);
-  }
-
-  String _formatDuration(Duration d) =>
-      "${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
-}
-
-// ... (KaraokeText mantido igual) ...
-class KaraokeText extends StatelessWidget {
-  final String text;
-  final Duration startTime;
-  final Duration duration;
-  final Stream<Duration> playerStream;
-
-  const KaraokeText(
-      {super.key,
-      required this.text,
-      required this.startTime,
-      required this.duration,
-      required this.playerStream});
-
-  @override
-  Widget build(BuildContext context) {
-    final words = text.split(' ');
-    return StreamBuilder<Duration>(
-      stream: playerStream,
-      builder: (context, snapshot) {
-        final currentPos = snapshot.data ?? Duration.zero;
-        final lineProgress =
-            (currentPos - startTime).inMilliseconds / duration.inMilliseconds;
-        final clampedLineProgress = lineProgress.clamp(0.0, 1.0);
-        final wordCursor = clampedLineProgress * words.length;
-
-        return RichText(
-          textAlign: TextAlign.center,
-          text: TextSpan(
-            style: GoogleFonts.outfit(
-                fontSize: 28, fontWeight: FontWeight.bold, height: 1.3),
-            children: List.generate(words.length, (i) {
-              double fade = (wordCursor - i).clamp(0.0, 1.0);
-              fade = Curves.easeOut.transform(fade);
-              final color = Color.lerp(Colors.white30, Colors.white, fade);
-              final shadowOpacity = fade * 0.6;
-              return TextSpan(
-                text: "${words[i]} ",
-                style: TextStyle(color: color, shadows: [
-                  Shadow(
-                      color: const Color(0xFFD4AF37).withOpacity(shadowOpacity),
-                      blurRadius: 15 * fade)
-                ]),
-              );
-            }),
+  // (Mantenha _showNavigationModal, _showOptionsModal, _showQueueModal, _showQualitySelector, _formatDuration aqui)
+  void _showNavigationModal(BuildContext context, Map<String, dynamic> track) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text("Ir para", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              const SizedBox(height: 20),
+              ListTile(
+                leading: const Icon(Icons.person, color: Colors.white),
+                title: Text("Ver Artista (${track['artistName'] ?? 'Unknown'})", style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => ArtistScreen(artist: {"artistName": track['artistName']})));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.album, color: Colors.white),
+                title: Text("Ver Álbum (${track['collectionName'] ?? 'Unknown'})", style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  final albumId = track['collectionId'] ?? track['tidalId'];
+                  if (albumId != null) {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => AlbumScreen(collectionId: albumId.toString())));
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ID do álbum não disponível")));
+                  }
+                },
+              ),
+            ],
           ),
         );
       },
     );
+  }
+
+  void _showOptionsModal(BuildContext context, Map<String, dynamic> track) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.favorite_border, color: Colors.white),
+                title: Text("Adicionar às curtidas", style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  ref.read(libraryControllerProvider).toggleFavorite(track);
+                  Navigator.pop(ctx);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.playlist_add, color: Colors.white),
+                title: Text("Adicionar a uma playlist", style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.share, color: Colors.white),
+                title: Text("Compartilhar", style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showQueueModal(BuildContext context, Map<String, dynamic>? current, List<dynamic> queue) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          builder: (ctx, scrollController) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Fila de Reprodução", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 20),
+                  if (current != null)
+                    ListTile(
+                      leading: const Icon(Icons.play_arrow, color: Color(0xFFD4AF37)),
+                      title: Text(current['trackName'], style: const TextStyle(color: Color(0xFFD4AF37))),
+                      subtitle: const Text("Tocando agora", style: TextStyle(color: Colors.white54)),
+                    ),
+                  const Divider(color: Colors.white24),
+                  const Expanded(child: Center(child: Text("Fila vazia", style: TextStyle(color: Colors.white54)))),
+                ],
+              ),
+            );
+          }
+        );
+      },
+    );
+  }
+
+  void _showQualitySelector(BuildContext context, AudioPlayerNotifier notifier) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: ['low', 'medium', 'high', 'lossless'].map((q) {
+              return ListTile(
+                title: Text(q.toUpperCase(), style: const TextStyle(color: Colors.white)),
+                trailing: notifier.currentQuality == q ? const Icon(Icons.check, color: Color(0xFFD4AF37)) : null,
+                onTap: () {
+                  notifier.changeQuality(q);
+                  Navigator.pop(context);
+                },
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatDuration(Duration d) {
+    if (d.inMilliseconds < 0) return "0:00";
+    return "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
   }
 }
