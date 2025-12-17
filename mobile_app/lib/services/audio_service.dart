@@ -342,6 +342,26 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     state = state.copyWith(queue: newQueue, currentIndex: newCurrentIndex);
   }
 
+  /// Atualiza o filename de uma track na fila após download
+  Future<void> updateQueueTrackFilename(int index, String filename) async {
+    if (index < 0 || index >= state.queue.length) return;
+    
+    // Atualiza no estado local
+    final newQueue = List<Map<String, dynamic>>.from(state.queue);
+    newQueue[index] = Map<String, dynamic>.from(newQueue[index]);
+    newQueue[index]['filename'] = filename;
+    state = state.copyWith(queue: newQueue);
+    
+    // Atualiza na fila original também
+    if (index < _originalQueue.length) {
+      _originalQueue[index] = Map<String, dynamic>.from(_originalQueue[index]);
+      _originalQueue[index]['filename'] = filename;
+    }
+    
+    // Atualiza no audio handler (reconstrói playlist se necessário)
+    await audioHandler.updateTrackFilename(index, filename);
+  }
+
   Future<void> changeQuality(String quality) async {
     await audioHandler.changeQuality(quality);
   }

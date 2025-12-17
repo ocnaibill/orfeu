@@ -790,6 +790,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     final playerState = ref.read(playerProvider);
     final currentIndex = playerState.currentIndex;
     
+    // Debug: log da fila
+    print('📋 Fila no modal: ${queue.length} items, currentIndex: $currentIndex');
+    for (int i = 0; i < queue.length; i++) {
+      final t = queue[i] as Map<String, dynamic>;
+      final hasFile = t['filename'] != null;
+      print('  [$i] ${t['trackName'] ?? t['title']} - hasFile: $hasFile');
+    }
+    
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),

@@ -15,6 +15,13 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   int _currentIndex = 0;
   String _currentQuality = 'lossless';
   
+  // Fila virtual completa (inclui tracks sem filename)
+  List<Map<String, dynamic>> _fullQueue = [];
+  
+  // Mapeamento: índice na _mediaQueue -> índice na playlist do just_audio
+  // Se uma track não tem filename, seu valor será -1
+  List<int> _playerIndexMap = [];
+  
   // Timer para log de sessão
   final Stopwatch _sessionTimer = Stopwatch();
   
@@ -43,13 +50,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         onError: (e) => print('❌ Erro no positionStream: $e'),
       );
       
-      // Escuta quando a música atual muda
+      // Escuta quando a música atual muda no player
+      // Nota: o índice aqui é do player (just_audio), não da nossa _mediaQueue
       _player.currentIndexStream.listen(
-        (index) {
-          if (index != null && index < _mediaQueue.length) {
+        (playerIndex) {
+          if (playerIndex != null) {
             _logSessionAndReset();
-            _currentIndex = index;
-            mediaItem.add(_mediaQueue[index]);
+            // Encontra o índice correspondente na _mediaQueue
+            final mediaIndex = _playerIndexMap.indexOf(playerIndex);
+            if (mediaIndex >= 0 && mediaIndex < _mediaQueue.length) {
+              _currentIndex = mediaIndex;
+              mediaItem.add(_mediaQueue[mediaIndex]);
+            }
           }
         },
         onError: (e) => print('❌ Erro no currentIndexStream: $e'),
@@ -156,62 +168,108 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   @override
   Future<void> skipToNext() async {
     print('🎵 skipToNext chamado. Index atual: $_currentIndex, Total: ${_mediaQueue.length}');
-    if (_currentIndex < _mediaQueue.length - 1) {
-      _currentIndex++;
-      try {
-        // Para o player para garantir reset do estado
-        await _player.pause();
-        // Seek para o novo índice
-        await _player.seek(Duration.zero, index: _currentIndex);
-        // Atualiza o mediaItem
-        mediaItem.add(_mediaQueue[_currentIndex]);
-        // Emite novo estado
-        _broadcastState(_player.playbackEvent);
-        // Retoma a reprodução
-        await _player.play();
-        print('⏭️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
-      } catch (e) {
-        print('❌ Erro no skipToNext: $e');
-      }
-    } else {
+    
+    if (_currentIndex >= _mediaQueue.length - 1) {
       print('⚠️ Já está na última música da fila');
+      return;
+    }
+    
+    // Encontra próxima track com filename
+    int nextIndex = _currentIndex + 1;
+    while (nextIndex < _mediaQueue.length && _playerIndexMap[nextIndex] < 0) {
+      print('⏭️ Pulando track $nextIndex (sem filename)');
+      nextIndex++;
+    }
+    
+    if (nextIndex >= _mediaQueue.length) {
+      print('⚠️ Nenhuma próxima track com filename disponível');
+      return;
+    }
+    
+    _currentIndex = nextIndex;
+    final playerIndex = _playerIndexMap[nextIndex];
+    
+    try {
+      await _player.pause();
+      await _player.seek(Duration.zero, index: playerIndex);
+      mediaItem.add(_mediaQueue[_currentIndex]);
+      _broadcastState(_player.playbackEvent);
+      await _player.play();
+      print('⏭️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex, playerIndex: $playerIndex)');
+    } catch (e) {
+      print('❌ Erro no skipToNext: $e');
     }
   }
 
   @override
   Future<void> skipToPrevious() async {
     print('🎵 skipToPrevious chamado. Index atual: $_currentIndex, Posição: ${_player.position.inSeconds}s');
+    
     // Se está no começo da música (< 3s), volta para anterior
-    // Senão, volta ao início da música atual
-    if (_player.position.inSeconds < 3 && _currentIndex > 0) {
-      _currentIndex--;
-      try {
-        await _player.pause();
-        await _player.seek(Duration.zero, index: _currentIndex);
-        mediaItem.add(_mediaQueue[_currentIndex]);
-        _broadcastState(_player.playbackEvent);
-        await _player.play();
-        print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
-      } catch (e) {
-        print('❌ Erro no skipToPrevious: $e');
-      }
-    } else {
+    if (_player.position.inSeconds >= 3) {
       await _player.seek(Duration.zero);
       print('🔄 Voltou ao início da música atual');
+      return;
+    }
+    
+    if (_currentIndex <= 0) {
+      await _player.seek(Duration.zero);
+      print('🔄 Já na primeira música, voltou ao início');
+      return;
+    }
+    
+    // Encontra track anterior com filename
+    int prevIndex = _currentIndex - 1;
+    while (prevIndex >= 0 && _playerIndexMap[prevIndex] < 0) {
+      print('⏮️ Pulando track $prevIndex (sem filename)');
+      prevIndex--;
+    }
+    
+    if (prevIndex < 0) {
+      await _player.seek(Duration.zero);
+      print('⚠️ Nenhuma track anterior com filename, voltou ao início');
+      return;
+    }
+    
+    _currentIndex = prevIndex;
+    final playerIndex = _playerIndexMap[prevIndex];
+    
+    try {
+      await _player.pause();
+      await _player.seek(Duration.zero, index: playerIndex);
+      mediaItem.add(_mediaQueue[_currentIndex]);
+      _broadcastState(_player.playbackEvent);
+      await _player.play();
+      print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex, playerIndex: $playerIndex)');
+    } catch (e) {
+      print('❌ Erro no skipToPrevious: $e');
     }
   }
 
   @override
   Future<void> skipToQueueItem(int index) async {
     print('🎵 skipToQueueItem: $index (total: ${_mediaQueue.length})');
+    
     if (index < 0 || index >= _mediaQueue.length) {
       print('⚠️ Índice inválido para skipToQueueItem');
       return;
     }
+    
+    // Verifica se a track tem filename
+    if (_playerIndexMap[index] < 0) {
+      print('⚠️ Track no índice $index não tem filename ainda');
+      // Ainda atualiza o currentIndex e mediaItem para UI
+      _currentIndex = index;
+      mediaItem.add(_mediaQueue[index]);
+      return;
+    }
+    
     _currentIndex = index;
+    final playerIndex = _playerIndexMap[index];
+    
     try {
       await _player.pause();
-      await _player.seek(Duration.zero, index: index);
+      await _player.seek(Duration.zero, index: playerIndex);
       mediaItem.add(_mediaQueue[index]);
       _broadcastState(_player.playbackEvent);
       await _player.play();
@@ -250,91 +308,157 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     bool shuffle = false,
   }) async {
     try {
-      // Filtra tracks válidas
-      final validTracks = tracks.where((t) => t['filename'] != null).toList();
-      if (validTracks.isEmpty) {
-        print('⚠️ playQueue: Nenhuma track válida');
-        return;
-      }
-
-      // Converte para MediaItem
-      _mediaQueue = validTracks.map((track) {
-        final filename = track['filename'] as String;
-        final id = track['tidalId']?.toString() ?? filename;
-        
-        // Guarda dados extras
-        _trackDataMap[id] = track;
+      print('🎵 playQueue chamado com ${tracks.length} tracks, initialIndex: $initialIndex');
       
-      final title = track['title'] ?? 
-                    track['display_name'] ?? 
-                    track['trackName'] ?? 
-                    'Música';
-      final artist = track['artist'] ?? 
-                     track['artistName'] ?? 
-                     'Artista';
-      final album = track['album'] ?? 
-                    track['collectionName'] ?? 
-                    'Álbum';
+      // Guarda a fila completa (com e sem filename)
+      _fullQueue = List.from(tracks);
       
-      String? artUri = track['imageUrl'] ?? track['artworkUrl'];
-      if ((artUri == null || artUri.isEmpty) && track['filename'] != null) {
-        final encoded = Uri.encodeComponent(track['filename']);
-        artUri = '$baseUrl/cover?filename=$encoded';
-      }
+      // Converte TODAS as tracks para MediaItem (para UI mostrar a fila completa)
+      _mediaQueue = tracks.map((track) => _createMediaItem(track)).toList();
+      queue.add(_mediaQueue);
       
-      // Extrai duração em milissegundos (se disponível)
-      Duration? duration;
-      final durationValue = track['duration'] ?? track['durationSeconds'];
-      if (durationValue != null) {
-        if (durationValue is int) {
-          duration = Duration(seconds: durationValue);
-        } else if (durationValue is double) {
-          duration = Duration(seconds: durationValue.toInt());
+      // Cria mapeamento de índices: _mediaQueue index -> playlist index
+      // Se não tem filename, valor é -1
+      _playerIndexMap = [];
+      int playerIdx = 0;
+      for (int i = 0; i < tracks.length; i++) {
+        if (tracks[i]['filename'] != null) {
+          _playerIndexMap.add(playerIdx);
+          playerIdx++;
+        } else {
+          _playerIndexMap.add(-1);
         }
       }
       
-      return MediaItem(
-        id: id,
-        title: title,
-        artist: artist,
-        album: album,
-        duration: duration,
-        artUri: artUri != null ? Uri.parse(artUri) : null,
-        extras: {'filename': filename, 'tidalId': track['tidalId']},
+      // Filtra tracks com filename para reprodução
+      final validTracks = tracks.where((t) => t['filename'] != null).toList();
+      print('🎵 Tracks com filename: ${validTracks.length} de ${tracks.length}');
+      
+      if (validTracks.isEmpty) {
+        print('⚠️ playQueue: Nenhuma track com filename ainda');
+        if (_mediaQueue.isNotEmpty) {
+          _currentIndex = initialIndex;
+          mediaItem.add(_mediaQueue[initialIndex]);
+        }
+        return;
+      }
+      
+      // Prepara a playlist no just_audio (apenas com tracks válidas)
+      final playlist = ConcatenatingAudioSource(
+        children: validTracks.map((track) {
+          final filename = Uri.encodeComponent(track['filename'] ?? '');
+          final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
+          return AudioSource.uri(Uri.parse(url));
+        }).toList(),
       );
-    }).toList();
 
-    // Atualiza a fila no audio_service
-    queue.add(_mediaQueue);
-    
-    // Prepara a playlist no just_audio
-    final playlist = ConcatenatingAudioSource(
-      children: validTracks.map((track) {
-        final filename = Uri.encodeComponent(track['filename'] ?? '');
-        final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-        return AudioSource.uri(Uri.parse(url));
-      }).toList(),
-    );
+      // Calcula índice real no player
+      int playerIndex = _playerIndexMap[initialIndex];
+      if (playerIndex < 0) {
+        // Track inicial não tem filename, encontra próxima válida
+        for (int i = initialIndex; i < _playerIndexMap.length; i++) {
+          if (_playerIndexMap[i] >= 0) {
+            playerIndex = _playerIndexMap[i];
+            break;
+          }
+        }
+        if (playerIndex < 0) playerIndex = 0; // Fallback para primeira
+      }
 
-    await _player.setAudioSource(playlist, initialIndex: initialIndex);
-    _currentIndex = initialIndex;
-    
-    if (shuffle) {
-      await _player.setShuffleModeEnabled(true);
-      playbackState.add(playbackState.value.copyWith(
-        shuffleMode: AudioServiceShuffleMode.all,
-      ));
-    }
+      await _player.setAudioSource(playlist, initialIndex: playerIndex);
+      _currentIndex = initialIndex;
+      
+      if (shuffle) {
+        await _player.setShuffleModeEnabled(true);
+        playbackState.add(playbackState.value.copyWith(
+          shuffleMode: AudioServiceShuffleMode.all,
+        ));
+      }
 
-    // Emite o item atual
-    if (_mediaQueue.isNotEmpty) {
-      mediaItem.add(_mediaQueue[initialIndex]);
-    }
+      // Emite o item atual
+      if (_mediaQueue.isNotEmpty) {
+        mediaItem.add(_mediaQueue[initialIndex]);
+      }
 
-    play();
+      play();
     } catch (e, stack) {
       print('❌ Erro em playQueue: $e');
       print('Stack: $stack');
+    }
+  }
+
+  /// Cria MediaItem a partir de dados da track
+  MediaItem _createMediaItem(Map<String, dynamic> track) {
+    final filename = track['filename'] as String?;
+    final id = track['tidalId']?.toString() ?? filename ?? '${track['trackName']}_${track['artistName']}';
+    
+    // Guarda dados extras
+    _trackDataMap[id] = track;
+  
+    final title = track['title'] ?? 
+                  track['display_name'] ?? 
+                  track['trackName'] ?? 
+                  'Música';
+    final artist = track['artist'] ?? 
+                   track['artistName'] ?? 
+                   'Artista';
+    final album = track['album'] ?? 
+                  track['collectionName'] ?? 
+                  'Álbum';
+    
+    String? artUri = track['imageUrl'] ?? track['artworkUrl'];
+    if ((artUri == null || artUri.isEmpty) && filename != null) {
+      final encoded = Uri.encodeComponent(filename);
+      artUri = '$baseUrl/cover?filename=$encoded';
+    }
+    
+    // Extrai duração em milissegundos (se disponível)
+    Duration? duration;
+    final durationValue = track['duration'] ?? track['durationSeconds'] ?? track['durationMs'];
+    if (durationValue != null) {
+      if (durationValue is int) {
+        duration = durationValue > 30000 
+            ? Duration(milliseconds: durationValue)
+            : Duration(seconds: durationValue);
+      } else if (durationValue is double) {
+        duration = Duration(seconds: durationValue.toInt());
+      }
+    }
+    
+    return MediaItem(
+      id: id,
+      title: title,
+      artist: artist,
+      album: album,
+      duration: duration,
+      artUri: artUri != null ? Uri.parse(artUri) : null,
+      extras: {'filename': filename, 'tidalId': track['tidalId']},
+    );
+  }
+
+  /// Obtém a fila completa (incluindo tracks sem filename)
+  List<Map<String, dynamic>> get fullQueue => _fullQueue;
+  
+  /// Atualiza o filename de uma track na fila (após download)
+  /// e reconstrói a playlist se necessário
+  Future<void> updateTrackFilename(int index, String filename) async {
+    if (index < 0 || index >= _fullQueue.length) return;
+    
+    _fullQueue[index]['filename'] = filename;
+    print('📥 Filename atualizado para index $index: $filename');
+    
+    // Reconstrói a playlist se a track estava sem filename
+    if (_playerIndexMap[index] < 0) {
+      print('🔄 Reconstruindo playlist com nova track...');
+      final currentPos = _player.position;
+      final wasPlaying = _player.playing;
+      
+      await playQueue(tracks: _fullQueue, initialIndex: _currentIndex);
+      
+      // Restaura posição se estava tocando a mesma música
+      if (wasPlaying && currentPos.inSeconds > 0) {
+        await seek(currentPos);
+      }
     }
   }
 
