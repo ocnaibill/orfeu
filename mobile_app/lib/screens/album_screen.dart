@@ -668,16 +668,16 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                             'collectionId': widget.collectionId,
                           }).toList();
                           
-                          final success = await ref
+                          final addedCount = await ref
                               .read(libraryControllerProvider)
                               .addAlbumToPlaylist(playlist['id'], albumTracks);
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text(success
-                                    ? 'Álbum adicionado a "${playlist['name']}"'
+                                content: Text(addedCount > 0
+                                    ? '$addedCount faixas adicionadas a "${playlist['name']}"'
                                     : 'Erro ao adicionar álbum'),
-                                backgroundColor: success ? Colors.green : Colors.red,
+                                backgroundColor: addedCount > 0 ? Colors.green : Colors.red,
                               ),
                             );
                           }

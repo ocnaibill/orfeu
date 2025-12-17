@@ -693,8 +693,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
         ],
       ),
-    ),
-  );
+    );
+  }
 
   // Card para Artistas
   Widget _buildArtistCard(Map<String, dynamic> item) {

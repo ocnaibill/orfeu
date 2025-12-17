@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import '../providers.dart';
 import 'player_screen.dart';
 
@@ -43,12 +44,12 @@ class _GenrePlaylistScreenState extends ConsumerState<GenrePlaylistScreen> {
     });
 
     try {
-      final api = ref.read(apiServiceProvider);
-      final response = await api.get('/genres/${Uri.encodeComponent(widget.genreName)}/tracks?limit=100');
+      final dio = ref.read(dioProvider);
+      final response = await dio.get('/genres/${Uri.encodeComponent(widget.genreName)}/tracks', queryParameters: {'limit': 100});
       
-      if (response != null && response['tracks'] != null) {
+      if (response.data != null && response.data['tracks'] != null) {
         setState(() {
-          _tracks = List<Map<String, dynamic>>.from(response['tracks']);
+          _tracks = List<Map<String, dynamic>>.from(response.data['tracks']);
           _isLoading = false;
         });
       } else {
