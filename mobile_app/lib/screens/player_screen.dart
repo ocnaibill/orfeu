@@ -7,6 +7,7 @@ import '../providers.dart';
 import '../services/audio_service.dart';
 import 'artist_screen.dart';
 import 'album_screen.dart';
+import 'lyrics_screen.dart';
 
 class PlayerScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic>? item;
@@ -504,7 +505,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                               },
                             ),
                             const SizedBox(width: 20),
-                            _buildBottomButton(Icons.lyrics, "Letras", () {}),
+                            _buildBottomButton(Icons.lyrics, "Letras", () {
+                              if (playerState.currentTrack != null) {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => LyricsScreen(
+                                      track: playerState.currentTrack!,
+                                    ),
+                                  ),
+                                );
+                              }
+                            }),
                             const SizedBox(width: 40),
                             _buildBottomButton(
                                 Icons.speaker_group, "Saída", () {}),

@@ -2109,6 +2109,73 @@ async def get_cover_art(filename: str):
     if url: return RedirectResponse(url)
     raise HTTPException(404, "Capa não encontrada")
 
+
+# --- LETRAS SINCRONIZADAS ---
+from app.services.synced_lyrics_provider import synced_lyrics_provider, SyncedLyrics
+
+@app.get("/lyrics/synced")
+async def get_synced_lyrics(
+    track: str,
+    artist: str,
+    album: Optional[str] = None,
+    duration: Optional[int] = None,
+    isrc: Optional[str] = None,
+    apple_music_id: Optional[str] = None,
+):
+    """
+    Busca letras sincronizadas para uma música.
+    
+    Retorna letras com timing por sílaba (Apple Music) ou por linha (LRCLIB).
+    """
+    lyrics = await synced_lyrics_provider.get_synced_lyrics(
+        track_name=track,
+        artist_name=artist,
+        album_name=album,
+        duration=duration,
+        isrc=isrc,
+        apple_music_id=apple_music_id,
+    )
+    
+    if not lyrics:
+        raise HTTPException(404, "Letras não encontradas")
+    
+    # Converte para dict serializável
+    return {
+        "source": lyrics.source,
+        "syncType": lyrics.sync_type,
+        "plainText": lyrics.plain_text,
+        "language": lyrics.language,
+        "lines": [
+            {
+                "text": line.text,
+                "startTime": line.start_time,
+                "endTime": line.end_time,
+                "segments": [
+                    {
+                        "text": seg.text,
+                        "startTime": seg.start_time,
+                        "endTime": seg.end_time,
+                    }
+                    for seg in line.segments
+                ]
+            }
+            for line in lyrics.lines
+        ]
+    }
+
+
+@app.get("/lyrics/plain")
+async def get_plain_lyrics(filename: str):
+    """Busca letras (pode ser sincronizadas ou não) para um arquivo local."""
+    full_path = AudioManager.find_local_file(filename)
+    lyrics = await LyricsProvider.get_lyrics(full_path)
+    
+    if not lyrics:
+        raise HTTPException(404, "Letras não encontradas")
+    
+    return lyrics
+
+
 @app.get("/stream")
 async def stream_music(request: Request, filename: str, quality: str = Query("lossless")):
     full_path = AudioManager.find_local_file(filename)
