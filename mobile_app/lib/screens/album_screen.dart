@@ -32,7 +32,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
   Color _vibrantColor = Colors.white;
   bool _colorCalculated = false;
   bool? _isLibraryAdded; // null = não verificado ainda
-  
+
   @override
   void initState() {
     super.initState();
@@ -41,19 +41,20 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
       _checkIfAlbumSaved();
     });
   }
-  
+
   void _checkIfAlbumSaved() {
-    final isSaved = ref.read(libraryControllerProvider).isAlbumSaved(widget.collectionId);
+    final isSaved =
+        ref.read(libraryControllerProvider).isAlbumSaved(widget.collectionId);
     if (mounted) {
       setState(() {
         _isLibraryAdded = isSaved;
       });
     }
   }
-  
+
   Future<void> _toggleLibrary(Map<String, dynamic> albumData) async {
     final controller = ref.read(libraryControllerProvider);
-    
+
     if (_isLibraryAdded == true) {
       // Remove da biblioteca
       final success = await controller.removeAlbum(widget.collectionId);
@@ -163,7 +164,9 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                             right: 100,
                             top: 0,
                             child: _buildGlassButton(
-                              icon: _isLibraryAdded == true ? Icons.check : Icons.add,
+                              icon: _isLibraryAdded == true
+                                  ? Icons.check
+                                  : Icons.add,
                               color: Colors.white,
                               isVibrantBackground: true,
                               onTap: () => _toggleLibrary(albumData),
@@ -226,7 +229,8 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                           color: _vibrantColor),
                     ),
 
-                    if (albumData['genre'] != null && albumData['genre'].toString().isNotEmpty)
+                    if (albumData['genre'] != null &&
+                        albumData['genre'].toString().isNotEmpty)
                       Text(
                         albumData['genre'],
                         style: GoogleFonts.firaSans(
@@ -454,6 +458,9 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
           targetTrack['artworkUrl'].toString().isEmpty) {
         targetTrack['artworkUrl'] = albumCover;
       }
+
+      // Passa o collectionId do álbum para ser salvo no histórico
+      targetTrack['collectionId'] = widget.collectionId;
 
       // Resolve o arquivo (Smart Download)
       final filename =

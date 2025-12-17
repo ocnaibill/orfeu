@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:io' show Platform;
-import 'package:palette_generator/palette_generator.dart'; // <--- OBRIGATÓRIO: flutter pub add palette_generator
+import 'package:palette_generator/palette_generator.dart';
 import 'search_screen.dart';
 import 'library_screen.dart';
 import 'home_tab_v2.dart';
@@ -12,14 +12,16 @@ import '../providers.dart';
 import '../services/audio_service.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
-  const HomeShell({super.key});
+  final int initialTab;
+
+  const HomeShell({super.key, this.initialTab = 0});
 
   @override
   ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends ConsumerState<HomeShell> {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
 
   final List<Widget> _screens = [
     const HomeTabV2(),
@@ -27,15 +29,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     const LibraryScreen(),
   ];
 
-  // Estado local para a cor extraída da capa
   Color _dynamicNavbarColor = Colors.black;
   String? _lastProcessedImageUrl;
 
   @override
   void initState() {
     super.initState();
+    _selectedIndex = widget.initialTab;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForUpdates();
+      // Carrega os favoritos do usuário na inicialização
+      ref.read(libraryControllerProvider).fetchFavorites();
     });
   }
 
@@ -52,8 +56,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     }
   }
 
-  /// LÓGICA DE EXTRAÇÃO DE COR (Client-Side)
-  /// Pega a cor "na hora" analisando a imagem
   void _updateColorLogic(Map<String, dynamic>? currentTrack) {
     if (currentTrack == null) {
       if (_dynamicNavbarColor != Colors.black) {
@@ -65,7 +67,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       return;
     }
 
-    // Prioriza URL da capa para extração
     String coverUrl =
         currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
     if (coverUrl.isEmpty && currentTrack['filename'] != null) {
@@ -75,7 +76,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
     if (coverUrl.isEmpty) return;
 
-    // Se a imagem mudou, extrai a nova cor
     if (coverUrl != _lastProcessedImageUrl) {
       _lastProcessedImageUrl = coverUrl;
       _extractPalette(coverUrl);
@@ -85,16 +85,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Future<void> _extractPalette(String url) async {
     try {
       final provider = NetworkImage(url);
-      // Gera a paleta a partir da imagem
       final palette = await PaletteGenerator.fromImageProvider(
         provider,
-        maximumColorCount: 20, // Otimização
+        maximumColorCount: 20,
       );
 
       if (mounted && _lastProcessedImageUrl == url) {
         setState(() {
-          // Tenta pegar a cor mais vibrante/destacada.
-          // Se não achar, tenta a dominante.
           _dynamicNavbarColor = palette.vibrantColor?.color ??
               palette.dominantColor?.color ??
               palette.darkVibrantColor?.color ??
@@ -111,15 +108,15 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final playerState = ref.watch(playerProvider);
     final currentTrack = playerState.currentTrack;
 
-    // Dispara a análise de cor
     _updateColorLogic(currentTrack);
 
-    // Usa a cor extraída ou preto
     final uiColor = currentTrack != null ? _dynamicNavbarColor : Colors.black;
     final double bottomAreaHeight = 59.0 + (currentTrack != null ? 78.0 : 0.0);
 
     return Scaffold(
       backgroundColor: Colors.black,
+      // FIX CRÍTICO: Impede que o player suba quando o teclado abre na SearchScreen
+      resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
           // Conteúdo Principal
@@ -153,25 +150,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     );
   }
 
-  /// Verifica se uma cor é considerada clara (luminosidade alta)
-  bool _isLightColor(Color color) {
-    // Usa fórmula de luminância relativa
-    // https://www.w3.org/TR/WCAG20/#relativeluminancedef
-    final luminance = color.computeLuminance();
-    return luminance > 0.5; // Threshold para cores claras
-  }
-
   Widget _buildMiniPlayer(BuildContext context, WidgetRef ref,
       PlayerState playerState, Color backgroundColor) {
     final track = playerState.currentTrack!;
     final isPlaying = playerState.isPlaying;
-    
-    // Detecta se a cor de fundo é clara para adaptar ícones/texto
-    final isLight = _isLightColor(backgroundColor);
-    final contentColor = isLight ? Colors.black : Colors.white;
-    final secondaryColor = isLight ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7);
 
-    // Correção: Fallback para display_name para evitar "Desconhecido"
     final title = track['title'] ??
         track['display_name'] ??
         track['trackName'] ??
@@ -187,14 +170,12 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
     return GestureDetector(
       onTap: () {
-        // ATUALIZADO: Usa a rota com transição fluida (Slide Up)
-        // Isso combina com o Dismissible (Slide Down) na PlayerScreen
         Navigator.of(context).push(
           PlayerScreen.createRoute(),
         );
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 700), // Transição suave da cor
+        duration: const Duration(milliseconds: 700),
         curve: Curves.easeOut,
         width: double.infinity,
         height: 78,
@@ -205,7 +186,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         ),
         child: Stack(
           children: [
-            // Capa do Álbum
             Positioned(
               left: 33,
               top: 9,
@@ -222,7 +202,6 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                 ),
               ),
             ),
-            // Informações
             Positioned(
               left: 102,
               top: 9,
@@ -238,7 +217,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                       style: GoogleFonts.firaSans(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: contentColor,
+                          color: Colors.white,
                           height: 1.0)),
                   const SizedBox(height: 3),
                   Text(artist,
@@ -247,12 +226,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                       style: GoogleFonts.firaSans(
                           fontSize: 14,
                           fontWeight: FontWeight.w300,
-                          color: secondaryColor,
+                          color: Colors.white.withOpacity(0.7),
                           height: 1.0)),
                 ],
               ),
             ),
-            // Controles
             Positioned(
               right: 21,
               top: 0,
@@ -260,8 +238,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               child: Row(
                 children: [
                   IconButton(
-                    icon: Icon(Icons.skip_previous_rounded,
-                        color: contentColor, size: 28),
+                    icon: const Icon(Icons.skip_previous_rounded,
+                        color: Colors.white, size: 28),
                     onPressed: () =>
                         ref.read(playerProvider.notifier).previous(),
                   ),
@@ -271,15 +249,15 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                         isPlaying
                             ? Icons.pause_rounded
                             : Icons.play_arrow_rounded,
-                        color: contentColor,
+                        color: Colors.white,
                         size: 32),
                     onPressed: () =>
                         ref.read(playerProvider.notifier).togglePlay(),
                   ),
                   const SizedBox(width: 8),
                   IconButton(
-                    icon: Icon(Icons.skip_next_rounded,
-                        color: contentColor, size: 28),
+                    icon: const Icon(Icons.skip_next_rounded,
+                        color: Colors.white, size: 28),
                     onPressed: () => ref.read(playerProvider.notifier).next(),
                   ),
                 ],
@@ -293,8 +271,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   Widget _buildCustomNavbar(BuildContext context, Color backgroundColor) {
     return AnimatedContainer(
-      duration: const Duration(
-          milliseconds: 700), // Mesma duração do miniplayer para sincronia
+      duration: const Duration(milliseconds: 700),
       curve: Curves.easeOut,
       width: double.infinity,
       color: backgroundColor,

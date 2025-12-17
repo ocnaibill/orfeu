@@ -97,6 +97,7 @@ class FavoriteRequest(BaseModel):
 class HistoryRequest(BaseModel):
     filename: str
     duration_listened: float
+    album_id: Optional[str] = None  # ID do álbum no catálogo (Tidal/YTMusic)
 
 class PlaylistCreate(BaseModel):
     name: str
@@ -416,7 +417,7 @@ def read_users_me(current_user: models.User = Depends(get_current_user), db: Ses
 class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     email: Optional[str] = None
-    profile_image_url: Optional[str] = None  # base64 ou URL externa
+    profile_image_url: Optional[str] = None  # URL da imagem
 
 @app.put("/users/me")
 def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -439,6 +440,79 @@ def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), curren
     db.refresh(current_user)
     
     return {"status": "updated", "username": current_user.username}
+
+# Upload de imagem de perfil
+class ProfileImageUpload(BaseModel):
+    image_data: str  # Base64 da imagem (pode ser PNG, JPG, GIF, WebP)
+    content_type: str = "image/png"  # Tipo MIME da imagem
+
+@app.post("/users/me/profile-image")
+def upload_profile_image(
+    upload: ProfileImageUpload,
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Faz upload da imagem de perfil do usuário.
+    Aceita PNG, JPG, GIF, WebP em formato base64.
+    """
+    import base64
+    import uuid
+    
+    # Valida tipo de imagem
+    allowed_types = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }
+    
+    if upload.content_type not in allowed_types:
+        raise HTTPException(400, f"Tipo de imagem não suportado: {upload.content_type}. Use PNG, JPG, GIF ou WebP.")
+    
+    extension = allowed_types[upload.content_type]
+    
+    try:
+        # Decodifica base64
+        image_bytes = base64.b64decode(upload.image_data)
+        
+        # Limite de 10MB
+        if len(image_bytes) > 10 * 1024 * 1024:
+            raise HTTPException(400, "Imagem muito grande. Máximo: 10MB")
+        
+        # Gera nome único para o arquivo
+        filename = f"profile_{current_user.id}_{uuid.uuid4().hex[:8]}{extension}"
+        
+        # Salva na pasta pública
+        profile_images_dir = "/downloads_public/profile_images"
+        os.makedirs(profile_images_dir, exist_ok=True)
+        
+        filepath = os.path.join(profile_images_dir, filename)
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+        
+        # Remove imagem antiga se existir
+        if current_user.profile_image_url:
+            old_filename = current_user.profile_image_url.split("/")[-1]
+            old_path = os.path.join(profile_images_dir, old_filename)
+            if os.path.exists(old_path) and old_filename.startswith("profile_"):
+                try:
+                    os.remove(old_path)
+                except:
+                    pass
+        
+        # Atualiza URL no banco
+        image_url = f"https://orfeu.ocnaibill.dev/downloads/profile_images/{filename}"
+        current_user.profile_image_url = image_url
+        db.commit()
+        
+        return {"status": "uploaded", "url": image_url}
+        
+    except base64.binascii.Error:
+        raise HTTPException(400, "Dados de imagem inválidos (não é base64 válido)")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao salvar imagem: {str(e)}")
 
 # Favoritos
 @app.post("/users/me/favorites")
@@ -501,7 +575,7 @@ class SaveArtistRequest(BaseModel):
 
 @app.get("/users/me/albums")
 def get_saved_albums(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    albums = db.query(models.SavedAlbum).filter(models.SavedAlbum.user_id == current_user.id).order_by(models.SavedAlbum.saved_at.desc()).all()
+    albums = db.query(models.SavedAlbum).filter(models.SavedAlbum.user_id == current_user.id).order_by(models.SavedAlbum.added_at.desc()).all()
     return [{
         "id": a.album_id,
         "title": a.title,
@@ -509,7 +583,7 @@ def get_saved_albums(db: Session = Depends(get_db), current_user: models.User = 
         "artworkUrl": a.artwork_url,
         "year": a.year,
         "isPinned": a.is_pinned,
-        "savedAt": a.saved_at.isoformat() if a.saved_at else None
+        "savedAt": a.added_at.isoformat() if a.added_at else None
     } for a in albums]
 
 @app.post("/users/me/albums")
@@ -561,13 +635,13 @@ def toggle_album_pin(album_id: str, db: Session = Depends(get_db), current_user:
 
 @app.get("/users/me/artists")
 def get_saved_artists(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    artists = db.query(models.SavedArtist).filter(models.SavedArtist.user_id == current_user.id).order_by(models.SavedArtist.saved_at.desc()).all()
+    artists = db.query(models.SavedArtist).filter(models.SavedArtist.user_id == current_user.id).order_by(models.SavedArtist.added_at.desc()).all()
     return [{
         "id": a.artist_id,
         "name": a.name,
         "imageUrl": a.image_url,
         "isPinned": a.is_pinned,
-        "savedAt": a.saved_at.isoformat() if a.saved_at else None
+        "savedAt": a.added_at.isoformat() if a.added_at else None
     } for a in artists]
 
 @app.post("/users/me/artists")
@@ -979,6 +1053,7 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
                 title=tags.get('title') or os.path.splitext(req.filename)[0],
                 artist=tags.get('artist') or "Desconhecido",
                 album=tags.get('album'),
+                album_id=req.album_id,  # Salva o ID do álbum se fornecido
                 genre=tags.get('genre'),
                 duration=meta.get('duration', 0),
                 format=meta.get('format'),
@@ -990,6 +1065,11 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
         except Exception as e:
             print(f"⚠️ Erro ao criar track no histórico: {e}")
             return {"status": "error", "message": "Track não encontrada"}
+    else:
+        # Se track existe mas não tem album_id, atualiza
+        if req.album_id and not track.album_id:
+            track.album_id = req.album_id
+            db.commit()
     
     if track:
         history = models.ListenHistory(user_id=current_user.id, track_id=track.id, duration_listened=req.duration_listened)

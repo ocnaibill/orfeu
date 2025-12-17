@@ -27,6 +27,7 @@ class Track(Base):
     title = Column(String, index=True)
     artist = Column(String, index=True)
     album = Column(String, index=True)
+    album_id = Column(String, nullable=True, index=True)  # ID do álbum no catálogo (Tidal/YTMusic)
     duration = Column(Float)
     genre = Column(String, nullable=True)
     tidal_id = Column(Integer, nullable=True, index=True)  # Link para ID do Tidal

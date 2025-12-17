@@ -5,9 +5,8 @@ import 'package:palette_generator/palette_generator.dart';
 import '../providers.dart';
 import '../services/audio_service.dart';
 import '../screens/player_screen.dart';
+import '../screens/home_shell.dart';
 
-/// Widget reutilizável que contém o MiniPlayer + Navbar
-/// Pode ser usado em qualquer tela para manter a navegação consistente
 class BottomNavArea extends ConsumerStatefulWidget {
   final int selectedIndex;
   final Function(int)? onNavTap;
@@ -92,7 +91,6 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
     );
   }
 
-  /// Verifica se uma cor é considerada clara (luminosidade alta)
   bool _isLightColor(Color color) {
     final luminance = color.computeLuminance();
     return luminance > 0.5;
@@ -102,11 +100,11 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
       PlayerState playerState, Color backgroundColor) {
     final track = playerState.currentTrack!;
     final isPlaying = playerState.isPlaying;
-    
-    // Detecta se a cor de fundo é clara para adaptar ícones/texto
+
     final isLight = _isLightColor(backgroundColor);
     final contentColor = isLight ? Colors.black : Colors.white;
-    final secondaryColor = isLight ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7);
+    final secondaryColor =
+        isLight ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7);
 
     final title = track['title'] ??
         track['display_name'] ??
@@ -124,10 +122,7 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
     return GestureDetector(
       onTap: () {
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => const PlayerScreen(),
-            fullscreenDialog: true,
-          ),
+          PlayerScreen.createRoute(), // Usa a rota fluida
         );
       },
       child: AnimatedContainer(
@@ -256,8 +251,13 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
         if (widget.onNavTap != null) {
           widget.onNavTap!(index);
         } else {
-          // Se não houver callback, volta para HomeShell e seleciona a tab
-          Navigator.of(context).popUntil((route) => route.isFirst);
+          // Navigate to HomeShell with the selected tab index
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(
+              builder: (context) => HomeShell(initialTab: index),
+            ),
+            (route) => false,
+          );
         }
       },
       behavior: HitTestBehavior.opaque,
@@ -298,9 +298,10 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
   }
 }
 
-/// Calcula a altura do bottom area baseado no estado do player
+// --- FUNÇÃO AUXILIAR GLOBAL  ---
 double getBottomNavAreaHeight(WidgetRef ref) {
   final playerState = ref.watch(playerProvider);
   final hasTrack = playerState.currentTrack != null;
+  // Navbar (59) + Miniplayer (78 se existir)
   return 59.0 + (hasTrack ? 78.0 : 0.0);
 }

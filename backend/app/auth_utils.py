@@ -7,7 +7,7 @@ import os
 # Configuração JWT
 SECRET_KEY = os.getenv("SECRET_KEY", "uma_chave_super_secreta_e_aleatoria_para_o_orfeu")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 dias
+# Token sem expiração (não inclui claim "exp")
 
 # Mudança para argon2 para evitar erro do bcrypt "password too long"
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -20,11 +20,6 @@ def get_password_hash(password):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    
-    to_encode.update({"exp": expire})
+    # Sem expiração - token válido indefinidamente
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt

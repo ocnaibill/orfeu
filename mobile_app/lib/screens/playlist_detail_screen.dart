@@ -37,7 +37,8 @@ final playlistDetailsProvider = FutureProvider.family
           }
         }
 
-        final coverUrl = t['cover'] ??
+        final coverUrl = t['coverProxyUrl'] ??
+            t['cover'] ??
             t['artworkUrl'] ??
             t['imageUrl'] ??
             t['image'] ??

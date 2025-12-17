@@ -37,6 +37,7 @@ dependencies:
   just_audio_windows: ^0.2.2
   palette_generator: ^0.3.3+7
   intl: ^0.20.2
+  image_picker: ^1.0.7 # Seleção de imagens da galeria/câmera
 
 dev_dependencies:
   flutter_test:

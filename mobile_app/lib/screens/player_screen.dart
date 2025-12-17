@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:palette_generator/palette_generator.dart';
-import 'dart:ui'; // Para ImageFilter
-import 'dart:math' as math;
+import 'dart:ui';
 import '../providers.dart';
 import '../services/audio_service.dart';
 import 'artist_screen.dart';
@@ -23,7 +22,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.shuffle = false,
   });
 
-  // --- ROTA DE TRANSIÇÃO FLUIDA (Slide Up/Down) ---
+  // Rota com transição fluida (Slide Up)
   static Route createRoute({
     Map<String, dynamic>? item,
     List<Map<String, dynamic>>? queue,
@@ -31,7 +30,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     bool shuffle = false,
   }) {
     return PageRouteBuilder(
-      opaque: false, // OBRIGATÓRIO: Permite ver a tela anterior durante o drag/transição
+      opaque: false,
       transitionDuration: const Duration(milliseconds: 400),
       reverseTransitionDuration: const Duration(milliseconds: 400),
       pageBuilder: (context, animation, secondaryAnimation) => PlayerScreen(
@@ -41,14 +40,12 @@ class PlayerScreen extends ConsumerStatefulWidget {
         shuffle: shuffle,
       ),
       transitionsBuilder: (context, animation, secondaryAnimation, child) {
-        const begin = Offset(0.0, 1.0); // Começa em baixo
-        const end = Offset.zero;       // Termina no centro
-        const curve = Curves.easeOutCubic; // Curva suave
-
-        var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
-        var offsetAnimation = animation.drive(tween);
-
-        return SlideTransition(position: offsetAnimation, child: child);
+        const begin = Offset(0.0, 1.0);
+        const end = Offset.zero;
+        const curve = Curves.easeOutCubic;
+        var tween =
+            Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+        return SlideTransition(position: animation.drive(tween), child: child);
       },
     );
   }
@@ -57,31 +54,54 @@ class PlayerScreen extends ConsumerStatefulWidget {
   ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProviderStateMixin {
+class _PlayerScreenState extends ConsumerState<PlayerScreen>
+    with TickerProviderStateMixin {
   List<Color> _gradientColors = [Colors.black, const Color(0xFF1A1A1A)];
   bool _colorsExtracted = false;
-  
+
   late AnimationController _bgController;
   late Animation<Alignment> _topAlignmentAnim;
   late Animation<Alignment> _bottomAlignmentAnim;
 
+  // Controle local do slider para evitar "pulos" enquanto arrasta
+  bool _isDragging = false;
+  double _dragValue = 0.0;
+
   @override
   void initState() {
     super.initState();
-    _bgController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat(reverse: true);
-    
+    _bgController =
+        AnimationController(vsync: this, duration: const Duration(seconds: 10))
+          ..repeat(reverse: true);
+
     _topAlignmentAnim = TweenSequence<Alignment>([
-      TweenSequenceItem(tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft), weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft),
+          weight: 1),
     ]).animate(_bgController);
 
     _bottomAlignmentAnim = TweenSequence<Alignment>([
-      TweenSequenceItem(tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight), weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.bottomRight, end: Alignment.bottomLeft),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.bottomLeft, end: Alignment.topLeft),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.topLeft, end: Alignment.topRight),
+          weight: 1),
+      TweenSequenceItem(
+          tween: Tween(begin: Alignment.topRight, end: Alignment.bottomRight),
+          weight: 1),
     ]).animate(_bgController);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -97,7 +117,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
 
   void _initPlayback() {
     final playerNotifier = ref.read(playerProvider.notifier);
-    
+
     List<Map<String, dynamic>> targetQueue = [];
     if (widget.queue != null && widget.queue!.isNotEmpty) {
       targetQueue = widget.queue!;
@@ -107,10 +127,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
 
     if (targetQueue.isNotEmpty) {
       playerNotifier.playContext(
-        queue: targetQueue, 
-        initialIndex: widget.initialIndex,
-        shuffle: widget.shuffle
-      );
+          queue: targetQueue,
+          initialIndex: widget.initialIndex,
+          shuffle: widget.shuffle);
     }
   }
 
@@ -124,9 +143,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
       if (mounted) {
         setState(() {
           final darkVibrant = palette.darkVibrantColor?.color ?? Colors.black;
-          final vibrant = palette.vibrantColor?.color ?? const Color(0xFF4A00E0);
+          final vibrant =
+              palette.vibrantColor?.color ?? const Color(0xFF4A00E0);
           final muted = palette.mutedColor?.color ?? const Color(0xFF1A1A1A);
-          
+
           _gradientColors = [
             darkVibrant.withOpacity(0.8),
             vibrant.withOpacity(0.6),
@@ -147,20 +167,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
 
     if (currentTrack != null) {
       final coverUrl = currentTrack['imageUrl'] ?? currentTrack['artworkUrl'];
-      _extractColors(coverUrl); 
+      _extractColors(coverUrl);
     }
 
     if (currentTrack == null) {
-      return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))));
+      return const Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+              child: CircularProgressIndicator(color: Color(0xFFD4AF37))));
     }
 
-    final coverUrl = currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
-    final title = currentTrack['trackName'] ?? currentTrack['title'] ?? 'Sem Título';
-    final artist = currentTrack['artistName'] ?? currentTrack['artist'] ?? 'Desconhecido';
-    final duration = playerState.duration;
+    final coverUrl =
+        currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
+    final title =
+        currentTrack['trackName'] ?? currentTrack['title'] ?? 'Sem Título';
+    final artist =
+        currentTrack['artistName'] ?? currentTrack['artist'] ?? 'Desconhecido';
+
+    // --- LÓGICA DE DURAÇÃO ROBUSTA ---
+    // Se o player ainda não carregou a duração (é 0), tentamos usar o metadado da música
+    // Isso conserta o bug de "0:00" e barra travada no início
+    Duration duration = playerState.duration;
+    if (duration.inMilliseconds == 0) {
+      final metaDur = currentTrack['durationMs'] ?? currentTrack['duration'];
+      if (metaDur != null) {
+        if (metaDur is int)
+          duration = Duration(milliseconds: metaDur);
+        else if (metaDur is double)
+          duration = Duration(milliseconds: metaDur.toInt());
+        else if (metaDur is String)
+          duration = Duration(milliseconds: int.tryParse(metaDur) ?? 0);
+      }
+    }
+
     final position = playerState.position;
 
-    // --- DISMISSIBLE (Arrastar para Baixo) ---
     return Dismissible(
       key: const Key('player_screen_dismiss'),
       direction: DismissDirection.down,
@@ -168,10 +209,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
         Navigator.of(context).pop();
       },
       child: Scaffold(
-        backgroundColor: Colors.black, // Fundo base
+        backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // 1. Fundo "Lava Lamp" Animado
+            // 1. Fundo Animado
             AnimatedBuilder(
               animation: _bgController,
               builder: (context, child) {
@@ -194,30 +235,39 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
             // 2. Conteúdo Principal
             SizedBox.expand(
               child: SingleChildScrollView(
-                physics: const BouncingScrollPhysics(), // Melhor experiência de toque
+                physics: const BouncingScrollPhysics(),
                 child: SizedBox(
-                  height: 852, // Referência de layout
+                  height: 852,
                   child: Stack(
                     alignment: Alignment.topCenter,
                     children: [
-                      // CAPA
+                      // COVER
                       Positioned(
                         top: 140,
                         child: Hero(
                           tag: 'player_cover',
                           child: Container(
-                            width: 250, height: 250,
+                            width: 250,
+                            height: 250,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(12),
                               boxShadow: [
-                                BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, offset: const Offset(0, 10))
+                                BoxShadow(
+                                    color: Colors.black.withOpacity(0.5),
+                                    blurRadius: 20,
+                                    offset: const Offset(0, 10))
                               ],
-                              image: coverUrl.isNotEmpty 
-                                  ? DecorationImage(image: NetworkImage(coverUrl), fit: BoxFit.cover)
+                              image: coverUrl.isNotEmpty
+                                  ? DecorationImage(
+                                      image: NetworkImage(coverUrl),
+                                      fit: BoxFit.cover)
                                   : null,
                               color: Colors.grey[900],
                             ),
-                            child: coverUrl.isEmpty ? const Icon(Icons.music_note, color: Colors.white24, size: 80) : null,
+                            child: coverUrl.isEmpty
+                                ? const Icon(Icons.music_note,
+                                    color: Colors.white24, size: 80)
+                                : null,
                           ),
                         ),
                       ),
@@ -225,16 +275,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                       // TÍTULO
                       Positioned(
                         top: 420,
-                        left: 33, right: 80,
+                        left: 33,
+                        right: 80,
                         child: GestureDetector(
-                          onTap: () => _showNavigationModal(context, currentTrack),
+                          onTap: () =>
+                              _showNavigationModal(context, currentTrack),
                           child: Text(
                             title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: GoogleFonts.firaSans(
-                              fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white
-                            ),
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white),
                           ),
                         ),
                       ),
@@ -242,16 +295,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                       // ARTISTA
                       Positioned(
                         top: 450,
-                        left: 33, right: 80,
+                        left: 33,
+                        right: 80,
                         child: GestureDetector(
-                          onTap: () => _showNavigationModal(context, currentTrack),
+                          onTap: () =>
+                              _showNavigationModal(context, currentTrack),
                           child: Text(
                             artist,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: GoogleFonts.firaSans(
-                              fontSize: 24, fontWeight: FontWeight.w300, color: Colors.white.withOpacity(0.9)
-                            ),
+                                fontSize: 24,
+                                fontWeight: FontWeight.w300,
+                                color: Colors.white.withOpacity(0.9)),
                           ),
                         ),
                       ),
@@ -263,93 +319,104 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                         child: Builder(builder: (context) {
                           final favorites = ref.watch(favoriteTracksProvider);
                           final filename = currentTrack['filename'];
-                          final isFavorite = filename != null && favorites.contains(filename);
-                          
+                          final isFavorite =
+                              filename != null && favorites.contains(filename);
+
                           return Row(
                             children: [
                               _buildGlassActionButton(
-                                icon: isFavorite ? Icons.favorite : Icons.favorite_border,
-                                color: isFavorite ? Colors.red : null,
-                                onTap: () {
-                                  ref.read(libraryControllerProvider).toggleFavorite(currentTrack);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text(isFavorite ? "Removido das curtidas" : "Adicionado às curtidas"))
-                                  );
-                                }
-                              ),
+                                  icon: isFavorite
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  color: isFavorite ? Colors.red : null,
+                                  onTap: () {
+                                    ref
+                                        .read(libraryControllerProvider)
+                                        .toggleFavorite(currentTrack);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                            content: Text(isFavorite
+                                                ? "Removido das curtidas"
+                                                : "Adicionado às curtidas")));
+                                  }),
                               const SizedBox(width: 10),
                               _buildGlassActionButton(
-                                icon: Icons.more_horiz, 
-                                onTap: () => _showOptionsModal(context, currentTrack)
-                              ),
+                                  icon: Icons.more_horiz,
+                                  onTap: () =>
+                                      _showOptionsModal(context, currentTrack)),
                             ],
                           );
                         }),
                       ),
 
-                      // BARRA DE PROGRESSO
+                      // --- BARRA DE PROGRESSO (SLIDER CUSTOMIZADO) ---
                       Positioned(
                         top: 510,
                         child: SizedBox(
-                          width: 250,
+                          width: 250, // Largura fixa solicitada
                           child: Column(
                             children: [
-                              Builder(
-                                builder: (context) {
-                                  const double barWidth = 250.0;
-                                  final double progress = (duration.inMilliseconds > 0) 
-                                      ? position.inMilliseconds / duration.inMilliseconds 
-                                      : 0.0;
-                                  return GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onHorizontalDragStart: (details) {
-                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
-                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
-                                    },
-                                    onHorizontalDragUpdate: (details) {
-                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
-                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
-                                    },
-                                    onTapDown: (details) {
-                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
-                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
-                                    },
-                                    child: Container(
-                                      height: 30, // Área de toque maior
-                                      width: barWidth,
-                                      color: Colors.transparent,
-                                      alignment: Alignment.center,
-                                      child: Stack(
-                                        alignment: Alignment.centerLeft,
-                                        children: [
-                                          Container(
-                                            height: 7,
-                                            width: barWidth,
-                                            decoration: BoxDecoration(
-                                              color: Colors.white.withOpacity(0.4),
-                                              borderRadius: BorderRadius.circular(3.5),
-                                            ),
-                                          ),
-                                          Container(
-                                            height: 7,
-                                            width: barWidth * progress.clamp(0.0, 1.0),
-                                            decoration: BoxDecoration(
-                                              color: Colors.white,
-                                              borderRadius: BorderRadius.circular(3.5),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                }
+                              SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                  trackHeight: 7.0,
+                                  // ThumbShape com raio 0 para ficar invisível/reto como pedido ("line... arredondada")
+                                  // Se quiser bolinha, aumente o radius.
+                                  thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 0.0,
+                                      pressedElevation: 0),
+                                  overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 15.0), // Área de toque
+                                  activeTrackColor: Colors.white,
+                                  inactiveTrackColor:
+                                      Colors.white.withOpacity(0.4),
+                                  trackShape:
+                                      const RoundedRectSliderTrackShape(),
+                                ),
+                                child: Slider(
+                                  value: _isDragging
+                                      ? _dragValue
+                                      : position.inMilliseconds
+                                          .toDouble()
+                                          .clamp(
+                                              0.0,
+                                              duration.inMilliseconds
+                                                  .toDouble()),
+                                  min: 0.0,
+                                  max: duration.inMilliseconds.toDouble() > 0
+                                      ? duration.inMilliseconds.toDouble()
+                                      : 1.0, // Evita divisão por zero
+                                  onChangeStart: (value) {
+                                    setState(() {
+                                      _isDragging = true;
+                                      _dragValue = value;
+                                    });
+                                  },
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _dragValue = value;
+                                    });
+                                  },
+                                  onChangeEnd: (value) {
+                                    setState(() {
+                                      _isDragging = false;
+                                    });
+                                    notifier.seek(
+                                        Duration(milliseconds: value.toInt()));
+                                  },
+                                ),
                               ),
                               const SizedBox(height: 5),
                               Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(_formatDuration(position), style: GoogleFonts.firaSans(color: Colors.white, fontSize: 12)),
-                                  Text("-${_formatDuration(duration - position)}", style: GoogleFonts.firaSans(color: Colors.white, fontSize: 12)),
+                                  Text(_formatDuration(position),
+                                      style: GoogleFonts.firaSans(
+                                          color: Colors.white, fontSize: 12)),
+                                  Text(
+                                      "-${_formatDuration(duration - position)}",
+                                      style: GoogleFonts.firaSans(
+                                          color: Colors.white, fontSize: 12)),
                                 ],
                               ),
                             ],
@@ -363,15 +430,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                         child: GestureDetector(
                           onTap: () => _showQualitySelector(context, notifier),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 4),
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(color: Colors.white24)
-                            ),
+                                color: Colors.white.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(color: Colors.white24)),
                             child: Text(
                               notifier.currentQuality.toUpperCase(),
-                              style: GoogleFonts.firaSans(color: const Color(0xFFD4AF37), fontSize: 10, fontWeight: FontWeight.bold),
+                              style: GoogleFonts.firaSans(
+                                  color: const Color(0xFFD4AF37),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold),
                             ),
                           ),
                         ),
@@ -384,24 +454,32 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.skip_previous_rounded, color: Colors.white, size: 40),
+                              icon: const Icon(Icons.skip_previous_rounded,
+                                  color: Colors.white, size: 40),
                               onPressed: notifier.previous,
                             ),
                             const SizedBox(width: 20),
                             Container(
-                              height: 70, width: 70,
+                              height: 70,
+                              width: 70,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: Colors.white.withOpacity(0.1),
                               ),
                               child: IconButton(
-                                icon: Icon(playerState.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: Colors.white, size: 50),
+                                icon: Icon(
+                                    playerState.isPlaying
+                                        ? Icons.pause_rounded
+                                        : Icons.play_arrow_rounded,
+                                    color: Colors.white,
+                                    size: 50),
                                 onPressed: notifier.togglePlay,
                               ),
                             ),
                             const SizedBox(width: 20),
                             IconButton(
-                              icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 40),
+                              icon: const Icon(Icons.skip_next_rounded,
+                                  color: Colors.white, size: 40),
                               onPressed: notifier.next,
                             ),
                           ],
@@ -411,25 +489,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                       // BOTÕES INFERIORES
                       Positioned(
                         bottom: 40,
-                        left: 0, right: 0,
+                        left: 0,
+                        right: 0,
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.shuffle, color: Colors.white54, size: 24),
+                              icon: const Icon(Icons.shuffle,
+                                  color: Colors.white54, size: 24),
                               onPressed: () {},
                             ),
                             const SizedBox(width: 20),
                             _buildBottomButton(Icons.lyrics, "Letras", () {}),
                             const SizedBox(width: 40),
-                            _buildBottomButton(Icons.speaker_group, "Saída", () {}),
+                            _buildBottomButton(
+                                Icons.speaker_group, "Saída", () {}),
                             const SizedBox(width: 40),
                             _buildBottomButton(Icons.queue_music, "Fila", () {
-                               _showQueueModal(context, playerState.currentTrack, []);
+                              _showQueueModal(
+                                  context, playerState.currentTrack, []);
                             }),
                             const SizedBox(width: 20),
                             IconButton(
-                              icon: const Icon(Icons.repeat, color: Colors.white54, size: 24),
+                              icon: const Icon(Icons.repeat,
+                                  color: Colors.white54, size: 24),
                               onPressed: () {},
                             ),
                           ],
@@ -441,12 +524,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
               ),
             ),
 
-            // 3. BOTÃO DE VOLTAR (AGORA NO TOPO DA PILHA VISUAL)
-            // Está fora do SingleChildScrollView e por último no Stack para garantir o clique
+            // 3. BOTÃO DE VOLTAR (NO TOPO DA PILHA)
             Positioned(
-              top: 50, left: 20,
+              top: 50,
+              left: 20,
               child: IconButton(
-                icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 30),
+                icon: const Icon(Icons.keyboard_arrow_down,
+                    color: Colors.white, size: 30),
                 onPressed: () => Navigator.pop(context),
               ),
             ),
@@ -456,8 +540,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
     );
   }
 
-  // ... (Widgets auxiliares mantidos iguais, apenas certifique-se de que estão no arquivo) ...
-  Widget _buildGlassActionButton({required IconData icon, required VoidCallback onTap, Color? color}) {
+  // ... (Widgets auxiliares mantidos iguais) ...
+  Widget _buildGlassActionButton(
+      {required IconData icon, required VoidCallback onTap, Color? color}) {
     return GestureDetector(
       onTap: onTap,
       child: ClipRRect(
@@ -465,7 +550,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
           child: Container(
-            width: 30, height: 30,
+            width: 30,
+            height: 30,
             decoration: BoxDecoration(
               color: _gradientColors[1].withOpacity(0.3),
               borderRadius: BorderRadius.circular(10),
@@ -485,38 +571,54 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
     );
   }
 
-  // (Mantenha _showNavigationModal, _showOptionsModal, _showQueueModal, _showQualitySelector, _formatDuration aqui)
   void _showNavigationModal(BuildContext context, Map<String, dynamic> track) {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text("Ir para", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text("Ir para",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
               const SizedBox(height: 20),
               ListTile(
                 leading: const Icon(Icons.person, color: Colors.white),
-                title: Text("Ver Artista (${track['artistName'] ?? 'Unknown'})", style: GoogleFonts.firaSans(color: Colors.white)),
+                title: Text("Ver Artista (${track['artistName'] ?? 'Unknown'})",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => ArtistScreen(artist: {"artistName": track['artistName']})));
+                  Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => ArtistScreen(
+                              artist: {"artistName": track['artistName']})));
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.album, color: Colors.white),
-                title: Text("Ver Álbum (${track['collectionName'] ?? 'Unknown'})", style: GoogleFonts.firaSans(color: Colors.white)),
+                title: Text(
+                    "Ver Álbum (${track['collectionName'] ?? 'Unknown'})",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
                   final albumId = track['collectionId'] ?? track['tidalId'];
                   if (albumId != null) {
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => AlbumScreen(collectionId: albumId.toString())));
+                    Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) =>
+                                AlbumScreen(collectionId: albumId.toString())));
                   } else {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ID do álbum não disponível")));
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text("ID do álbum não disponível")));
                   }
                 },
               ),
@@ -531,7 +633,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(20),
@@ -540,7 +643,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
             children: [
               ListTile(
                 leading: const Icon(Icons.favorite_border, color: Colors.white),
-                title: Text("Adicionar às curtidas", style: GoogleFonts.firaSans(color: Colors.white)),
+                title: Text("Adicionar às curtidas",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   ref.read(libraryControllerProvider).toggleFavorite(track);
                   Navigator.pop(ctx);
@@ -548,14 +652,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
               ),
               ListTile(
                 leading: const Icon(Icons.playlist_add, color: Colors.white),
-                title: Text("Adicionar a uma playlist", style: GoogleFonts.firaSans(color: Colors.white)),
+                title: Text("Adicionar a uma playlist",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.share, color: Colors.white),
-                title: Text("Compartilhar", style: GoogleFonts.firaSans(color: Colors.white)),
+                title: Text("Compartilhar",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () => Navigator.pop(ctx),
               ),
             ],
@@ -565,40 +671,51 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
     );
   }
 
-  void _showQueueModal(BuildContext context, Map<String, dynamic>? current, List<dynamic> queue) {
+  void _showQueueModal(BuildContext context, Map<String, dynamic>? current,
+      List<dynamic> queue) {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       isScrollControlled: true,
       builder: (ctx) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.6,
-          builder: (ctx, scrollController) {
-            return Container(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text("Fila de Reprodução", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
-                  const SizedBox(height: 20),
-                  if (current != null)
-                    ListTile(
-                      leading: const Icon(Icons.play_arrow, color: Color(0xFFD4AF37)),
-                      title: Text(current['trackName'], style: const TextStyle(color: Color(0xFFD4AF37))),
-                      subtitle: const Text("Tocando agora", style: TextStyle(color: Colors.white54)),
-                    ),
-                  const Divider(color: Colors.white24),
-                  const Expanded(child: Center(child: Text("Fila vazia", style: TextStyle(color: Colors.white54)))),
-                ],
-              ),
-            );
-          }
-        );
+            initialChildSize: 0.6,
+            builder: (ctx, scrollController) {
+              return Container(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("Fila de Reprodução",
+                        style: GoogleFonts.firaSans(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white)),
+                    const SizedBox(height: 20),
+                    if (current != null)
+                      ListTile(
+                        leading: const Icon(Icons.play_arrow,
+                            color: Color(0xFFD4AF37)),
+                        title: Text(current['trackName'],
+                            style: const TextStyle(color: Color(0xFFD4AF37))),
+                        subtitle: const Text("Tocando agora",
+                            style: TextStyle(color: Colors.white54)),
+                      ),
+                    const Divider(color: Colors.white24),
+                    const Expanded(
+                        child: Center(
+                            child: Text("Fila vazia",
+                                style: TextStyle(color: Colors.white54)))),
+                  ],
+                ),
+              );
+            });
       },
     );
   }
 
-  void _showQualitySelector(BuildContext context, AudioPlayerNotifier notifier) {
+  void _showQualitySelector(
+      BuildContext context, AudioPlayerNotifier notifier) {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
@@ -609,8 +726,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
             mainAxisSize: MainAxisSize.min,
             children: ['low', 'medium', 'high', 'lossless'].map((q) {
               return ListTile(
-                title: Text(q.toUpperCase(), style: const TextStyle(color: Colors.white)),
-                trailing: notifier.currentQuality == q ? const Icon(Icons.check, color: Color(0xFFD4AF37)) : null,
+                title: Text(q.toUpperCase(),
+                    style: const TextStyle(color: Colors.white)),
+                trailing: notifier.currentQuality == q
+                    ? const Icon(Icons.check, color: Color(0xFFD4AF37))
+                    : null,
                 onTap: () {
                   notifier.changeQuality(q);
                   Navigator.pop(context);

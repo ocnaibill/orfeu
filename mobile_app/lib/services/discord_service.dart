@@ -63,6 +63,7 @@ class DiscordService {
     if (!_isConnected) return;
 
     try {
+      // Retornado para milissegundos conforme versão funcional
       final int now = DateTime.now().millisecondsSinceEpoch;
       final int start = now - position.inMilliseconds;
       final int end = start + duration.inMilliseconds;
@@ -72,8 +73,8 @@ class DiscordService {
         end: isPlaying ? end : null,
       );
 
-      // --- LÓGICA DE CAPA COM DEBUG ---
-      String imageKey = 'logo'; // Fallback padrão (asset no portal)
+      // --- LÓGICA DE CAPA ---
+      String imageKey = 'logo'; // Fallback padrão
 
       if (coverUrl != null &&
           coverUrl.isNotEmpty &&
@@ -85,9 +86,7 @@ class DiscordService {
           print("[DiscordRPC] ✅ URL da Capa válida ($len chars): $coverUrl");
         } else {
           print("[DiscordRPC] ⚠️ URL da Capa muito longa ($len > 256 chars).");
-          print("[DiscordRPC]    URL: $coverUrl");
           print("[DiscordRPC]    Usando fallback 'logo'.");
-          // TODO: Implementar encurtador no backend (ex: /img/hash)
         }
       } else {
         print("[DiscordRPC] ℹ️ Nenhuma URL de capa fornecida. Usando logo.");

@@ -21,6 +21,7 @@ def run_migration():
         migrations = [
             ("tracks", "tidal_id", "ALTER TABLE tracks ADD COLUMN tidal_id VARCHAR(100)"),
             ("tracks", "genre", "ALTER TABLE tracks ADD COLUMN genre VARCHAR(100)"),
+            ("tracks", "album_id", "ALTER TABLE tracks ADD COLUMN album_id VARCHAR(100)"),
             ("users", "profile_image_url", "ALTER TABLE users ADD COLUMN profile_image_url TEXT"),
         ]
         

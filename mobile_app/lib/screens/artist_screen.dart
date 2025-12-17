@@ -15,25 +15,42 @@ final artistDetailsProvider =
         (ref, artistData) async {
   final artistName = artistData['artistName'] ?? artistData['name'] ?? '';
   final artistId = artistData['artistId'];
-  
+
   // Se temos artistId, usa a nova rota dedicada (mais precisa)
   if (artistId != null && artistId.toString().isNotEmpty) {
     try {
-      final response = await ref.read(dioProvider).get('/catalog/artist/$artistId');
+      final response =
+          await ref.read(dioProvider).get('/catalog/artist/$artistId');
       final data = response.data as Map<String, dynamic>;
-      
+
       // Simula Artistas Relacionados (mantém placeholder por enquanto)
       final relatedArtists = [
-        {"name": "Laufey", "image": "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"},
-        {"name": "Beabadoobee", "image": "https://i.scdn.co/image/ab6761610000e5eb3e0b29952003eb7cb8338302"},
-        {"name": "Mitski", "image": "https://i.scdn.co/image/ab6761610000e5eb1436df76059b0ae99c086438"},
-        {"name": "Clairo", "image": "https://i.scdn.co/image/ab6761610000e5eb817c95a319409b68eb943477"},
+        {
+          "name": "Laufey",
+          "image":
+              "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"
+        },
+        {
+          "name": "Beabadoobee",
+          "image":
+              "https://i.scdn.co/image/ab6761610000e5eb3e0b29952003eb7cb8338302"
+        },
+        {
+          "name": "Mitski",
+          "image":
+              "https://i.scdn.co/image/ab6761610000e5eb1436df76059b0ae99c086438"
+        },
+        {
+          "name": "Clairo",
+          "image":
+              "https://i.scdn.co/image/ab6761610000e5eb817c95a319409b68eb943477"
+        },
       ];
-      
+
       List<dynamic> albums = List.from(data['albums'] ?? []);
       List<dynamic> singles = List.from(data['singles'] ?? []);
       List<dynamic> topTracks = List.from(data['topTracks'] ?? []);
-      
+
       // Determina o último lançamento
       Map<String, dynamic>? latestRelease;
       final allItems = [...albums, ...singles];
@@ -45,7 +62,7 @@ final artistDetailsProvider =
         });
         latestRelease = allItems.first;
       }
-      
+
       return {
         "latest": latestRelease,
         "albums": albums,
@@ -58,7 +75,7 @@ final artistDetailsProvider =
       // Fallback para busca por nome
     }
   }
-  
+
   // Fallback: busca por nome (menos preciso)
   // 1. Busca Álbuns
   final albumsRaw = await ref.read(dioProvider).get('/search/catalog',

@@ -142,7 +142,7 @@ class AnalyticsService:
         history = db.query(models.ListenHistory.track_id, models.ListenHistory.played_at)\
             .filter(models.ListenHistory.user_id == user_id)\
             .order_by(desc(models.ListenHistory.played_at))\
-            .limit(limit * 3)\
+            .limit(limit * 5)\
             .all()
             
         recent_albums = []
@@ -151,24 +151,38 @@ class AnalyticsService:
         for track_id, played_at in history:
             t = db.query(models.Track).filter(models.Track.id == track_id).first()
             if t and t.album:
-                # Cria uma chave única para evitar repetir o mesmo álbum consecutivamente
-                album_key = f"{t.artist} - {t.album}"
+                # Usa album_id como chave se disponível, senão normaliza artist+album
+                if t.album_id:
+                    album_key = f"id:{t.album_id}"
+                else:
+                    # Normaliza: lowercase e remove espaços extras
+                    album_key = f"{t.artist.lower().strip()} - {t.album.lower().strip()}"
                 
                 if album_key in seen_albums:
                     continue
                 
                 seen_albums.add(album_key)
                 
-                # Monta objeto com tipo especial 'album_search'
-                # O ID começa com 'query:' para o frontend saber que precisa buscar o ID real
-                recent_albums.append({
-                    "type": "album_search", 
-                    "title": t.album,
-                    "artist": t.artist,
-                    "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
-                    "search_query": f"{t.artist} {t.album}",
-                    "played_at": played_at
-                })
+                # Se tiver album_id salvo, usa diretamente (evita busca errada)
+                if t.album_id:
+                    recent_albums.append({
+                        "type": "album",
+                        "id": t.album_id,
+                        "title": t.album,
+                        "artist": t.artist,
+                        "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
+                        "played_at": played_at
+                    })
+                else:
+                    # Fallback: precisa buscar (pode retornar álbum errado)
+                    recent_albums.append({
+                        "type": "album_search", 
+                        "title": t.album,
+                        "artist": t.artist,
+                        "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
+                        "search_query": f"{t.artist} {t.album}",
+                        "played_at": played_at
+                    })
                 
                 if len(recent_albums) >= limit:
                     break

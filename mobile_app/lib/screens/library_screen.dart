@@ -17,7 +17,7 @@ class LibraryScreen extends ConsumerStatefulWidget {
 class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   // Filtro: 'Playlists', 'Álbuns', 'Artistas' ou null (todos)
   String? _selectedFilter;
-  
+
   // Ordenação: 'Recentes', 'Alfabética', 'Data'
   String _sortMode = 'Tocadas Recentemente';
 
@@ -36,14 +36,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   // Lógica de Ordenação
   List<Map<String, dynamic>> _sortItems(List<Map<String, dynamic>> items) {
     final sorted = List<Map<String, dynamic>>.from(items);
-    
+
     switch (_sortMode) {
       case 'Ordem Alfabética':
-        sorted.sort((a, b) => (a['title'] ?? a['name'] ?? '').compareTo(b['title'] ?? b['name'] ?? ''));
+        sorted.sort((a, b) => (a['title'] ?? a['name'] ?? '')
+            .compareTo(b['title'] ?? b['name'] ?? ''));
         break;
       case 'Data de Adição':
         // Simulação, pois backend pode não ter data para tudo
-        // sorted.sort((a, b) => ...); 
+        // sorted.sort((a, b) => ...);
         break;
       case 'Tocadas Recentemente':
       default:
@@ -55,12 +56,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final authState = ref.watch(authProvider);
-    final userImage = "https://ui-avatars.com/api/?name=${Uri.encodeComponent(authState.username ?? 'User')}&background=D4AF37&color=000&size=100";
+    final userProfile = ref.watch(userProfileProvider);
+    final userImage = userProfile.avatarUrl;
 
     // 1. Coleta dados reais de Playlists
     final userPlaylists = ref.watch(userPlaylistsProvider);
-    
+
     // 2. Dados reais de Álbuns e Artistas salvos
     final savedAlbums = ref.watch(savedAlbumsProvider);
     final savedArtists = ref.watch(savedArtistsProvider);
@@ -137,7 +138,10 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     ),
                   ),
                   GestureDetector(
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())),
+                    onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ProfileScreen())),
                     child: Container(
                       width: 50,
                       height: 50,
@@ -190,10 +194,11 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     ),
                   ),
                   // Botão "Quatro Quadrados" (Grid View / Sort)
-                  // "40px a esquerda do canto esquerdo" (Interpretado como alinhado à direita com padding, 
+                  // "40px a esquerda do canto esquerdo" (Interpretado como alinhado à direita com padding,
                   // já que o texto está na esquerda. O padding do pai é 33, ajustando visualmente).
                   IconButton(
-                    icon: const Icon(Icons.grid_view_rounded, color: Colors.white),
+                    icon: const Icon(Icons.grid_view_rounded,
+                        color: Colors.white),
                     onPressed: () => _showSortModal(context),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
@@ -205,7 +210,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             const SizedBox(height: 30),
 
             // --- LISTA DE CONTEÚDO ---
-            
+
             // 1. Músicas Curtidas (Sempre primeiro, a menos que filtrado fora)
             // "a playlist músicas curtidas sempre estará fixada como primeiro"
             if (_selectedFilter == null || _selectedFilter == "Playlists")
@@ -218,7 +223,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     "id": "favorites", // ID especial
                     "title": "Músicas Curtidas",
                     "subtitle": "Playlist • Fixada",
-                    "imageUrl": "https://misc.scdn.co/liked-songs/liked-songs-640.png",
+                    "imageUrl":
+                        "https://misc.scdn.co/liked-songs/liked-songs-640.png",
                     "isPinned": true,
                     "vibrantColor": const Color(0xFF4A00E0) // Roxo destaque
                   },
@@ -266,8 +272,11 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         height: 34,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: isSelected ? Colors.white : const Color(0xFFD9D9D9).withOpacity(0.60),
-          borderRadius: BorderRadius.circular(17), // Arredondado (metade da altura)
+          color: isSelected
+              ? Colors.white
+              : const Color(0xFFD9D9D9).withOpacity(0.60),
+          borderRadius:
+              BorderRadius.circular(17), // Arredondado (metade da altura)
         ),
         child: Text(
           label,
@@ -281,14 +290,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     );
   }
 
-  Widget _buildListItem(BuildContext context, {required Map<String, dynamic> item}) {
+  Widget _buildListItem(BuildContext context,
+      {required Map<String, dynamic> item}) {
     final type = item['type'];
     final isArtist = type == 'artist';
     final isPinned = item['isPinned'] == true;
-    final highlightColor = item['vibrantColor'] as Color? ?? const Color(0xFFD4AF37);
+    final highlightColor =
+        item['vibrantColor'] as Color? ?? const Color(0xFFD4AF37);
 
     // Dimensões: 327x75
-    // Padding lateral para centralizar: (Screen - 327) / 2 ~= 33px. 
+    // Padding lateral para centralizar: (Screen - 327) / 2 ~= 33px.
     // Como o pai já tem padding? Não, ListView builder não tem padding lateral no código acima.
     // Vamos usar Center + Container fixo.
 
@@ -296,12 +307,25 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       child: GestureDetector(
         onTap: () {
           if (type == 'playlist') {
-            Navigator.push(context, MaterialPageRoute(builder: (_) => PlaylistDetailScreen(playlistId: item['id'], title: item['title'])));
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => PlaylistDetailScreen(
+                        playlistId: item['id'], title: item['title'])));
           } else if (type == 'album') {
-            Navigator.push(context, MaterialPageRoute(builder: (_) => AlbumScreen(collectionId: item['id'])));
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => AlbumScreen(collectionId: item['id'])));
           } else if (type == 'artist') {
             // Reconstrói objeto artist para a tela
-            Navigator.push(context, MaterialPageRoute(builder: (_) => ArtistScreen(artist: {"artistName": item['name'], "artworkUrl": item['imageUrl']})));
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ArtistScreen(artist: {
+                          "artistName": item['name'],
+                          "artworkUrl": item['imageUrl']
+                        })));
           }
         },
         child: Container(
@@ -315,17 +339,21 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 width: 75,
                 height: 75,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(isArtist ? 65 : 4), // "65 border radius" se artista
+                  borderRadius: BorderRadius.circular(
+                      isArtist ? 65 : 4), // "65 border radius" se artista
                   color: Colors.grey[900],
-                  image: (item['imageUrl'] != null && item['imageUrl'].toString().isNotEmpty)
+                  image: (item['imageUrl'] != null &&
+                          item['imageUrl'].toString().isNotEmpty)
                       ? DecorationImage(
                           image: NetworkImage(item['imageUrl']),
                           fit: BoxFit.cover,
                         )
                       : null,
                 ),
-                child: (item['imageUrl'] == null || item['imageUrl'].toString().isEmpty) 
-                    ? Icon(isArtist ? Icons.person : Icons.music_note, color: Colors.white24) 
+                child: (item['imageUrl'] == null ||
+                        item['imageUrl'].toString().isEmpty)
+                    ? Icon(isArtist ? Icons.person : Icons.music_note,
+                        color: Colors.white24)
                     : null,
               ),
 
@@ -334,7 +362,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               // --- TEXTOS ---
               Expanded(
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center, // "centralizado ao cover"
+                  mainAxisAlignment:
+                      MainAxisAlignment.center, // "centralizado ao cover"
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // NOME
@@ -346,8 +375,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: GoogleFonts.firaSans(
-                              fontSize: isArtist ? 24 : 16, // Artista 24, Outros (implícito padrão ou herdado?) Vamos usar 16 Bold para outros para hierarquia
-                              fontWeight: isArtist ? FontWeight.normal : FontWeight.bold, // Artista Regular, Outros Bold
+                              fontSize: isArtist
+                                  ? 24
+                                  : 16, // Artista 24, Outros (implícito padrão ou herdado?) Vamos usar 16 Bold para outros para hierarquia
+                              fontWeight: isArtist
+                                  ? FontWeight.normal
+                                  : FontWeight
+                                      .bold, // Artista Regular, Outros Bold
                               color: Colors.white,
                             ),
                           ),
@@ -360,7 +394,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                         ]
                       ],
                     ),
-                    
+
                     // SUBTITULO / PIN (ALBUM/PLAYLIST)
                     if (!isArtist) ...[
                       const SizedBox(height: 4),
@@ -368,10 +402,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                         children: [
                           // PIN ICON (ALBUM/PLAYLIST)
                           if (isPinned) ...[
-                            Icon(Icons.push_pin, color: highlightColor, size: 14), // "cor em destaque"
+                            Icon(Icons.push_pin,
+                                color: highlightColor,
+                                size: 14), // "cor em destaque"
                             const SizedBox(width: 5),
                           ],
-                          
+
                           // TEXTO DESCRIÇÃO
                           Expanded(
                             child: Text(
@@ -403,7 +439,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) {
         return Container(
           padding: const EdgeInsets.all(20),
@@ -411,7 +448,11 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("Classificar por", style: GoogleFonts.firaSans(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text("Classificar por",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
               const SizedBox(height: 20),
               _buildSortOption("Tocadas Recentemente"),
               _buildSortOption("Ordem Alfabética"),
@@ -434,7 +475,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-      trailing: isSelected ? const Icon(Icons.check, color: Color(0xFFD4AF37)) : null,
+      trailing:
+          isSelected ? const Icon(Icons.check, color: Color(0xFFD4AF37)) : null,
       onTap: () {
         setState(() {
           _sortMode = label;

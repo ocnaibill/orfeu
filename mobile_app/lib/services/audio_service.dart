@@ -58,7 +58,7 @@ class PlayerState {
       currentIndex: currentIndex ?? this.currentIndex,
     );
   }
-  
+
   bool get hasNext => currentIndex < queue.length - 1;
   bool get hasPrevious => currentIndex > 0;
 }
@@ -67,16 +67,17 @@ class PlayerState {
 class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   final Ref ref;
   final DiscordService _discord = DiscordService();
-  
+
   // Fila original (sem shuffle) para restaurar ordem
   List<Map<String, dynamic>> _originalQueue = [];
-  
+
   // Tracking para histórico de reprodução
   String? _lastTrackedFilename;
   int _currentTrackPlayedSeconds = 0;
   bool _historyLoggedForCurrentTrack = false;
-  static const int _historyThresholdSeconds = 30; // Registra após 30s de reprodução
-  
+  static const int _historyThresholdSeconds =
+      30; // Registra após 30s de reprodução
+
   StreamSubscription? _playbackSubscription;
   StreamSubscription? _mediaItemSubscription;
   StreamSubscription? _positionSubscription;
@@ -90,23 +91,23 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   void _init() {
     _discord.init();
     _startHistoryTracking();
-    
+
     // Escuta mudanças do estado de playback
     _playbackSubscription = audioHandler.playbackState.listen((playbackState) {
       final isPlaying = playbackState.playing;
       final processingState = playbackState.processingState;
-      
+
       state = state.copyWith(
         isPlaying: isPlaying,
         isBuffering: processingState == AudioProcessingState.buffering ||
-                     processingState == AudioProcessingState.loading,
+            processingState == AudioProcessingState.loading,
         position: playbackState.position,
         currentIndex: playbackState.queueIndex ?? state.currentIndex,
       );
-      
+
       _updateDiscord();
     });
-    
+
     // Escuta mudanças do item de mídia atual
     _mediaItemSubscription = audioHandler.mediaItem.listen((mediaItem) {
       if (mediaItem != null) {
@@ -120,12 +121,13 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
         }
       }
     });
-    
+
     // Escuta posição via stream do player interno
+    // Importante: Assume que audioHandler expõe 'player' (JustAudio player) publicamente
     _positionSubscription = audioHandler.player.positionStream.listen((pos) {
       state = state.copyWith(position: pos);
     });
-    
+
     // Escuta duração
     _durationSubscription = audioHandler.player.durationStream.listen((dur) {
       if (dur != null) {
@@ -147,17 +149,18 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
         initialIndex < queue.length &&
         state.currentTrack != null &&
         state.currentIndex < _originalQueue.length &&
-        _originalQueue[state.currentIndex]['filename'] == queue[initialIndex]['filename'] &&
+        _originalQueue[state.currentIndex]['filename'] ==
+            queue[initialIndex]['filename'] &&
         state.isPlaying) {
       return;
     }
 
     // Guarda fila original
     _originalQueue = List.from(queue);
-    
+
     List<Map<String, dynamic>> playQueue;
     int playIndex = initialIndex;
-    
+
     if (shuffle) {
       // Embaralha mantendo a música selecionada no início
       playQueue = _shuffleWithFirst(queue, initialIndex);
@@ -165,16 +168,42 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     } else {
       playQueue = List.from(queue);
     }
-    
-    // Atualiza estado local
+
+    // --- CORREÇÃO OTIMISTA ---
+    // Define os metadados e duração IMEDIATAMENTE para a UI não ficar zerada
+    final targetTrack = playQueue[playIndex];
+    Duration initialDuration = Duration.zero;
+
+    // Tenta extrair duração dos metadados
+    final rawDur = targetTrack['durationMs'] ??
+        targetTrack['duration'] ??
+        targetTrack['duration_ms'];
+    if (rawDur != null) {
+      if (rawDur is int) {
+        // Verifica se está em ms ou segundos (heurística)
+        initialDuration = (rawDur < 30000)
+            ? Duration(seconds: rawDur)
+            : Duration(milliseconds: rawDur);
+      } else if (rawDur is double) {
+        initialDuration = Duration(milliseconds: rawDur.toInt());
+      } else if (rawDur is String) {
+        initialDuration = Duration(milliseconds: int.tryParse(rawDur) ?? 0);
+      }
+    }
+
+    // Atualiza estado local imediatamente
     state = state.copyWith(
+      currentTrack: targetTrack,
+      duration: initialDuration, // Seta duração inicial
       queue: playQueue,
       currentIndex: playIndex,
       isShuffleEnabled: shuffle,
       isBuffering: true,
+      position: Duration.zero,
     );
-    
-    // Envia para o audio handler
+    _updateDiscord(); // Atualiza Discord com os novos dados
+
+    // Envia para o audio handler (Background)
     await audioHandler.playQueue(
       tracks: playQueue,
       initialIndex: playIndex,
@@ -236,14 +265,13 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   /// Alterna shuffle
   void toggleShuffle() {
     final newShuffleState = !state.isShuffleEnabled;
-    
+
     if (newShuffleState) {
       // Ativa shuffle - embaralha a fila mantendo a atual no início
       final currentTrack = state.currentTrack;
-      final currentIndex = state.queue.indexWhere(
-        (t) => t['filename'] == currentTrack?['filename']
-      );
-      
+      final currentIndex = state.queue
+          .indexWhere((t) => t['filename'] == currentTrack?['filename']);
+
       if (currentIndex >= 0) {
         final shuffled = _shuffleWithFirst(state.queue, currentIndex);
         state = state.copyWith(
@@ -257,10 +285,9 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     } else {
       // Desativa shuffle - restaura ordem original
       final currentTrack = state.currentTrack;
-      final originalIndex = _originalQueue.indexWhere(
-        (t) => t['filename'] == currentTrack?['filename']
-      );
-      
+      final originalIndex = _originalQueue
+          .indexWhere((t) => t['filename'] == currentTrack?['filename']);
+
       state = state.copyWith(
         queue: List.from(_originalQueue),
         currentIndex: originalIndex >= 0 ? originalIndex : 0,
@@ -279,16 +306,16 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     final modes = LoopMode.values;
     final currentIdx = modes.indexOf(state.loopMode);
     final nextMode = modes[(currentIdx + 1) % modes.length];
-    
+
     state = state.copyWith(loopMode: nextMode);
-    
+
     // Configura no audio handler
     final audioServiceMode = {
       LoopMode.off: AudioServiceRepeatMode.none,
       LoopMode.one: AudioServiceRepeatMode.one,
       LoopMode.all: AudioServiceRepeatMode.all,
     }[nextMode]!;
-    
+
     audioHandler.setRepeatMode(audioServiceMode);
   }
 
@@ -303,15 +330,15 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   void removeFromQueue(int index) {
     if (index < 0 || index >= state.queue.length) return;
     if (index == state.currentIndex) return; // Não remove a atual
-    
+
     final newQueue = List<Map<String, dynamic>>.from(state.queue);
     newQueue.removeAt(index);
-    
+
     var newCurrentIndex = state.currentIndex;
     if (index < state.currentIndex) {
       newCurrentIndex--;
     }
-    
+
     state = state.copyWith(queue: newQueue, currentIndex: newCurrentIndex);
   }
 
@@ -364,7 +391,7 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
   }
 
   // --- TRACKING DE HISTÓRICO ---
-  
+
   void _startHistoryTracking() {
     // Timer que roda a cada segundo enquanto está tocando
     _historyTrackingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -389,7 +416,7 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     // Só conta se estiver tocando
     if (state.isPlaying && !_historyLoggedForCurrentTrack) {
       _currentTrackPlayedSeconds++;
-      
+
       // Registra no histórico após o threshold
       if (_currentTrackPlayedSeconds >= _historyThresholdSeconds) {
         _logToHistory(track, _currentTrackPlayedSeconds);
@@ -398,7 +425,8 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     }
   }
 
-  Future<void> _logToHistory(Map<String, dynamic> track, int durationListened) async {
+  Future<void> _logToHistory(
+      Map<String, dynamic> track, int durationListened) async {
     try {
       final authState = ref.read(authProvider);
       if (authState.token == null) return;
@@ -406,6 +434,11 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
 
       final filename = track['filename'] as String?;
       if (filename == null) return;
+
+      // Extrai album_id se disponível (pode ser collectionId, albumId, etc.)
+      final albumId = track['collectionId']?.toString() ??
+          track['albumId']?.toString() ??
+          track['album_id']?.toString();
 
       final response = await http.post(
         Uri.parse('$baseUrl/users/me/history'),
@@ -416,11 +449,13 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
         body: jsonEncode({
           'filename': filename,
           'duration_listened': durationListened,
+          if (albumId != null) 'album_id': albumId,
         }),
       );
 
       if (response.statusCode == 200) {
-        print('📊 Histórico registrado: ${track['title']} ($durationListened s)');
+        print(
+            '📊 Histórico registrado: ${track['title']} ($durationListened s)');
       }
     } catch (e) {
       print('⚠️ Erro ao registrar histórico: $e');

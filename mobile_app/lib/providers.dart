@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'dart:io';
 
 // --- Configuração de Rede ---
 const String serverIp = '127.0.0.1';
@@ -322,7 +321,7 @@ class LibraryController {
       print("⚠️ Erro ao registrar play: $e");
     }
   }
-  
+
   // --- ÁLBUNS SALVOS ---
   Future<void> fetchSavedAlbums() async {
     final dio = ref.read(dioProvider);
@@ -333,12 +332,13 @@ class LibraryController {
       print("⚠️ Erro ao carregar álbuns salvos: $e");
     }
   }
-  
+
   Future<bool> saveAlbum(Map<String, dynamic> album) async {
     final dio = ref.read(dioProvider);
     try {
       await dio.post('/users/me/albums', data: {
-        "album_id": album['id']?.toString() ?? album['collectionId']?.toString(),
+        "album_id":
+            album['id']?.toString() ?? album['collectionId']?.toString(),
         "title": album['title'] ?? album['collectionName'],
         "artist": album['artist'] ?? album['artistName'],
         "artwork_url": album['artworkUrl'] ?? album['imageUrl'],
@@ -351,7 +351,7 @@ class LibraryController {
       return false;
     }
   }
-  
+
   Future<bool> removeAlbum(String albumId) async {
     final dio = ref.read(dioProvider);
     try {
@@ -363,12 +363,12 @@ class LibraryController {
       return false;
     }
   }
-  
+
   bool isAlbumSaved(String albumId) {
     final albums = ref.read(savedAlbumsProvider);
     return albums.any((a) => a['id'] == albumId);
   }
-  
+
   // --- ARTISTAS SALVOS ---
   Future<void> fetchSavedArtists() async {
     final dio = ref.read(dioProvider);
@@ -379,7 +379,7 @@ class LibraryController {
       print("⚠️ Erro ao carregar artistas salvos: $e");
     }
   }
-  
+
   Future<bool> saveArtist(Map<String, dynamic> artist) async {
     final dio = ref.read(dioProvider);
     try {
@@ -395,7 +395,7 @@ class LibraryController {
       return false;
     }
   }
-  
+
   Future<bool> removeArtist(String artistId) async {
     final dio = ref.read(dioProvider);
     try {
@@ -407,7 +407,7 @@ class LibraryController {
       return false;
     }
   }
-  
+
   bool isArtistSaved(String artistId) {
     final artists = ref.read(savedArtistsProvider);
     return artists.any((a) => a['id'] == artistId);
@@ -527,12 +527,12 @@ class SearchController {
 
       final filename = resp.data['file'];
       final status = resp.data['status'];
-      
+
       // Se o arquivo já estava baixado, retorna imediatamente
       if (status == "Already downloaded") {
         return filename;
       }
-      
+
       // Se o download foi iniciado, aguarda ele completar
       if (status == "Download started" || status == "Queued") {
         print('⏳ Aguardando download completar: $filename');
@@ -543,7 +543,7 @@ class SearchController {
           throw Exception('Download falhou ou timeout');
         }
       }
-      
+
       // Para Soulseek (que pode retornar "Queued")
       _pollDownloadStatus(filename);
       return filename;
@@ -554,45 +554,46 @@ class SearchController {
       processing.update((state) => {...state}..remove(itemId));
     }
   }
-  
+
   Future<bool> _waitForDownload(String filename) async {
     final dio = ref.read(dioProvider);
     final statusNotifier = ref.read(downloadStatusProvider.notifier);
     int attempts = 0;
     const maxAttempts = 120; // 2 minutos máximo
-    
+
     while (attempts < maxAttempts) {
       await Future.delayed(const Duration(seconds: 1));
       attempts++;
-      
+
       try {
         final encodedName = Uri.encodeComponent(filename);
         final resp = await dio.get('/download/status?filename=$encodedName');
         final state = resp.data['state'];
-        
+
         statusNotifier.update((data) => {...data, filename: resp.data});
-        
+
         if (state == 'Completed') {
           print('✅ Download concluído: $filename');
           return true;
         }
-        
+
         if (state == 'Aborted' || state == 'Failed') {
           print('❌ Download falhou: $filename');
           return false;
         }
-        
+
         // Log progresso a cada 10 segundos
         if (attempts % 10 == 0) {
           final progress = resp.data['progress'] ?? 0;
-          print('⏳ Download em andamento ($attempts s): ${progress.toStringAsFixed(1)}%');
+          print(
+              '⏳ Download em andamento ($attempts s): ${progress.toStringAsFixed(1)}%');
         }
       } catch (e) {
         // Ignora erros de rede temporários
         print('⚠️ Erro ao verificar status: $e');
       }
     }
-    
+
     print('⚠️ Timeout aguardando download: $filename');
     return false;
   }
@@ -668,7 +669,7 @@ class ProfileStats {
 
 class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
   final Ref ref;
-  
+
   ProfileStatsNotifier(this.ref) : super(ProfileStats()) {
     load();
   }
@@ -676,7 +677,7 @@ class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
   Future<void> load() async {
     try {
       state = state.copyWith(isLoading: true, error: null);
-      
+
       final authState = ref.read(authProvider);
       if (authState.token == null) {
         state = state.copyWith(isLoading: false, error: "Não autenticado");
@@ -689,8 +690,10 @@ class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
 
       // Faz as requisições em paralelo
       final results = await Future.wait([
-        dio.get('/users/me/analytics/summary').catchError((e) => Response(requestOptions: RequestOptions(), data: {})),
-        dio.get('/users/me/playlists').catchError((e) => Response(requestOptions: RequestOptions(), data: [])),
+        dio.get('/users/me/analytics/summary').catchError(
+            (e) => Response(requestOptions: RequestOptions(), data: {})),
+        dio.get('/users/me/playlists').catchError(
+            (e) => Response(requestOptions: RequestOptions(), data: [])),
       ]);
 
       final analyticsData = results[0].data as Map<String, dynamic>? ?? {};
@@ -711,6 +714,132 @@ class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
   }
 }
 
-final profileStatsProvider = StateNotifierProvider<ProfileStatsNotifier, ProfileStats>((ref) {
+final profileStatsProvider =
+    StateNotifierProvider<ProfileStatsNotifier, ProfileStats>((ref) {
   return ProfileStatsNotifier(ref);
+});
+
+// --- USER PROFILE PROVIDER ---
+class UserProfile {
+  final String username;
+  final String fullName;
+  final String email;
+  final String? profileImageUrl;
+  final bool isLoading;
+  final String? error;
+
+  UserProfile({
+    this.username = "",
+    this.fullName = "",
+    this.email = "",
+    this.profileImageUrl,
+    this.isLoading = true,
+    this.error,
+  });
+
+  UserProfile copyWith({
+    String? username,
+    String? fullName,
+    String? email,
+    String? profileImageUrl,
+    bool? isLoading,
+    String? error,
+  }) {
+    return UserProfile(
+      username: username ?? this.username,
+      fullName: fullName ?? this.fullName,
+      email: email ?? this.email,
+      profileImageUrl: profileImageUrl ?? this.profileImageUrl,
+      isLoading: isLoading ?? this.isLoading,
+      error: error ?? this.error,
+    );
+  }
+
+  /// Retorna a URL da imagem de perfil ou um avatar gerado
+  String get avatarUrl {
+    if (profileImageUrl != null && profileImageUrl!.isNotEmpty) {
+      return profileImageUrl!;
+    }
+    return "https://ui-avatars.com/api/?name=${Uri.encodeComponent(fullName.isNotEmpty ? fullName : username)}&background=D4AF37&color=000&size=300";
+  }
+}
+
+class UserProfileNotifier extends StateNotifier<UserProfile> {
+  final Ref ref;
+
+  UserProfileNotifier(this.ref) : super(UserProfile()) {
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      state = state.copyWith(isLoading: true, error: null);
+
+      final dio = ref.read(dioProvider);
+      final response = await dio.get('/users/me');
+      final data = response.data;
+
+      state = UserProfile(
+        username: data['username'] ?? "",
+        fullName: data['full_name'] ?? "",
+        email: data['email'] ?? "",
+        profileImageUrl: data['profile_image_url'],
+        isLoading: false,
+      );
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  Future<bool> updateProfile({
+    String? fullName,
+    String? email,
+  }) async {
+    try {
+      final dio = ref.read(dioProvider);
+
+      final updateData = <String, dynamic>{};
+      if (fullName != null) updateData['full_name'] = fullName;
+      if (email != null) updateData['email'] = email;
+
+      await dio.put('/users/me', data: updateData);
+
+      // Atualiza estado local
+      state = state.copyWith(
+        fullName: fullName ?? state.fullName,
+        email: email ?? state.email,
+      );
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<String?> uploadProfileImage(
+      String base64Data, String contentType) async {
+    try {
+      final dio = ref.read(dioProvider);
+
+      final response = await dio.post('/users/me/profile-image', data: {
+        'image_data': base64Data,
+        'content_type': contentType,
+      });
+
+      final url = response.data['url'] as String?;
+      if (url != null) {
+        state = state.copyWith(profileImageUrl: url);
+      }
+
+      return url;
+    } catch (e) {
+      print('❌ Erro ao fazer upload da imagem: $e');
+      return null;
+    }
+  }
+}
+
+final userProfileProvider =
+    StateNotifierProvider<UserProfileNotifier, UserProfile>((ref) {
+  return UserProfileNotifier(ref);
 });
