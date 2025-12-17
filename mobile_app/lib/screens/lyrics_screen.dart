@@ -86,18 +86,43 @@ class SyncedLyrics {
   bool get hasLineSync => syncType == 'line' || syncType == 'syllable';
 }
 
+/// Classe para identificar parâmetros de busca de letras (com igualdade correta)
+class LyricsParams {
+  final String track;
+  final String artist;
+  final String? album;
+
+  LyricsParams({required this.track, required this.artist, this.album});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LyricsParams &&
+          runtimeType == other.runtimeType &&
+          track == other.track &&
+          artist == other.artist &&
+          album == other.album;
+
+  @override
+  int get hashCode => track.hashCode ^ artist.hashCode ^ (album?.hashCode ?? 0);
+}
+
 /// Provider para buscar letras
-final lyricsProvider = FutureProvider.family<SyncedLyrics?, Map<String, String>>(
+final lyricsProvider = FutureProvider.family<SyncedLyrics?, LyricsParams>(
   (ref, params) async {
     final dio = ref.read(dioProvider);
-    
+
+    print(
+        '🎤 Buscando letras: track="${params.track}", artist="${params.artist}", album="${params.album}"');
+
     try {
       final response = await dio.get('/lyrics/synced', queryParameters: {
-        'track': params['track'],
-        'artist': params['artist'],
-        if (params['album'] != null) 'album': params['album'],
+        'track': params.track,
+        'artist': params.artist,
+        if (params.album != null) 'album': params.album,
       });
-      
+
+      print('✅ Letras encontradas: ${response.data['syncType']}');
       return SyncedLyrics.fromJson(response.data);
     } catch (e) {
       print('❌ Erro ao buscar letras: $e');
@@ -144,28 +169,30 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
   void _updateCurrentPosition() {
     final playerState = ref.read(playerProvider);
     final position = playerState.position.inMilliseconds / 1000.0;
-    
-    final trackName = widget.track?['trackName'] ?? widget.track?['title'] ?? '';
-    final artistName = widget.track?['artistName'] ?? widget.track?['artist'] ?? '';
-    
-    final lyricsAsync = ref.read(lyricsProvider({
-      'track': trackName,
-      'artist': artistName,
-      'album': widget.track?['collectionName'] ?? widget.track?['album'],
-    }));
-    
+
+    final trackName =
+        widget.track?['trackName'] ?? widget.track?['title'] ?? '';
+    final artistName =
+        widget.track?['artistName'] ?? widget.track?['artist'] ?? '';
+
+    final lyricsAsync = ref.read(lyricsProvider(LyricsParams(
+      track: trackName,
+      artist: artistName,
+      album: widget.track?['collectionName'] ?? widget.track?['album'],
+    )));
+
     lyricsAsync.whenData((lyrics) {
       if (lyrics == null || lyrics.lines.isEmpty) return;
-      
+
       // Encontra linha atual
       int newLineIndex = -1;
       int newSegmentIndex = -1;
-      
+
       for (int i = 0; i < lyrics.lines.length; i++) {
         final line = lyrics.lines[i];
         if (position >= line.startTime && position < line.endTime) {
           newLineIndex = i;
-          
+
           // Encontra segmento atual (se tiver sincronização por sílaba)
           if (lyrics.hasSyllableSync) {
             for (int j = 0; j < line.segments.length; j++) {
@@ -179,31 +206,37 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
           break;
         }
       }
-      
+
       // Atualiza estado se mudou
-      if (newLineIndex != _currentLineIndex || newSegmentIndex != _currentSegmentIndex) {
+      final lineChanged = newLineIndex != _currentLineIndex;
+      if (lineChanged || newSegmentIndex != _currentSegmentIndex) {
         setState(() {
           _currentLineIndex = newLineIndex;
           _currentSegmentIndex = newSegmentIndex;
         });
-        
-        // Scroll para linha atual
-        if (newLineIndex >= 0) {
-          _scrollToLine(newLineIndex);
+
+        // Scroll para centralizar linha atual (só quando muda de linha)
+        if (lineChanged && newLineIndex >= 0) {
+          _scrollToLineCenter(newLineIndex);
         }
       }
     });
   }
 
-  void _scrollToLine(int index) {
+  void _scrollToLineCenter(int index) {
     if (!_scrollController.hasClients) return;
-    
-    // Calcula posição aproximada (cada linha ~80px de altura)
-    final targetOffset = index * 80.0 - 200; // Centraliza um pouco acima
-    
+
+    // Obtém a altura da tela disponível para letras
+    final screenHeight = MediaQuery.of(context).size.height;
+    final centerOffset = screenHeight / 2 - 100; // Centro da área de letras
+
+    // Calcula posição aproximada (cada linha ~70px de altura)
+    final lineHeight = 70.0;
+    final targetOffset = (index * lineHeight) - centerOffset;
+
     _scrollController.animateTo(
       targetOffset.clamp(0, _scrollController.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 400),
       curve: Curves.easeOutCubic,
     );
   }
@@ -212,26 +245,27 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
   Widget build(BuildContext context) {
     final playerState = ref.watch(playerProvider);
     final track = widget.track ?? playerState.currentTrack;
-    
+
     if (track == null) {
       return const Scaffold(
         backgroundColor: Color(0xFF0D0D0D),
         body: Center(
-          child: Text('Nenhuma música tocando', style: TextStyle(color: Colors.white54)),
+          child: Text('Nenhuma música tocando',
+              style: TextStyle(color: Colors.white54)),
         ),
       );
     }
-    
+
     final trackName = track['trackName'] ?? track['title'] ?? 'Música';
     final artistName = track['artistName'] ?? track['artist'] ?? 'Artista';
     final albumName = track['collectionName'] ?? track['album'];
-    
-    final lyricsAsync = ref.watch(lyricsProvider({
-      'track': trackName,
-      'artist': artistName,
-      'album': albumName,
-    }));
-    
+
+    final lyricsAsync = ref.watch(lyricsProvider(LyricsParams(
+      track: trackName,
+      artist: artistName,
+      album: albumName,
+    )));
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
       body: Stack(
@@ -250,17 +284,19 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
               ),
             ),
           ),
-          
+
           SafeArea(
             child: Column(
               children: [
                 // Header
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 32),
+                        icon: const Icon(Icons.keyboard_arrow_down,
+                            color: Colors.white, size: 32),
                         onPressed: () => Navigator.pop(context),
                       ),
                       Expanded(
@@ -294,27 +330,31 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
                     ],
                   ),
                 ),
-                
+
                 // Lyrics content
                 Expanded(
                   child: lyricsAsync.when(
                     loading: () => const Center(
-                      child: CircularProgressIndicator(color: Color(0xFFD4AF37)),
+                      child:
+                          CircularProgressIndicator(color: Color(0xFFD4AF37)),
                     ),
                     error: (e, _) => Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.lyrics_outlined, color: Colors.white24, size: 64),
+                          const Icon(Icons.lyrics_outlined,
+                              color: Colors.white24, size: 64),
                           const SizedBox(height: 16),
                           Text(
                             'Letras não encontradas',
-                            style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 16),
+                            style: GoogleFonts.firaSans(
+                                color: Colors.white54, fontSize: 16),
                           ),
                           const SizedBox(height: 8),
                           Text(
                             '$trackName - $artistName',
-                            style: GoogleFonts.firaSans(color: Colors.white38, fontSize: 14),
+                            style: GoogleFonts.firaSans(
+                                color: Colors.white38, fontSize: 14),
                             textAlign: TextAlign.center,
                           ),
                         ],
@@ -326,47 +366,52 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.lyrics_outlined, color: Colors.white24, size: 64),
+                              const Icon(Icons.lyrics_outlined,
+                                  color: Colors.white24, size: 64),
                               const SizedBox(height: 16),
                               Text(
                                 'Letras não disponíveis',
-                                style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 16),
+                                style: GoogleFonts.firaSans(
+                                    color: Colors.white54, fontSize: 16),
                               ),
                             ],
                           ),
                         );
                       }
-                      
+
                       // Se não tem sincronização, mostra texto plano
                       if (!lyrics.hasLineSync || lyrics.lines.isEmpty) {
                         return _buildPlainLyrics(lyrics.plainText);
                       }
-                      
+
                       // Letras sincronizadas
                       return _buildSyncedLyrics(lyrics);
                     },
                   ),
                 ),
-                
+
                 // Footer com info da fonte
                 lyricsAsync.whenData((lyrics) {
-                  if (lyrics == null) return const SizedBox();
-                  
-                  String sourceText = '';
-                  if (lyrics.source == 'apple_music') {
-                    sourceText = 'Apple Music • Sincronizado por sílaba';
-                  } else if (lyrics.source == 'lrclib') {
-                    sourceText = 'LRCLIB • ${lyrics.hasLineSync ? 'Sincronizado por linha' : 'Texto'}';
-                  }
-                  
-                  return Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(
-                      sourceText,
-                      style: GoogleFonts.firaSans(color: Colors.white38, fontSize: 12),
-                    ),
-                  );
-                }).value ?? const SizedBox(),
+                      if (lyrics == null) return const SizedBox();
+
+                      String sourceText = '';
+                      if (lyrics.source == 'apple_music') {
+                        sourceText = 'Apple Music • Sincronizado por sílaba';
+                      } else if (lyrics.source == 'lrclib') {
+                        sourceText =
+                            'LRCLIB • ${lyrics.hasLineSync ? 'Sincronizado por linha' : 'Texto'}';
+                      }
+
+                      return Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          sourceText,
+                          style: GoogleFonts.firaSans(
+                              color: Colors.white38, fontSize: 12),
+                        ),
+                      );
+                    }).value ??
+                    const SizedBox(),
               ],
             ),
           ),
@@ -391,27 +436,32 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
   }
 
   Widget _buildSyncedLyrics(SyncedLyrics lyrics) {
+    // Padding vertical para permitir centralização da primeira e última linha
+    final screenHeight = MediaQuery.of(context).size.height;
+    final verticalPadding = screenHeight / 2 - 50;
+
     return ListView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 100),
+      padding: EdgeInsets.symmetric(horizontal: 24, vertical: verticalPadding),
       itemCount: lyrics.lines.length,
       itemBuilder: (context, index) {
         final line = lyrics.lines[index];
         final isCurrentLine = index == _currentLineIndex;
         final isPastLine = index < _currentLineIndex;
-        
+
         // Se tem sincronização por sílaba, renderiza palavra por palavra
         if (lyrics.hasSyllableSync && line.segments.isNotEmpty) {
           return _buildSyllableLine(line, index, isCurrentLine, isPastLine);
         }
-        
+
         // Sincronização por linha
         return _buildLineLyric(line, index, isCurrentLine, isPastLine);
       },
     );
   }
 
-  Widget _buildLineLyric(LyricLine line, int index, bool isCurrentLine, bool isPastLine) {
+  Widget _buildLineLyric(
+      LyricLine line, int index, bool isCurrentLine, bool isPastLine) {
     return GestureDetector(
       onTap: () => _seekToLine(line),
       child: AnimatedContainer(
@@ -438,7 +488,8 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
     );
   }
 
-  Widget _buildSyllableLine(LyricLine line, int lineIndex, bool isCurrentLine, bool isPastLine) {
+  Widget _buildSyllableLine(
+      LyricLine line, int lineIndex, bool isCurrentLine, bool isPastLine) {
     return GestureDetector(
       onTap: () => _seekToLine(line),
       child: Padding(
@@ -448,11 +499,12 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
           children: line.segments.asMap().entries.map((entry) {
             final segIndex = entry.key;
             final segment = entry.value;
-            
-            final isCurrentSegment = isCurrentLine && segIndex == _currentSegmentIndex;
-            final isPastSegment = isPastLine || 
+
+            final isCurrentSegment =
+                isCurrentLine && segIndex == _currentSegmentIndex;
+            final isPastSegment = isPastLine ||
                 (isCurrentLine && segIndex < _currentSegmentIndex);
-            
+
             return AnimatedDefaultTextStyle(
               duration: const Duration(milliseconds: 100),
               style: GoogleFonts.firaSans(
@@ -466,7 +518,8 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
                                 ? Colors.white38
                                 : Colors.white70,
                 fontSize: isCurrentLine ? 26 : 22,
-                fontWeight: isCurrentSegment ? FontWeight.bold : FontWeight.normal,
+                fontWeight:
+                    isCurrentSegment ? FontWeight.bold : FontWeight.normal,
                 height: 1.4,
               ),
               child: Text(segment.text),
@@ -479,7 +532,7 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
 
   void _seekToLine(LyricLine line) {
     ref.read(playerProvider.notifier).seek(
-      Duration(milliseconds: (line.startTime * 1000).toInt()),
-    );
+          Duration(milliseconds: (line.startTime * 1000).toInt()),
+        );
   }
 }
