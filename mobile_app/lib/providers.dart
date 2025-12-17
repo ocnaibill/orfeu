@@ -524,14 +524,14 @@ class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
     try {
       state = state.copyWith(isLoading: true, error: null);
       
-      final token = ref.read(authTokenProvider);
-      if (token == null) {
+      final authState = ref.read(authProvider);
+      if (authState.token == null) {
         state = state.copyWith(isLoading: false, error: "Não autenticado");
         return;
       }
 
       final dio = Dio();
-      dio.options.headers['Authorization'] = 'Bearer $token';
+      dio.options.headers['Authorization'] = 'Bearer ${authState.token}';
       dio.options.baseUrl = baseUrl;
 
       // Faz as requisições em paralelo

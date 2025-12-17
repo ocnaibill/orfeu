@@ -400,8 +400,9 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
 
   Future<void> _logToHistory(Map<String, dynamic> track, int durationListened) async {
     try {
-      final token = ref.read(authTokenProvider);
-      if (token == null) return;
+      final authState = ref.read(authProvider);
+      if (authState.token == null) return;
+      final token = authState.token;
 
       final filename = track['filename'] as String?;
       if (filename == null) return;
