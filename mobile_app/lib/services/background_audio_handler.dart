@@ -26,36 +26,55 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   }
 
   void _init() {
-    // Escuta mudanças de estado do player
-    _player.playbackEventStream.listen(_broadcastState);
-    
-    // Escuta mudanças de posição
-    _player.positionStream.listen((position) {
-      playbackState.add(playbackState.value.copyWith(
-        updatePosition: position,
-      ));
-    });
-    
-    // Escuta quando a música atual muda
-    _player.currentIndexStream.listen((index) {
-      if (index != null && index < _mediaQueue.length) {
-        _logSessionAndReset();
-        _currentIndex = index;
-        mediaItem.add(_mediaQueue[index]);
-      }
-    });
-    
-    // Escuta quando termina uma música
-    _player.processingStateStream.listen((state) {
-      if (state == ProcessingState.completed) {
-        if (_player.hasNext) {
-          skipToNext();
-        } else {
-          // Fim da fila
-          stop();
-        }
-      }
-    });
+    try {
+      // Escuta mudanças de estado do player
+      _player.playbackEventStream.listen(
+        _broadcastState,
+        onError: (e) => print('❌ Erro no playbackEventStream: $e'),
+      );
+      
+      // Escuta mudanças de posição
+      _player.positionStream.listen(
+        (position) {
+          playbackState.add(playbackState.value.copyWith(
+            updatePosition: position,
+          ));
+        },
+        onError: (e) => print('❌ Erro no positionStream: $e'),
+      );
+      
+      // Escuta quando a música atual muda
+      _player.currentIndexStream.listen(
+        (index) {
+          if (index != null && index < _mediaQueue.length) {
+            _logSessionAndReset();
+            _currentIndex = index;
+            mediaItem.add(_mediaQueue[index]);
+          }
+        },
+        onError: (e) => print('❌ Erro no currentIndexStream: $e'),
+      );
+      
+      // Escuta quando termina uma música
+      _player.processingStateStream.listen(
+        (state) {
+          if (state == ProcessingState.completed) {
+            if (_player.hasNext) {
+              skipToNext();
+            } else {
+              // Fim da fila
+              stop();
+            }
+          }
+        },
+        onError: (e) => print('❌ Erro no processingStateStream: $e'),
+      );
+      
+      print('✅ OrfeuAudioHandler._init() completo');
+    } catch (e, stack) {
+      print('❌ Erro em _init(): $e');
+      print('Stack: $stack');
+    }
   }
 
   void _broadcastState(PlaybackEvent event) {
@@ -167,17 +186,21 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     required int initialIndex,
     bool shuffle = false,
   }) async {
-    // Filtra tracks válidas
-    final validTracks = tracks.where((t) => t['filename'] != null).toList();
-    if (validTracks.isEmpty) return;
+    try {
+      // Filtra tracks válidas
+      final validTracks = tracks.where((t) => t['filename'] != null).toList();
+      if (validTracks.isEmpty) {
+        print('⚠️ playQueue: Nenhuma track válida');
+        return;
+      }
 
-    // Converte para MediaItem
-    _mediaQueue = validTracks.map((track) {
-      final filename = track['filename'] as String;
-      final id = track['tidalId']?.toString() ?? filename;
-      
-      // Guarda dados extras
-      _trackDataMap[id] = track;
+      // Converte para MediaItem
+      _mediaQueue = validTracks.map((track) {
+        final filename = track['filename'] as String;
+        final id = track['tidalId']?.toString() ?? filename;
+        
+        // Guarda dados extras
+        _trackDataMap[id] = track;
       
       final title = track['title'] ?? 
                     track['display_name'] ?? 
@@ -234,6 +257,10 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     }
 
     play();
+    } catch (e, stack) {
+      print('❌ Erro em playQueue: $e');
+      print('Stack: $stack');
+    }
   }
 
   /// Obtém dados extras da track atual (para integração com UI)
@@ -280,9 +307,16 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       final trackData = _trackDataMap[current.id];
       final filename = trackData?['filename'] ?? current.extras?['filename'];
       final seconds = _sessionTimer.elapsed.inSeconds;
+      final albumId = trackData?['collectionId']?.toString() ?? trackData?['album_id']?.toString();
+      final genre = trackData?['genre']?.toString();
       
       if (filename != null && _ref != null) {
-        _ref!.read(libraryControllerProvider).logPlay(filename, seconds);
+        _ref!.read(libraryControllerProvider).logPlay(
+          filename, 
+          seconds,
+          albumId: albumId,
+          genre: genre,
+        );
       }
     }
     _sessionTimer.reset();
@@ -302,20 +336,28 @@ OrfeuAudioHandler get audioHandler {
 
 /// Inicializa o serviço de áudio (chamar no main.dart)
 Future<OrfeuAudioHandler> initAudioService({Ref? ref}) async {
-  _audioHandler = await AudioService.init(
-    builder: () => OrfeuAudioHandler(ref: ref),
-    config: const AudioServiceConfig(
-      androidNotificationChannelId: 'dev.ocnaibill.orfeu.audio',
-      androidNotificationChannelName: 'Orfeu Music',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
-      androidNotificationIcon: 'drawable/ic_notification',
-      // Mostra controles na tela de bloqueio
-      androidShowNotificationBadge: true,
-      // Metadados para controles do sistema
-      artDownscaleWidth: 300,
-      artDownscaleHeight: 300,
-    ),
-  );
-  return _audioHandler!;
+  try {
+    _audioHandler = await AudioService.init(
+      builder: () => OrfeuAudioHandler(ref: ref),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'dev.ocnaibill.orfeu.audio',
+        androidNotificationChannelName: 'Orfeu Music',
+        androidNotificationOngoing: true,
+        androidStopForegroundOnPause: true,
+        androidNotificationIcon: 'drawable/ic_notification',
+        // Mostra controles na tela de bloqueio
+        androidShowNotificationBadge: true,
+        // Metadados para controles do sistema
+        artDownscaleWidth: 300,
+        artDownscaleHeight: 300,
+      ),
+    );
+    return _audioHandler!;
+  } catch (e, stack) {
+    print('❌ Erro ao inicializar AudioService.init: $e');
+    print('Stack: $stack');
+    // Cria um handler básico sem configuração avançada
+    _audioHandler = OrfeuAudioHandler(ref: ref);
+    return _audioHandler!;
+  }
 }

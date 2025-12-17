@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'theme/app_theme.dart';
 import 'screens/home_shell.dart';
@@ -9,8 +10,23 @@ import 'services/background_audio_handler.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // Captura erros globais no modo release
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    if (kReleaseMode) {
+      print('❌ Flutter Error: ${details.exception}');
+      print('Stack: ${details.stack}');
+    }
+  };
+  
   // Inicializa o serviço de áudio em segundo plano
-  await initAudioService();
+  try {
+    await initAudioService();
+    print('✅ Audio Service inicializado');
+  } catch (e, stack) {
+    print('❌ Erro ao inicializar Audio Service: $e');
+    print('Stack: $stack');
+  }
   
   runApp(const ProviderScope(child: OrfeuApp()));
 }

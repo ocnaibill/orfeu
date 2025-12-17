@@ -495,9 +495,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.shuffle,
-                                  color: Colors.white54, size: 24),
-                              onPressed: () {},
+                              icon: Icon(Icons.shuffle,
+                                  color: playerState.isShuffleEnabled 
+                                      ? const Color(0xFFD4AF37) 
+                                      : Colors.white54, 
+                                  size: 24),
+                              onPressed: () {
+                                ref.read(playerProvider.notifier).toggleShuffle();
+                              },
                             ),
                             const SizedBox(width: 20),
                             _buildBottomButton(Icons.lyrics, "Letras", () {}),
@@ -507,13 +512,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                             const SizedBox(width: 40),
                             _buildBottomButton(Icons.queue_music, "Fila", () {
                               _showQueueModal(
-                                  context, playerState.currentTrack, []);
+                                  context, playerState.currentTrack, playerState.queue);
                             }),
                             const SizedBox(width: 20),
                             IconButton(
-                              icon: const Icon(Icons.repeat,
-                                  color: Colors.white54, size: 24),
-                              onPressed: () {},
+                              icon: Icon(
+                                  playerState.loopMode == LoopMode.one 
+                                      ? Icons.repeat_one 
+                                      : Icons.repeat,
+                                  color: playerState.loopMode != LoopMode.off 
+                                      ? const Color(0xFFD4AF37) 
+                                      : Colors.white54, 
+                                  size: 24),
+                              onPressed: () {
+                                ref.read(playerProvider.notifier).toggleLoop();
+                              },
                             ),
                           ],
                         ),
@@ -656,6 +669,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
+                  _showPlaylistSelectionModal(context, track);
                 },
               ),
               ListTile(
@@ -671,41 +685,204 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     );
   }
 
+  void _showPlaylistSelectionModal(BuildContext context, Map<String, dynamic> track) {
+    final playlists = ref.read(userPlaylistsProvider);
+    
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text("Adicionar a playlist",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 16),
+              if (playlists.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    "Você ainda não tem playlists.\nCrie uma na sua biblioteca!",
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.firaSans(color: Colors.white70),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: playlists.length,
+                    itemBuilder: (context, index) {
+                      final playlist = playlists[index];
+                      // Ignora "Músicas Curtidas" se existir como playlist
+                      if (playlist['name']?.toLowerCase() == 'músicas curtidas') {
+                        return const SizedBox.shrink();
+                      }
+                      return ListTile(
+                        leading: Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            color: Colors.white10,
+                          ),
+                          child: playlist['cover_url'] != null && playlist['cover_url'].toString().isNotEmpty
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.network(
+                                    playlist['cover_url'],
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => const Icon(Icons.queue_music, color: Colors.white54),
+                                  ),
+                                )
+                              : const Icon(Icons.queue_music, color: Colors.white54),
+                        ),
+                        title: Text(
+                          playlist['name'] ?? 'Playlist',
+                          style: GoogleFonts.firaSans(color: Colors.white),
+                        ),
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          final success = await ref
+                              .read(libraryControllerProvider)
+                              .addTrackToPlaylist(playlist['id'], track);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(success
+                                    ? 'Adicionada a "${playlist['name']}"'
+                                    : 'Erro ao adicionar'),
+                                backgroundColor: success ? Colors.green : Colors.red,
+                              ),
+                            );
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   void _showQueueModal(BuildContext context, Map<String, dynamic>? current,
       List<dynamic> queue) {
+    final playerState = ref.read(playerProvider);
+    final currentIndex = playerState.currentIndex;
+    
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
         return DraggableScrollableSheet(
-            initialChildSize: 0.6,
+            initialChildSize: 0.7,
+            maxChildSize: 0.9,
+            minChildSize: 0.4,
+            expand: false,
             builder: (ctx, scrollController) {
               return Container(
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("Fila de Reprodução",
-                        style: GoogleFonts.firaSans(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white)),
-                    const SizedBox(height: 20),
-                    if (current != null)
-                      ListTile(
-                        leading: const Icon(Icons.play_arrow,
-                            color: Color(0xFFD4AF37)),
-                        title: Text(current['trackName'],
-                            style: const TextStyle(color: Color(0xFFD4AF37))),
-                        subtitle: const Text("Tocando agora",
-                            style: TextStyle(color: Colors.white54)),
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("Fila de Reprodução",
+                            style: GoogleFonts.firaSans(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white)),
+                        Text("${queue.length} músicas",
+                            style: GoogleFonts.firaSans(
+                                fontSize: 14,
+                                color: Colors.white54)),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
                     const Divider(color: Colors.white24),
-                    const Expanded(
-                        child: Center(
-                            child: Text("Fila vazia",
-                                style: TextStyle(color: Colors.white54)))),
+                    if (queue.isEmpty)
+                      const Expanded(
+                          child: Center(
+                              child: Text("Fila vazia",
+                                  style: TextStyle(color: Colors.white54))))
+                    else
+                      Expanded(
+                        child: ListView.builder(
+                          controller: scrollController,
+                          itemCount: queue.length,
+                          itemBuilder: (context, index) {
+                            final track = queue[index] as Map<String, dynamic>;
+                            final isPlaying = index == currentIndex;
+                            final trackName = track['trackName'] ?? 
+                                track['title'] ?? 
+                                track['display_name'] ?? 
+                                'Música';
+                            final artistName = track['artistName'] ?? 
+                                track['artist'] ?? 
+                                'Artista';
+                            
+                            return ListTile(
+                              leading: isPlaying
+                                  ? const Icon(Icons.graphic_eq, color: Color(0xFFD4AF37))
+                                  : Text("${index + 1}",
+                                      style: GoogleFonts.firaSans(
+                                          color: Colors.white54, fontSize: 14)),
+                              title: Text(
+                                trackName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.firaSans(
+                                    color: isPlaying
+                                        ? const Color(0xFFD4AF37)
+                                        : Colors.white,
+                                    fontWeight: isPlaying 
+                                        ? FontWeight.bold 
+                                        : FontWeight.normal),
+                              ),
+                              subtitle: Text(
+                                artistName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.firaSans(
+                                    color: Colors.white54, fontSize: 12),
+                              ),
+                              trailing: isPlaying
+                                  ? null
+                                  : IconButton(
+                                      icon: const Icon(Icons.play_arrow, 
+                                          color: Colors.white54),
+                                      onPressed: () {
+                                        Navigator.pop(ctx);
+                                        ref.read(playerProvider.notifier)
+                                            .skipToIndex(index);
+                                      },
+                                    ),
+                              onTap: isPlaying ? null : () {
+                                Navigator.pop(ctx);
+                                ref.read(playerProvider.notifier).skipToIndex(index);
+                              },
+                            );
+                          },
+                        ),
+                      ),
                   ],
                 ),
               );

@@ -30,6 +30,7 @@ from app.services.tidal_provider import TidalProvider
 from app.services.analytics_service import AnalyticsService
 from app.services.release_date_provider import ReleaseDateProvider
 from app.services.recommendation_service import MusicRecommender
+from app.services.metadata_provider import MetadataProvider
 
 
 
@@ -98,6 +99,7 @@ class HistoryRequest(BaseModel):
     filename: str
     duration_listened: float
     album_id: Optional[str] = None  # ID do álbum no catálogo (Tidal/YTMusic)
+    genre: Optional[str] = None  # Gênero do álbum
 
 class PlaylistCreate(BaseModel):
     name: str
@@ -418,6 +420,8 @@ class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     email: Optional[str] = None
     profile_image_url: Optional[str] = None  # URL da imagem
+    current_password: Optional[str] = None  # Senha atual (para verificação)
+    new_password: Optional[str] = None  # Nova senha
 
 @app.put("/users/me")
 def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -435,6 +439,16 @@ def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), curren
         current_user.email = profile.email
     if profile.profile_image_url is not None:
         current_user.profile_image_url = profile.profile_image_url
+    
+    # Alteração de senha
+    if profile.new_password is not None:
+        if not profile.current_password:
+            raise HTTPException(400, "Senha atual é obrigatória")
+        # Verifica senha atual
+        if not verify_password(profile.current_password, current_user.password_hash):
+            raise HTTPException(400, "Senha atual incorreta")
+        # Atualiza para nova senha
+        current_user.password_hash = hash_password(profile.new_password)
     
     db.commit()
     db.refresh(current_user)
@@ -752,7 +766,43 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
         "id": playlist.id,
         "name": playlist.name,
         "is_public": playlist.is_public,
+        "cover_url": playlist.cover_url,
         "tracks": tracks_data
+    }
+
+class PlaylistUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    cover_url: Optional[str] = None
+    is_public: Optional[bool] = None
+
+@app.put("/users/me/playlists/{playlist_id}")
+def update_playlist(playlist_id: int, req: PlaylistUpdateRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """Atualiza nome, capa ou visibilidade da playlist."""
+    playlist = db.query(models.Playlist).filter(models.Playlist.id == playlist_id).first()
+    if not playlist:
+        raise HTTPException(404, "Playlist não encontrada")
+    
+    if playlist.user_id != current_user.id:
+        raise HTTPException(403, "Sem permissão para editar esta playlist")
+    
+    if req.name is not None:
+        playlist.name = req.name
+    if req.cover_url is not None:
+        playlist.cover_url = req.cover_url
+    if req.is_public is not None:
+        playlist.is_public = req.is_public
+    
+    db.commit()
+    db.refresh(playlist)
+    
+    return {
+        "status": "updated",
+        "playlist": {
+            "id": playlist.id,
+            "name": playlist.name,
+            "cover_url": playlist.cover_url,
+            "is_public": playlist.is_public
+        }
     }
 
 
@@ -841,120 +891,277 @@ async def get_discover_weekly(limit: int = 10, db: Session = Depends(get_db), cu
 @app.get("/home/recommendations")
 async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
-    Recomendações personalizadas baseadas em:
-    1. Gêneros mais ouvidos do usuário
-    2. Artistas similares aos favoritos
-    3. Descobertas baseadas em padrões de audição
+    Recomendações personalizadas baseadas no histórico real do usuário.
+    
+    Estratégia em 3 níveis:
+    1. OURO: Outros álbuns dos artistas mais ouvidos (descoberta dentro do mesmo artista)
+    2. PRATA: Álbuns de artistas do mesmo gênero que o usuário ouve
+    3. BRONZE: Baseado em álbuns/artistas salvos na biblioteca
     """
     try:
-        # 1. Busca gêneros mais ouvidos do usuário
-        top_genres = db.query(models.Track.genre, func.count(models.ListenHistory.id).label('count'))\
-            .join(models.ListenHistory)\
-            .filter(
-                models.ListenHistory.user_id == current_user.id,
-                models.Track.genre.isnot(None),
-                models.Track.genre != "",
-                models.Track.genre != "Desconhecido"
-            )\
-            .group_by(models.Track.genre)\
-            .order_by(desc('count'))\
-            .limit(3)\
-            .all()
-        
-        # 2. Busca artistas mais ouvidos (para evitar recomendar os mesmos)
-        top_artists = db.query(models.Track.artist)\
-            .join(models.ListenHistory)\
-            .filter(models.ListenHistory.user_id == current_user.id)\
-            .group_by(models.Track.artist)\
-            .order_by(desc(func.count(models.ListenHistory.id)))\
-            .limit(10)\
-            .all()
-        top_artists_names = {a[0].lower() for a in top_artists if a[0]}
-        
         recommendations = []
         seen_ids = set()
+        seen_artists = set()
         
-        # 3. Para cada gênero, busca álbuns relacionados
-        genre_names = [g[0] for g in top_genres] if top_genres else ["Pop", "Rock", "Hip-Hop"]
+        # =========================================================
+        # 1. COLETA DE DADOS DO USUÁRIO
+        # =========================================================
         
-        for genre in genre_names:
-            try:
-                # Busca por gênero no Tidal
-                search_query = f"{genre} new music 2024"
-                results = await run_in_threadpool(TidalProvider.search_catalog, search_query, limit * 2, "album")
-                
-                for item in results:
-                    item_id = item.get('collectionId')
-                    artist_name = item.get('artistName', '').lower()
-                    
-                    # Evita duplicatas e artistas já conhecidos
-                    if item_id in seen_ids:
-                        continue
-                    if artist_name in top_artists_names:
-                        continue
-                    
-                    seen_ids.add(item_id)
-                    recommendations.append({
-                        "title": item['collectionName'],
-                        "artist": item['artistName'],
-                        "imageUrl": item['artworkUrl'],
-                        "type": "album",
-                        "id": item_id,
-                        "reason": f"Baseado no seu gosto por {genre}"
-                    })
-                    
-                    if len(recommendations) >= limit:
-                        break
-                        
-            except Exception as genre_e:
-                print(f"⚠️ Erro buscando gênero {genre}: {genre_e}")
-                continue
+        # 1.1 Artistas mais ouvidos (com contagem)
+        top_artists_data = db.query(
+            models.Track.artist, 
+            func.count(models.ListenHistory.id).label('play_count')
+        ).join(models.ListenHistory).filter(
+            models.ListenHistory.user_id == current_user.id,
+            models.Track.artist.isnot(None),
+            models.Track.artist != "",
+            models.Track.artist != "Desconhecido"
+        ).group_by(models.Track.artist).order_by(desc('play_count')).limit(10).all()
+        
+        top_artists = [a[0] for a in top_artists_data if a[0]]
+        top_artists_lower = {a.lower() for a in top_artists}
+        
+        # 1.2 Álbuns já ouvidos (para não recomendar repetidos)
+        listened_albums = db.query(models.Track.album).join(models.ListenHistory).filter(
+            models.ListenHistory.user_id == current_user.id,
+            models.Track.album.isnot(None)
+        ).distinct().all()
+        listened_albums_set = {normalize_text(a[0]) for a in listened_albums if a[0]}
+        
+        # 1.3 Gêneros mais ouvidos
+        top_genres = db.query(models.Track.genre, func.count(models.ListenHistory.id).label('count')).join(
+            models.ListenHistory
+        ).filter(
+            models.ListenHistory.user_id == current_user.id,
+            models.Track.genre.isnot(None),
+            models.Track.genre != "",
+            models.Track.genre != "Desconhecido"
+        ).group_by(models.Track.genre).order_by(desc('count')).limit(3).all()
+        
+        user_genres = [g[0] for g in top_genres] if top_genres else []
+        
+        # 1.4 Artistas salvos na biblioteca
+        saved_artists = db.query(models.SavedArtist).filter(
+            models.SavedArtist.user_id == current_user.id
+        ).limit(5).all()
+        saved_artist_names = [a.name for a in saved_artists]
+        
+        print(f"🎯 Recomendações para {current_user.username}:")
+        print(f"   Top Artistas: {top_artists[:5]}")
+        print(f"   Gêneros: {user_genres}")
+        print(f"   Álbuns ouvidos: {len(listened_albums_set)}")
+        
+        # =========================================================
+        # 2. FASE OURO: Outros álbuns dos artistas favoritos
+        # =========================================================
+        if top_artists and len(recommendations) < limit:
+            print(f"🥇 Fase OURO: Buscando discografia dos top artistas...")
             
-            if len(recommendations) >= limit:
-                break
-        
-        # 4. Fallback: Se não tiver recomendações suficientes, busca trending
-        if len(recommendations) < limit:
-            try:
-                trending = await run_in_threadpool(TidalProvider.search_catalog, "trending albums 2024", limit, "album")
-                for item in trending:
-                    item_id = item.get('collectionId')
-                    if item_id not in seen_ids:
-                        seen_ids.add(item_id)
+            for artist in top_artists[:5]:  # Top 5 artistas
+                if len(recommendations) >= limit:
+                    break
+                    
+                try:
+                    # Busca o artista no Tidal para pegar o ID
+                    artist_search = await run_in_threadpool(
+                        TidalProvider.search_catalog, artist, 1, "artist"
+                    )
+                    
+                    if not artist_search:
+                        continue
+                    
+                    # Verifica se é realmente o artista certo
+                    found_artist = artist_search[0]
+                    if fuzz.token_sort_ratio(
+                        normalize_text(artist), 
+                        normalize_text(found_artist.get('artistName', ''))
+                    ) < 85:
+                        continue
+                    
+                    artist_id = found_artist.get('artistId')
+                    if not artist_id:
+                        continue
+                    
+                    # Busca detalhes do artista (inclui álbuns)
+                    artist_details = await run_in_threadpool(
+                        TidalProvider.get_artist_details, artist_id
+                    )
+                    
+                    if not artist_details:
+                        continue
+                    
+                    # Pega álbuns e singles
+                    all_releases = artist_details.get('albums', []) + artist_details.get('singles', [])
+                    
+                    # Ordena por data de lançamento (mais recente primeiro)
+                    all_releases.sort(key=lambda x: x.get('releaseDate', '0000'), reverse=True)
+                    
+                    for release in all_releases[:3]:  # Top 3 releases por artista
+                        album_name = release.get('collectionName', '')
+                        album_id = release.get('collectionId')
+                        
+                        if not album_id or album_id in seen_ids:
+                            continue
+                        
+                        # Não recomenda álbuns já ouvidos
+                        if normalize_text(album_name) in listened_albums_set:
+                            continue
+                        
+                        seen_ids.add(album_id)
                         recommendations.append({
-                            "title": item['collectionName'],
-                            "artist": item['artistName'],
-                            "imageUrl": item['artworkUrl'],
+                            "title": album_name,
+                            "artist": release.get('artistName', artist),
+                            "imageUrl": release.get('artworkUrl', ''),
                             "type": "album",
-                            "id": item_id,
-                            "reason": "Em alta"
+                            "id": album_id,
+                            "year": release.get('year', ''),
+                            "reason": f"Mais de {artist}"
                         })
-                    if len(recommendations) >= limit:
-                        break
-            except:
-                pass
+                        
+                        if len(recommendations) >= limit:
+                            break
+                            
+                except Exception as e:
+                    print(f"   ⚠️ Erro buscando álbuns de {artist}: {e}")
+                    continue
         
-        # 5. Embaralha levemente para variedade
+        # =========================================================
+        # 3. FASE PRATA: Artistas do mesmo gênero
+        # =========================================================
+        if user_genres and len(recommendations) < limit:
+            print(f"🥈 Fase PRATA: Buscando artistas dos gêneros {user_genres}...")
+            
+            for genre in user_genres:
+                if len(recommendations) >= limit:
+                    break
+                
+                try:
+                    # Busca artistas específicos do gênero (não genérico)
+                    # Usa o gênero + "artist" para buscar artistas reais
+                    genre_artists = await run_in_threadpool(
+                        TidalProvider.search_catalog, f"{genre}", 10, "artist"
+                    )
+                    
+                    if not genre_artists:
+                        continue
+                    
+                    for genre_artist in genre_artists:
+                        artist_name = genre_artist.get('artistName', '')
+                        
+                        # Pula artistas já ouvidos
+                        if artist_name.lower() in top_artists_lower:
+                            continue
+                        
+                        # Pula artistas já recomendados
+                        if artist_name.lower() in seen_artists:
+                            continue
+                        
+                        seen_artists.add(artist_name.lower())
+                        
+                        # Busca o álbum mais popular desse artista
+                        try:
+                            artist_id = genre_artist.get('artistId')
+                            if artist_id:
+                                artist_details = await run_in_threadpool(
+                                    TidalProvider.get_artist_details, artist_id
+                                )
+                                
+                                if artist_details and artist_details.get('albums'):
+                                    top_album = artist_details['albums'][0]
+                                    album_id = top_album.get('collectionId')
+                                    
+                                    if album_id and album_id not in seen_ids:
+                                        seen_ids.add(album_id)
+                                        recommendations.append({
+                                            "title": top_album.get('collectionName', ''),
+                                            "artist": artist_name,
+                                            "imageUrl": top_album.get('artworkUrl', ''),
+                                            "type": "album",
+                                            "id": album_id,
+                                            "year": top_album.get('year', ''),
+                                            "reason": f"Porque você curte {genre}"
+                                        })
+                                        
+                                        if len(recommendations) >= limit:
+                                            break
+                        except:
+                            continue
+                            
+                except Exception as e:
+                    print(f"   ⚠️ Erro buscando gênero {genre}: {e}")
+                    continue
+        
+        # =========================================================
+        # 4. FASE BRONZE: Baseado em artistas salvos
+        # =========================================================
+        if saved_artist_names and len(recommendations) < limit:
+            print(f"🥉 Fase BRONZE: Recomendações de artistas salvos...")
+            
+            for saved_artist in saved_artist_names:
+                if saved_artist.lower() in top_artists_lower:
+                    continue  # Já coberto na fase ouro
+                    
+                if len(recommendations) >= limit:
+                    break
+                
+                try:
+                    artist_search = await run_in_threadpool(
+                        TidalProvider.search_catalog, saved_artist, 1, "artist"
+                    )
+                    
+                    if artist_search:
+                        artist_id = artist_search[0].get('artistId')
+                        if artist_id:
+                            artist_details = await run_in_threadpool(
+                                TidalProvider.get_artist_details, artist_id
+                            )
+                            
+                            if artist_details and artist_details.get('albums'):
+                                for album in artist_details['albums'][:2]:
+                                    album_id = album.get('collectionId')
+                                    album_name = album.get('collectionName', '')
+                                    
+                                    if album_id in seen_ids:
+                                        continue
+                                    if normalize_text(album_name) in listened_albums_set:
+                                        continue
+                                    
+                                    seen_ids.add(album_id)
+                                    recommendations.append({
+                                        "title": album_name,
+                                        "artist": saved_artist,
+                                        "imageUrl": album.get('artworkUrl', ''),
+                                        "type": "album",
+                                        "id": album_id,
+                                        "year": album.get('year', ''),
+                                        "reason": f"Da sua biblioteca"
+                                    })
+                                    
+                                    if len(recommendations) >= limit:
+                                        break
+                except:
+                    continue
+        
+        # =========================================================
+        # 5. Embaralha levemente para variedade (mantendo prioridade)
+        # =========================================================
         import random
-        if len(recommendations) > 3:
-            random.shuffle(recommendations)
+        if len(recommendations) > 5:
+            # Divide em grupos de prioridade e embaralha dentro de cada grupo
+            high_priority = recommendations[:len(recommendations)//2]
+            low_priority = recommendations[len(recommendations)//2:]
+            random.shuffle(high_priority)
+            random.shuffle(low_priority)
+            recommendations = high_priority + low_priority
         
+        print(f"✅ Retornando {len(recommendations)} recomendações personalizadas")
         return recommendations[:limit]
         
     except Exception as e:
         print(f"❌ Erro em recommendations: {e}")
-        # Fallback de emergência
-        try:
-            results = await run_in_threadpool(TidalProvider.search_catalog, "Top Hits", limit, "album")
-            return [{
-                "title": item['collectionName'],
-                "artist": item['artistName'],
-                "imageUrl": item['artworkUrl'],
-                "type": "album",
-                "id": item['collectionId']
-            } for item in results]
-        except:
-            return []
+        import traceback
+        traceback.print_exc()
+        return []
 
 # --- NOVIDADES PERSONALIZADAS ---
 @app.get("/home/new-releases")
@@ -1011,8 +1218,8 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
 
 # --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
-def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return AnalyticsService.get_user_stats(db, current_user.id, days)
+async def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return await AnalyticsService.get_user_stats_async(db, current_user.id, days)
 
 @app.get("/users/me/analytics/top-tracks")
 def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -1035,6 +1242,160 @@ def generate_retro_playlist(month: int, year: int, db: Session = Depends(get_db)
     if not pl:
         raise HTTPException(400, "Não há dados suficientes para gerar playlist.")
     return {"status": "created", "playlist_id": pl.id, "name": pl.name}
+
+
+# --- GENRES (GÊNEROS MUSICAIS) ---
+from app.services.genre_config import get_all_genres, get_genre_config, get_featured_genres
+
+@app.get("/genres")
+def list_all_genres():
+    """
+    Retorna a lista completa de gêneros disponíveis para explorar.
+    Usado na seção 'Conheça mais' da busca.
+    """
+    return {"genres": get_all_genres()}
+
+@app.get("/genres/featured")
+def list_featured_genres(limit: int = 20):
+    """
+    Retorna os gêneros em destaque para a seção 'Conheça mais'.
+    """
+    return {"genres": get_featured_genres(limit)}
+
+@app.get("/users/me/genres/favorites")
+def get_user_favorite_genres(
+    limit: int = 6, 
+    days: int = 90, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retorna os gêneros favoritos do usuário baseado no histórico de escuta.
+    Os gêneros são ordenados pelo tempo total de escuta.
+    """
+    favorites = AnalyticsService.get_user_favorite_genres(db, current_user.id, limit, days)
+    
+    # Enriquece com cores e configs do genre_config se disponível
+    enriched = []
+    for fav in favorites:
+        config = get_genre_config(fav["name"])
+        enriched.append({
+            "name": fav["name"],
+            "total_minutes": fav["total_minutes"],
+            "play_count": fav["play_count"],
+            "color": config.get("color", 0xFF9E9E9E) if config else 0xFF9E9E9E,
+            "search_query": config.get("search_query", fav["name"]) if config else fav["name"],
+            "playlist_id": config.get("playlist_id") if config else None,
+        })
+    
+    return {"favorites": enriched}
+
+@app.get("/genres/{genre_name}/tracks")
+async def get_genre_top_tracks(
+    genre_name: str,
+    limit: int = 100,
+):
+    """
+    Retorna as top tracks de um gênero específico.
+    Busca no Tidal usando a query configurada ou uma playlist específica.
+    """
+    config = get_genre_config(genre_name)
+    
+    # Se não encontrou config exata, tenta buscar por nome
+    if not config:
+        # Usa o nome do gênero como query de busca
+        search_query = genre_name
+    else:
+        search_query = config.get("search_query", genre_name)
+    
+    try:
+        # Se tem playlist_id configurada, usa ela
+        if config and config.get("playlist_id"):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{TidalProvider.TIDAL_API}/playlist/",
+                    params={"id": config["playlist_id"], "limit": limit}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", [])
+                    
+                    tracks = []
+                    for item in items[:limit]:
+                        track = item.get("item", item)
+                        if not track.get("id"):
+                            continue
+                            
+                        # Monta artwork URL
+                        album = track.get("album", {})
+                        cover = album.get("cover", "")
+                        artwork_url = f"https://resources.tidal.com/images/{cover.replace('-', '/')}/640x640.jpg" if cover else ""
+                        
+                        # Artistas
+                        artists = track.get("artists", [])
+                        artist_name = artists[0].get("name", "Unknown") if artists else track.get("artist", {}).get("name", "Unknown")
+                        
+                        tracks.append({
+                            "tidalId": track.get("id"),
+                            "trackName": track.get("title", ""),
+                            "artistName": artist_name,
+                            "collectionName": album.get("title", ""),
+                            "collectionId": album.get("id"),
+                            "artworkUrl": artwork_url,
+                            "duration": track.get("duration", 0) * 1000,  # em ms
+                        })
+                    
+                    return {
+                        "genre": genre_name,
+                        "source": "playlist",
+                        "tracks": tracks
+                    }
+        
+        # Fallback: busca por query
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{TidalProvider.TIDAL_API}/search/",
+                params={"s": search_query}
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("items", [])
+                
+                tracks = []
+                for item in items[:limit]:
+                    track = item
+                    if not track.get("id"):
+                        continue
+                    
+                    album = track.get("album", {})
+                    cover = album.get("cover", "")
+                    artwork_url = f"https://resources.tidal.com/images/{cover.replace('-', '/')}/640x640.jpg" if cover else ""
+                    
+                    artists = track.get("artists", [])
+                    artist_name = artists[0].get("name", "Unknown") if artists else track.get("artist", {}).get("name", "Unknown")
+                    
+                    tracks.append({
+                        "tidalId": track.get("id"),
+                        "trackName": track.get("title", ""),
+                        "artistName": artist_name,
+                        "collectionName": album.get("title", ""),
+                        "collectionId": album.get("id"),
+                        "artworkUrl": artwork_url,
+                        "duration": track.get("duration", 0) * 1000,
+                    })
+                
+                return {
+                    "genre": genre_name,
+                    "source": "search",
+                    "tracks": tracks
+                }
+                
+    except Exception as e:
+        print(f"❌ Erro ao buscar tracks do gênero {genre_name}: {e}")
+    
+    return {"genre": genre_name, "source": "error", "tracks": []}
+
 
 # Histórico
 @app.post("/users/me/history")
@@ -1066,9 +1427,15 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
             print(f"⚠️ Erro ao criar track no histórico: {e}")
             return {"status": "error", "message": "Track não encontrada"}
     else:
-        # Se track existe mas não tem album_id, atualiza
+        # Se track existe mas não tem album_id ou genre, atualiza
+        updated = False
         if req.album_id and not track.album_id:
             track.album_id = req.album_id
+            updated = True
+        if req.genre and (not track.genre or track.genre == "" or track.genre == "Desconhecido"):
+            track.genre = req.genre
+            updated = True
+        if updated:
             db.commit()
     
     if track:
@@ -1285,65 +1652,71 @@ async def search_catalog(
 @app.get("/catalog/artist/{artist_id}")
 async def get_artist_details(artist_id: str):
     """
-    Busca detalhes do artista por ID (não por nome).
-    Retorna discografia filtrada pelo ID real do artista.
+    Retorna detalhes completos do artista (Bio, Álbuns, Singles, Top Tracks).
+    Suporta TIDAL (IDs numéricos) e YTMusic (IDs alfanuméricos/UC...).
     """
     try:
-        print(f"🎤 Buscando artista ID: {artist_id}")
-        artist_data = await run_in_threadpool(TidalProvider.get_artist_details, artist_id)
-        
-        # Adiciona status de download para top tracks
-        for track in artist_data.get('topTracks', []):
-            tidal_id = track.get('tidalId')
-            local_file = find_local_match(
-                artist=track.get('artistName', ''),
-                track=track.get('trackName', ''),
-                album=track.get('collectionName'),
-                tidal_id=tidal_id
-            )
-            track['isDownloaded'] = local_file is not None
-            track['filename'] = local_file
-        
-        return artist_data
+        # Lógica de roteamento baseada no formato do ID
+        if artist_id.isdigit():
+             # TIDAL
+             print(f"🎤 Buscando artista no TIDAL: {artist_id}")
+             return await run_in_threadpool(TidalProvider.get_artist_details, artist_id)
+        else:
+             # YTMUSIC (IDs geralmente começam com 'UC' ou 'U' ou hash longo)
+             print(f"🎤 Buscando artista no YTMusic: {artist_id}")
+             return await run_in_threadpool(CatalogProvider.get_artist_details, artist_id)
+
     except Exception as e:
-        print(f"❌ Erro artista: {e}")
-        raise HTTPException(500, str(e))
+        print(f"❌ Erro detalhes artista: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
+    """
+    Busca detalhes do álbum. Tenta Tidal primeiro, depois YTMusic.
+    Agora enriquece com GÊNERO via iTunes.
+    """
     try:
-        # Detecta se é ID do Tidal (numérico) ou do YTMusic (começa com MPRE ou letras)
-        is_tidal_id = collection_id.isdigit()
-        
-        if is_tidal_id:
-            # Busca detalhes do álbum no Tidal
-            album_data = await run_in_threadpool(TidalProvider.get_album_details, collection_id)
+        # Identifica provider pelo formato do ID
+        if collection_id.isdigit():
+             # TIDAL
+             return await run_in_threadpool(TidalProvider.get_album_details, collection_id)
         else:
-            # Busca detalhes do álbum no YTMusic (CatalogProvider)
-            album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
-        
-        if not album_data:
-            raise HTTPException(404, "Álbum não encontrado")
-            
-        album_name = album_data.get('collectionName')
-        
-        for track in album_data.get('tracks', []):
-            tidal_id = track.get('tidalId')
-            # Usa busca precisa com tidal_id e álbum
-            local_file = find_local_match(
-                artist=track.get('artistName', ''), 
-                track=track.get('trackName', ''),
-                album=album_name,
-                tidal_id=tidal_id
-            )
-            track['isDownloaded'] = local_file is not None
-            track['filename'] = local_file
-        return album_data
-    except HTTPException:
-        raise
+             # YTMUSIC
+             details = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
+             # Enriquece YTMusic com gênero
+             if details and not details.get('genre'):
+                  genre = await run_in_threadpool(MetadataProvider.get_genre, details['artistName'], details['collectionName'])
+                  details['genre'] = genre
+             return details
+
     except Exception as e:
-        print(f"❌ Erro álbum: {e}")
-        raise HTTPException(500, str(e))
+        print(f"❌ Erro rota album: {e}")
+        raise HTTPException(status_code=404, detail="Album not found")
+
+class UpdateAlbumGenreRequest(BaseModel):
+    album_id: str
+    genre: str
+
+@app.post("/catalog/album/update-genre")
+def update_album_tracks_genre(req: UpdateAlbumGenreRequest, db: Session = Depends(get_db)):
+    """
+    Atualiza o gênero de todas as tracks que pertencem a um álbum específico.
+    Chamado quando o app abre um álbum e descobre o gênero.
+    """
+    if not req.genre or req.genre == "Desconhecido":
+        return {"status": "skipped", "message": "Gênero inválido"}
+    
+    # Atualiza tracks pelo album_id
+    updated = db.query(models.Track).filter(
+        models.Track.album_id == req.album_id,
+        (models.Track.genre == None) | (models.Track.genre == "") | (models.Track.genre == "Desconhecido")
+    ).update({"genre": req.genre}, synchronize_session=False)
+    
+    db.commit()
+    print(f"🎸 Atualizado gênero '{req.genre}' em {updated} tracks do álbum {req.album_id}")
+    
+    return {"status": "updated", "tracks_updated": updated, "genre": req.genre}
 
 # --- SMART DOWNLOAD (CORE LOGIC) ---
 @app.post("/download/smart")
@@ -1364,17 +1737,45 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
     # 1. Tidal Direct
     target_tidal_id = request.tidalId
     
-    # Se veio sem ID (YTMusic), tenta achar no Tidal agora
+    # Se veio sem ID (YTMusic ou outra fonte), tenta achar no Tidal agora
     if not target_tidal_id:
+        print(f"🔍 Sem Tidal ID, buscando no Tidal: '{request.artist} {request.track}'")
         try:
-            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, f"{request.artist} {request.track}", 1, "song")
+            search_query = f"{request.artist} {request.track}"
+            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, search_query, 5, "song")
+            
             if tidal_results:
-                 best = tidal_results[0]
-                 if fuzz.token_set_ratio(normalize_text(f"{request.artist} {request.track}"), normalize_text(f"{best['artistName']} {best['trackName']}")) > 85:
-                     target_tidal_id = best['tidalId']
-                     if not request.artworkUrl: request.artworkUrl = best['artworkUrl']
-                     print(f"✅ Tidal ID recuperado: {target_tidal_id}")
-        except: pass
+                print(f"   📋 Tidal retornou {len(tidal_results)} resultados")
+                
+                # Encontra o melhor match
+                target_clean = normalize_text(f"{request.artist} {request.track}")
+                best_match = None
+                best_score = 0
+                
+                for result in tidal_results:
+                    result_clean = normalize_text(f"{result['artistName']} {result['trackName']}")
+                    score = fuzz.token_set_ratio(target_clean, result_clean)
+                    print(f"      -> '{result['artistName']} - {result['trackName']}' = {score}%")
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_match = result
+                
+                # Threshold de 75% para aceitar o match
+                if best_match and best_score >= 75:
+                    target_tidal_id = best_match.get('tidalId')
+                    if not request.artworkUrl:
+                        request.artworkUrl = best_match.get('artworkUrl')
+                    if not request.album:
+                        request.album = best_match.get('collectionName')
+                    print(f"   ✅ Tidal ID recuperado: {target_tidal_id} (score: {best_score}%)")
+                else:
+                    print(f"   ⚠️ Nenhum match bom o suficiente (melhor: {best_score}%)")
+            else:
+                print(f"   ⚠️ Tidal não retornou resultados")
+                
+        except Exception as e:
+            print(f"   ❌ Erro buscando no Tidal: {e}")
 
     if target_tidal_id:
         print(f"🌊 Tentando download Tidal (ID: {target_tidal_id})...")
@@ -1583,7 +1984,7 @@ async def process_library_auto_tagging():
                     if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
                         clean_name = normalize_text(os.path.splitext(file)[0].replace("_", " "))
                         results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
-                        if not results: results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, 1)
+                        if not results: results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, "song", 1)
                         
                         if results:
                             best_match = results[0]

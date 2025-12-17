@@ -215,6 +215,50 @@ final homeTrajectoryProvider = FutureProvider<List<dynamic>>((ref) async {
   return resp.data;
 });
 
+// --- PROVIDERS DE GÊNEROS ---
+
+/// Provider para os gêneros favoritos do usuário (baseado no histórico)
+final favoriteGenresProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final dio = ref.read(dioProvider);
+  try {
+    final resp = await dio.get('/users/me/genres/favorites?limit=6&days=90');
+    final data = resp.data as Map<String, dynamic>;
+    final favorites = data['favorites'] as List<dynamic>? ?? [];
+    return favorites.cast<Map<String, dynamic>>();
+  } catch (e) {
+    print("⚠️ Erro ao carregar gêneros favoritos: $e");
+    return [];
+  }
+});
+
+/// Provider para todos os gêneros disponíveis (para "Conheça mais")
+final allGenresProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final dio = ref.read(dioProvider);
+  try {
+    final resp = await dio.get('/genres/featured?limit=30');
+    final data = resp.data as Map<String, dynamic>;
+    final genres = data['genres'] as List<dynamic>? ?? [];
+    return genres.cast<Map<String, dynamic>>();
+  } catch (e) {
+    print("⚠️ Erro ao carregar gêneros: $e");
+    return [];
+  }
+});
+
+/// Provider family para buscar tracks de um gênero específico
+final genreTracksProvider = FutureProvider.family<List<Map<String, dynamic>>, String>((ref, genreName) async {
+  final dio = ref.read(dioProvider);
+  try {
+    final resp = await dio.get('/genres/${Uri.encodeComponent(genreName)}/tracks?limit=100');
+    final data = resp.data as Map<String, dynamic>;
+    final tracks = data['tracks'] as List<dynamic>? ?? [];
+    return tracks.cast<Map<String, dynamic>>();
+  } catch (e) {
+    print("⚠️ Erro ao carregar tracks do gênero $genreName: $e");
+    return [];
+  }
+});
+
 class LibraryController {
   final Ref ref;
   LibraryController(this.ref);
@@ -311,14 +355,36 @@ class LibraryController {
   }
 
   // --- REGISTRO DE HISTÓRICO ---
-  Future<void> logPlay(String filename, int seconds) async {
+  Future<void> logPlay(String filename, int seconds, {String? albumId, String? genre}) async {
     final dio = ref.read(dioProvider);
     try {
-      await dio.post('/users/me/history',
-          data: {"filename": filename, "duration_listened": seconds});
+      final data = {
+        "filename": filename, 
+        "duration_listened": seconds,
+      };
+      if (albumId != null) data["album_id"] = albumId;
+      if (genre != null && genre.isNotEmpty && genre != "Desconhecido") {
+        data["genre"] = genre;
+      }
+      await dio.post('/users/me/history', data: data);
       print("✅ Play registrado: $filename ($seconds s)");
     } catch (e) {
       print("⚠️ Erro ao registrar play: $e");
+    }
+  }
+
+  // --- ATUALIZAR GÊNERO DE ÁLBUM ---
+  Future<void> updateAlbumGenre(String albumId, String genre) async {
+    if (genre.isEmpty || genre == "Desconhecido") return;
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/catalog/album/update-genre', data: {
+        "album_id": albumId,
+        "genre": genre,
+      });
+      print("🎸 Gênero '$genre' atualizado para álbum $albumId");
+    } catch (e) {
+      print("⚠️ Erro ao atualizar gênero do álbum: $e");
     }
   }
 
@@ -411,6 +477,54 @@ class LibraryController {
   bool isArtistSaved(String artistId) {
     final artists = ref.read(savedArtistsProvider);
     return artists.any((a) => a['id'] == artistId);
+  }
+
+  // --- ADICIONAR MÚSICAS A PLAYLISTS ---
+  Future<bool> addTrackToPlaylist(int playlistId, Map<String, dynamic> track) async {
+    final dio = ref.read(dioProvider);
+    try {
+      final filename = track['filename'];
+      if (filename == null) {
+        print("❌ Track sem filename");
+        return false;
+      }
+      
+      await dio.post('/users/me/playlists/$playlistId/tracks', data: {
+        "filename": filename,
+        "title": track['display_name'] ?? track['trackName'] ?? track['title'],
+        "artist": track['artist'] ?? track['artistName'],
+        "album": track['album'] ?? track['collectionName'],
+      });
+      print("✅ Track adicionada à playlist $playlistId");
+      return true;
+    } catch (e) {
+      print("❌ Erro ao adicionar à playlist: $e");
+      return false;
+    }
+  }
+
+  Future<int> addAlbumToPlaylist(int playlistId, List<Map<String, dynamic>> tracks) async {
+    int added = 0;
+    for (final track in tracks) {
+      final success = await addTrackToPlaylist(playlistId, track);
+      if (success) added++;
+    }
+    return added;
+  }
+
+  // --- ATUALIZAR COVER DA PLAYLIST ---
+  Future<bool> updatePlaylistCover(int playlistId, String coverUrl) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.patch('/users/me/playlists/$playlistId', data: {
+        "cover_url": coverUrl,
+      });
+      await fetchPlaylists();
+      return true;
+    } catch (e) {
+      print("❌ Erro ao atualizar cover: $e");
+      return false;
+    }
   }
 }
 
@@ -794,6 +908,8 @@ class UserProfileNotifier extends StateNotifier<UserProfile> {
   Future<bool> updateProfile({
     String? fullName,
     String? email,
+    String? currentPassword,
+    String? newPassword,
   }) async {
     try {
       final dio = ref.read(dioProvider);
@@ -801,6 +917,10 @@ class UserProfileNotifier extends StateNotifier<UserProfile> {
       final updateData = <String, dynamic>{};
       if (fullName != null) updateData['full_name'] = fullName;
       if (email != null) updateData['email'] = email;
+      if (newPassword != null && newPassword.isNotEmpty) {
+        updateData['new_password'] = newPassword;
+        updateData['current_password'] = currentPassword;
+      }
 
       await dio.put('/users/me', data: updateData);
 

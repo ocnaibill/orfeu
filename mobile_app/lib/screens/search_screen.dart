@@ -4,7 +4,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'profile_screen.dart';
 import 'player_screen.dart';
 import 'artist_screen.dart';
-import 'album_screen.dart'; // <--- Import Adicionado
+import 'album_screen.dart';
+import 'genre_playlist_screen.dart';
 import '../providers.dart';
 import '../services/audio_service.dart';
 
@@ -22,35 +23,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   bool _isSearching = false;
   String _searchType = 'song'; // 'song', 'album', 'artist'
 
-  // Mock de gêneros favoritos
-  final List<Map<String, dynamic>> _favoriteGenres = [
-    {"name": "Jazz Pop", "color": Colors.orangeAccent},
-    {"name": "Indie", "color": Colors.blueAccent},
-    {"name": "Bossa Nova", "color": Colors.green},
-    {"name": "Lo-Fi", "color": Colors.purple},
-    {"name": "Rock", "color": Colors.redAccent},
-  ];
-
-  // Mock de gêneros "Conheça mais"
-  final List<Map<String, dynamic>> _browseGenres = [
-    {"name": "Pop", "color": Colors.pink},
-    {"name": "Hip Hop", "color": Colors.amber},
-    {"name": "Classical", "color": Colors.brown},
-    {"name": "Electronic", "color": Colors.cyan},
-    {"name": "Metal", "color": Colors.grey},
-    {"name": "R&B", "color": Colors.indigo},
-    {"name": "Reggae", "color": Colors.lightGreen},
-    {"name": "Blues", "color": Colors.deepPurple},
+  // Fallback genres caso os favoritos estejam vazios
+  static const List<Map<String, dynamic>> _defaultFavoriteGenres = [
+    {"name": "Pop", "color": 0xFFE91E63},
+    {"name": "Rock", "color": 0xFFF44336},
+    {"name": "Hip Hop", "color": 0xFFFFC107},
+    {"name": "Electronic", "color": 0xFF00BCD4},
+    {"name": "Jazz", "color": 0xFF795548},
+    {"name": "R&B", "color": 0xFF9C27B0},
   ];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_favoritesScrollController.hasClients) {
-        _favoritesScrollController.jumpTo(_favoriteGenres.length * 200.0 * 100);
-      }
-    });
   }
 
   @override
@@ -64,6 +49,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     setState(() {
       _isSearching = query.isNotEmpty;
     });
+    // Não faz mais a busca aqui - agora só quando der Enter
+  }
+
+  void _onSearchSubmitted(String query) {
     if (query.isNotEmpty) {
       ref.read(searchTypeProvider.notifier).state = _searchType;
       ref.read(searchControllerProvider).searchCatalog(query);
@@ -88,14 +77,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     // Se já tem filename, toca direto
     if (item['filename'] != null) {
-      playerNotifier.playContext(queue: [item], initialIndex: 0);
+      // Monta fila baseada nos resultados da busca
+      final searchQueue = _buildSearchQueue(item);
+      final index = searchQueue.indexWhere((t) => 
+          (t['tidalId'] == item['tidalId'] && item['tidalId'] != null) ||
+          (t['trackName'] == item['trackName'] && t['artistName'] == item['artistName']));
+      playerNotifier.playContext(queue: searchQueue, initialIndex: index >= 0 ? index : 0);
       return;
     }
 
     // Se não tem, tenta baixar/resolver primeiro
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
       content:
-          Text("Preparando música...", style: TextStyle(color: Colors.black)),
+          Text("Preparando fila...", style: TextStyle(color: Colors.black)),
       backgroundColor: Color(0xFFD9D9D9),
       duration: Duration(seconds: 2),
     ));
@@ -110,7 +104,14 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         final playableItem = Map<String, dynamic>.from(item);
         playableItem['filename'] = filename;
 
-        playerNotifier.playContext(queue: [playableItem], initialIndex: 0);
+        // Monta fila baseada nos resultados da busca
+        final searchQueue = _buildSearchQueue(playableItem);
+        final index = searchQueue.indexWhere((t) => t['filename'] == filename);
+        
+        playerNotifier.playContext(queue: searchQueue, initialIndex: index >= 0 ? index : 0);
+        
+        // Pré-download da próxima música
+        _preloadNextTrack(searchQueue, index >= 0 ? index : 0);
       }
     } catch (e) {
       if (mounted) {
@@ -118,6 +119,52 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             content: Text("Erro ao reproduzir: $e"),
             backgroundColor: Colors.red));
       }
+    }
+  }
+
+  /// Monta a fila de reprodução baseada nos resultados da busca
+  List<Map<String, dynamic>> _buildSearchQueue(Map<String, dynamic> selectedItem) {
+    final results = ref.read(searchResultsProvider);
+    
+    // Filtra apenas músicas (ignora álbuns e artistas)
+    final songResults = results
+        .where((r) => r['type'] != 'album' && r['type'] != 'artist')
+        .map((r) => Map<String, dynamic>.from(r))
+        .toList();
+    
+    // Se o item selecionado tiver filename, atualiza na lista
+    if (selectedItem['filename'] != null) {
+      for (int i = 0; i < songResults.length; i++) {
+        if ((songResults[i]['tidalId'] == selectedItem['tidalId'] && selectedItem['tidalId'] != null) ||
+            (songResults[i]['trackName'] == selectedItem['trackName'] && 
+             songResults[i]['artistName'] == selectedItem['artistName'])) {
+          songResults[i] = selectedItem;
+          break;
+        }
+      }
+    }
+    
+    // Se não há resultados, retorna apenas o item selecionado
+    if (songResults.isEmpty) {
+      return [selectedItem];
+    }
+    
+    return songResults;
+  }
+
+  /// Pré-download da próxima música em background
+  void _preloadNextTrack(List<Map<String, dynamic>> queue, int currentIndex) async {
+    final nextIndex = currentIndex + 1;
+    if (nextIndex >= queue.length) return;
+    
+    final nextTrack = queue[nextIndex];
+    if (nextTrack['filename'] != null) return;
+    
+    try {
+      print("📥 Pré-carregando próxima: ${nextTrack['trackName']}");
+      await ref.read(searchControllerProvider).smartDownload(nextTrack);
+    } catch (e) {
+      print("⚠️ Erro ao pré-carregar próxima música: $e");
     }
   }
 
@@ -205,6 +252,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     child: TextField(
                       controller: _textController,
                       onChanged: _onSearchChanged,
+                      onSubmitted: _onSearchSubmitted,
+                      textInputAction: TextInputAction.search,
                       style: GoogleFonts.firaSans(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
@@ -295,11 +344,18 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Widget _buildDiscoverContent() {
+    // Busca gêneros favoritos do usuário
+    final favoriteGenresAsync = ref.watch(favoriteGenresProvider);
+    // Busca todos os gêneros disponíveis
+    final allGenresAsync = ref.watch(allGenresProvider);
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 164),
+          
+          // === SEUS GÊNEROS FAVORITOS ===
           Padding(
             padding: const EdgeInsets.only(left: 33, bottom: 20),
             child: Text("Seus gêneros favoritos",
@@ -310,20 +366,22 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
           SizedBox(
             height: 200,
-            child: ListView.builder(
-              controller: _favoritesScrollController,
-              scrollDirection: Axis.horizontal,
-              itemBuilder: (context, index) {
-                final genre = _favoriteGenres[index % _favoriteGenres.length];
-                return Padding(
-                  padding:
-                      EdgeInsets.only(left: 32, right: index == 10000 ? 32 : 0),
-                  child: _buildGenreCard(genre, 200, 200),
-                );
+            child: favoriteGenresAsync.when(
+              loading: () => const Center(
+                child: CircularProgressIndicator(color: Color(0xFFD4AF37)),
+              ),
+              error: (e, _) => _buildFavoriteGenresList(_defaultFavoriteGenres),
+              data: (favorites) {
+                // Se não tem favoritos, usa os defaults
+                final genres = favorites.isEmpty ? _defaultFavoriteGenres : favorites;
+                return _buildFavoriteGenresList(genres);
               },
             ),
           ),
+          
           const SizedBox(height: 50),
+          
+          // === CONHEÇA MAIS ===
           Padding(
             padding: const EdgeInsets.only(left: 33, bottom: 20),
             child: Text("Conheça mais.",
@@ -334,20 +392,34 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 33),
-            child: GridView.builder(
-              physics: const NeverScrollableScrollPhysics(),
-              shrinkWrap: true,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: 20,
-                crossAxisSpacing: 20,
-                childAspectRatio: 1.0,
+            child: allGenresAsync.when(
+              loading: () => const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: CircularProgressIndicator(color: Color(0xFFD4AF37)),
+                ),
               ),
-              itemCount: _browseGenres.length * 5,
-              itemBuilder: (context, index) {
-                final genre = _browseGenres[index % _browseGenres.length];
-                return Center(child: _buildGenreCard(genre, 150, 150));
-              },
+              error: (e, _) => Center(
+                child: Text(
+                  "Erro ao carregar gêneros",
+                  style: GoogleFonts.firaSans(color: Colors.grey),
+                ),
+              ),
+              data: (genres) => GridView.builder(
+                physics: const NeverScrollableScrollPhysics(),
+                shrinkWrap: true,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 20,
+                  crossAxisSpacing: 20,
+                  childAspectRatio: 1.0,
+                ),
+                itemCount: genres.length,
+                itemBuilder: (context, index) {
+                  final genre = genres[index];
+                  return Center(child: _buildGenreCard(genre, 150, 150));
+                },
+              ),
             ),
           ),
           const SizedBox(height: 120),
@@ -356,42 +428,111 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     );
   }
 
+  Widget _buildFavoriteGenresList(List<Map<String, dynamic>> genres) {
+    return ListView.builder(
+      controller: _favoritesScrollController,
+      scrollDirection: Axis.horizontal,
+      itemCount: genres.length,
+      itemBuilder: (context, index) {
+        final genre = genres[index];
+        return Padding(
+          padding: EdgeInsets.only(
+            left: index == 0 ? 32 : 16,
+            right: index == genres.length - 1 ? 32 : 0,
+          ),
+          child: _buildGenreCard(genre, 200, 200),
+        );
+      },
+    );
+  }
+
+  /// Converte um valor de cor (int hex ou Color) para Color
+  Color _parseColor(dynamic colorValue) {
+    if (colorValue is Color) return colorValue;
+    if (colorValue is int) return Color(colorValue);
+    return Colors.grey;
+  }
+
   Widget _buildGenreCard(
       Map<String, dynamic> genre, double width, double height) {
+    final genreName = genre['name'] ?? 'Gênero';
+    final color = _parseColor(genre['color']);
+    final searchQuery = genre['search_query'] ?? genreName;
+    final playlistId = genre['playlist_id'];
+
     return GestureDetector(
       onTap: () {
-        print("Criando playlist: ${genre['name']}");
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => GenrePlaylistScreen(
+              genreName: genreName,
+              genreColor: color,
+              searchQuery: searchQuery,
+              playlistId: playlistId,
+            ),
+          ),
+        );
       },
       child: Container(
         width: width,
         height: height,
         decoration: BoxDecoration(
-          color: genre['color'],
+          color: color,
           borderRadius: BorderRadius.circular(12),
           gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                genre['color'].withOpacity(0.8),
-                genre['color'].withOpacity(0.4)
+                color.withOpacity(0.9),
+                color.withOpacity(0.5)
               ]),
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
         child: Stack(
           children: [
+            // Ícone de fundo decorativo
+            Positioned(
+              right: -20,
+              bottom: -20,
+              child: Icon(
+                Icons.music_note,
+                size: 100,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
+            // Nome do gênero
             Center(
-                child: Text(genre['name'],
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.firaSans(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        shadows: [
-                          const Shadow(blurRadius: 5, color: Colors.black45)
-                        ]))),
-            const Positioned(
-                bottom: 10,
-                right: 10,
-                child: Icon(Icons.play_circle_fill, color: Colors.white54))
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(genreName,
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.firaSans(
+                          fontSize: width > 150 ? 20 : 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          shadows: [
+                            const Shadow(blurRadius: 8, color: Colors.black54)
+                          ])),
+                )),
+            // Ícone de play
+            Positioned(
+                bottom: 12,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.3),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.play_arrow, color: Colors.white, size: 20),
+                ))
           ],
         ),
       ),
@@ -424,6 +565,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               },
             ),
     );
+
   }
 
   // Card para Músicas e Álbuns
@@ -455,43 +597,61 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final artist = item['artistName'] ?? 'Desconhecido';
     final isAlbum = item['type'] == 'album';
 
-    return Container(
-      height: 55,
-      width: double.infinity,
-      color: Colors.transparent,
-      child: Stack(
-        children: [
-          // 1. Foto
-          Positioned(
-            left: 9,
-            top: 2.5,
-            child: Container(
-              width: 50,
-              height: 50,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                color: Colors.grey[900],
-                image: coverUrl.isNotEmpty
-                    ? DecorationImage(
-                        image: NetworkImage(coverUrl),
-                        fit: BoxFit.cover,
-                      )
+    return GestureDetector(
+      onTap: () {
+        if (isAlbum) {
+          final collectionId =
+              (item['collectionId'] ?? item['tidalId'] ?? '')
+                  .toString();
+          if (collectionId.isNotEmpty) {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => AlbumScreen(
+                        collectionId: collectionId,
+                        heroTag: "search_album_$collectionId")));
+          }
+        } else {
+          _handlePlay(item);
+        }
+      },
+      child: Container(
+        height: 55,
+        width: double.infinity,
+        color: Colors.transparent,
+        child: Stack(
+          children: [
+            // 1. Foto
+            Positioned(
+              left: 9,
+              top: 2.5,
+              child: Container(
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.grey[900],
+                  image: coverUrl.isNotEmpty
+                      ? DecorationImage(
+                          image: NetworkImage(coverUrl),
+                          fit: BoxFit.cover,
+                        )
+                      : null,
+                ),
+                child: coverUrl.isEmpty
+                    ? const Icon(Icons.music_note, color: Colors.white54)
                     : null,
               ),
-              child: coverUrl.isEmpty
-                  ? const Icon(Icons.music_note, color: Colors.white54)
-                  : null,
             ),
-          ),
 
-          // 2. Textos
-          Positioned(
-            left: 69,
-            top: 6,
-            right: 60,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
+            // 2. Textos
+            Positioned(
+              left: 69,
+              top: 6,
+              right: 60,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
                   title,
@@ -518,42 +678,23 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
           ),
 
-          // 3. Ação (Play para música, Seta para álbum)
+          // 3. Indicador visual (Play para música, Seta para álbum)
           Positioned(
             right: isAlbum ? 30 : 20,
             top: isAlbum ? 0 : 11.5,
             bottom: isAlbum ? 0 : null,
-            child: GestureDetector(
-              onTap: () {
-                if (isAlbum) {
-                  final collectionId =
-                      (item['collectionId'] ?? item['tidalId'] ?? '')
-                          .toString();
-                  if (collectionId.isNotEmpty) {
-                    Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => AlbumScreen(
-                                collectionId: collectionId,
-                                heroTag: "search_album_$collectionId")));
-                  }
-                } else {
-                  _handlePlay(item);
-                }
-              },
-              child: Icon(
-                isAlbum
-                    ? Icons.arrow_forward_ios_rounded
-                    : Icons.play_circle_fill,
-                color: Colors.white,
-                size: isAlbum ? 20 : 32,
-              ),
+            child: Icon(
+              isAlbum
+                  ? Icons.arrow_forward_ios_rounded
+                  : Icons.play_circle_fill,
+              color: Colors.white,
+              size: isAlbum ? 20 : 32,
             ),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
 
   // Card para Artistas
   Widget _buildArtistCard(Map<String, dynamic> item) {

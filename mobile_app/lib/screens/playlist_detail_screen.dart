@@ -276,7 +276,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                           icon: Icons.more_horiz,
                           color: _vibrantColor,
                           isVibrantBackground: true,
-                          onTap: () {},
+                          onTap: () => _showPlaylistOptionsModal(playlistData, tracks),
                         ),
                       ),
                       Positioned(
@@ -597,41 +597,61 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-          content: Text("Preparando playlist...",
+          content: Text("Preparando fila...",
               style: TextStyle(color: Colors.black)),
           backgroundColor: Color(0xFFD9D9D9),
-          duration: Duration(milliseconds: 1000)),
+          duration: Duration(milliseconds: 1500)),
     );
 
     try {
-      final targetTrack = Map<String, dynamic>.from(tracks[startIndex]);
-
-      bool shouldApplyPlaylistCover = !isFavorites;
-      if (shouldApplyPlaylistCover) {
-        if (targetTrack['artworkUrl'] == null ||
-            targetTrack['artworkUrl'].toString().isEmpty) {
-          targetTrack['artworkUrl'] = playlistCover;
+      // Prepara todas as tracks da playlist com metadados
+      final preparedTracks = tracks.map((t) {
+        final track = Map<String, dynamic>.from(t);
+        if (!isFavorites) {
+          if (track['artworkUrl'] == null || track['artworkUrl'].toString().isEmpty) {
+            track['artworkUrl'] = playlistCover;
+          }
         }
+        if (track['artworkUrl'] != null && track['artworkUrl'].toString().isNotEmpty) {
+          track['imageUrl'] = track['artworkUrl'];
+        }
+        return track;
+      }).toList();
+
+      // Faz download da primeira música
+      final targetTrack = preparedTracks[startIndex];
+      final filename = await ref.read(searchControllerProvider).smartDownload(targetTrack);
+
+      if (filename == null) {
+        throw Exception('Não foi possível preparar a música');
+      }
+      preparedTracks[startIndex]['filename'] = filename;
+
+      // Monta a fila na ordem correta (ou embaralhada)
+      List<Map<String, dynamic>> playQueue;
+      int playIndex = startIndex;
+      
+      if (shuffle) {
+        // Embaralha mas mantém a música selecionada primeiro
+        final first = preparedTracks.removeAt(startIndex);
+        preparedTracks.shuffle();
+        preparedTracks.insert(0, first);
+        playQueue = preparedTracks;
+        playIndex = 0;
+      } else {
+        playQueue = preparedTracks;
       }
 
-      // Duplica para imageUrl se artworkUrl estiver OK
-      if (targetTrack['artworkUrl'] != null &&
-          targetTrack['artworkUrl'].toString().isNotEmpty) {
-        targetTrack['imageUrl'] = targetTrack['artworkUrl'];
-      }
+      // Inicia reprodução com a fila completa
+      ref.read(playerProvider.notifier).playContext(
+        queue: playQueue,
+        initialIndex: playIndex,
+        shuffle: false,
+      );
 
-      final filename =
-          await ref.read(searchControllerProvider).smartDownload(targetTrack);
+      // Pré-download da próxima música em background
+      _preloadNextTrack(ref, playQueue, playIndex);
 
-      if (filename != null) {
-        targetTrack['filename'] = filename;
-
-        ref.read(playerProvider.notifier).playContext(
-          queue: [targetTrack],
-          initialIndex: 0,
-          shuffle: shuffle,
-        );
-      }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text("Erro ao reproduzir: $e"),
@@ -639,9 +659,261 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
     }
   }
 
+  /// Faz pré-download da próxima música em background
+  void _preloadNextTrack(WidgetRef ref, List<Map<String, dynamic>> queue, int currentIndex) async {
+    final nextIndex = currentIndex + 1;
+    if (nextIndex >= queue.length) return;
+    
+    final nextTrack = queue[nextIndex];
+    if (nextTrack['filename'] != null) return;
+    
+    try {
+      print("📥 Pré-carregando próxima: ${nextTrack['trackName'] ?? nextTrack['display_name']}");
+      await ref.read(searchControllerProvider).smartDownload(nextTrack);
+    } catch (e) {
+      print("⚠️ Erro ao pré-carregar próxima música: $e");
+    }
+  }
+
   String _formatDuration(int ms) {
     final duration = Duration(milliseconds: ms);
     return "${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}";
+  }
+
+  void _showPlaylistOptionsModal(Map<String, dynamic> playlistData, List<Map<String, dynamic>> tracks) {
+    final isFavorites = widget.playlistId == 'favorites' || widget.playlistId.isEmpty;
+    
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!isFavorites) ...[
+                ListTile(
+                  leading: Icon(Icons.image, color: _vibrantColor),
+                  title: Text("Alterar capa da playlist",
+                      style: GoogleFonts.firaSans(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showChangeCoverModal(playlistData);
+                  },
+                ),
+                ListTile(
+                  leading: Icon(Icons.edit, color: _vibrantColor),
+                  title: Text("Renomear playlist",
+                      style: GoogleFonts.firaSans(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showRenameModal(playlistData);
+                  },
+                ),
+              ],
+              ListTile(
+                leading: Icon(Icons.share, color: _vibrantColor),
+                title: Text("Compartilhar",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showChangeCoverModal(Map<String, dynamic> playlistData) {
+    final controller = TextEditingController(text: playlistData['cover_url'] ?? '');
+    
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            left: 20,
+            right: 20,
+            top: 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Nova capa da playlist",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 8),
+              Text("Cole a URL de uma imagem:",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 14,
+                      color: Colors.white70)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                style: GoogleFonts.firaSans(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: "https://exemplo.com/imagem.jpg",
+                  hintStyle: GoogleFonts.firaSans(color: Colors.white38),
+                  filled: true,
+                  fillColor: Colors.white10,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _vibrantColor,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    if (controller.text.trim().isNotEmpty) {
+                      final success = await ref
+                          .read(libraryControllerProvider)
+                          .updatePlaylistCover(
+                              int.parse(widget.playlistId), controller.text.trim());
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(success
+                                ? 'Capa atualizada!'
+                                : 'Erro ao atualizar capa'),
+                            backgroundColor: success ? Colors.green : Colors.red,
+                          ),
+                        );
+                        if (success) {
+                          ref.invalidate(playlistDetailsProvider(widget.playlistId));
+                        }
+                      }
+                    }
+                  },
+                  child: Text("Salvar",
+                      style: GoogleFonts.firaSans(
+                          color: Colors.black, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showRenameModal(Map<String, dynamic> playlistData) {
+    final controller = TextEditingController(text: playlistData['name'] ?? '');
+    
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            left: 20,
+            right: 20,
+            top: 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("Renomear playlist",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                style: GoogleFonts.firaSans(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: "Nome da playlist",
+                  hintStyle: GoogleFonts.firaSans(color: Colors.white38),
+                  filled: true,
+                  fillColor: Colors.white10,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _vibrantColor,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    if (controller.text.trim().isNotEmpty) {
+                      final dio = ref.read(dioProvider);
+                      try {
+                        await dio.put(
+                          '/users/me/playlists/${widget.playlistId}',
+                          data: {'name': controller.text.trim()},
+                        );
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Playlist renomeada!'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                          ref.invalidate(playlistDetailsProvider(widget.playlistId));
+                          ref.invalidate(userPlaylistsProvider);
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Erro ao renomear: $e'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    }
+                  },
+                  child: Text("Salvar",
+                      style: GoogleFonts.firaSans(
+                          color: Colors.black, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 20),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 

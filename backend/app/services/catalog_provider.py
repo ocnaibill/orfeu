@@ -6,7 +6,7 @@ class CatalogProvider:
     yt = YTMusic()
 
     @staticmethod
-    def search_catalog(query: str, type: str = "song"):
+    def search_catalog(query: str, type: str = "song", limit: int = 40):
         """
         Busca músicas, álbuns ou artistas no YouTube Music.
         """
@@ -20,7 +20,7 @@ class CatalogProvider:
             search_filter = filter_map.get(type, "songs")
             
             # Pede mais resultados para permitir paginação/filtragem
-            raw_results = CatalogProvider.yt.search(query, filter=search_filter, limit=40)
+            raw_results = CatalogProvider.yt.search(query, filter=search_filter, limit=limit)
             
             normalized_results = []
             
@@ -130,4 +130,99 @@ class CatalogProvider:
             }
         except Exception as e:
             print(f"❌ Erro YTMusic Album Details: {e}")
+            raise e
+
+    @staticmethod
+    def get_artist_details(artist_id: str):
+        """
+        Busca detalhes do artista no YouTube Music (Bio, Top Songs, Albums, Singles).
+        Retorna estrutura compatível com o TidalProvider.
+        """
+        try:
+            # Busca os dados do artista
+            artist = CatalogProvider.yt.get_artist(artist_id)
+            
+            # 1. Info Básica
+            thumbnails = artist.get('thumbnails', [])
+            artwork_url = thumbnails[-1]['url'] if thumbnails else ""
+            
+            artist_info = {
+                "artistId": artist_id,
+                "artistName": artist.get('name', 'Artista'),
+                "artworkUrl": artwork_url,
+                "bio": artist.get('description', ''),
+                "source": "YTMusic"
+            }
+
+            # 2. Álbuns
+            # A API retorna um dicionário onde a chave 'albums' contém 'results'
+            albums = []
+            if 'albums' in artist and 'results' in artist['albums']:
+                for item in artist['albums']['results']:
+                    thumb = item.get('thumbnails', [])
+                    cover = thumb[-1]['url'] if thumb else ""
+                    year = str(item.get('year') or '')
+                    
+                    albums.append({
+                        "type": "album",
+                        "collectionId": item.get('browseId'),
+                        "collectionName": item.get('title'),
+                        "artistName": artist.get('name'), # Assume o próprio artista
+                        "artistId": artist_id,
+                        "artworkUrl": cover,
+                        "year": year,
+                        "releaseDate": year,
+                        "source": "YTMusic"
+                    })
+
+            # 3. Singles
+            singles = []
+            if 'singles' in artist and 'results' in artist['singles']:
+                for item in artist['singles']['results']:
+                    thumb = item.get('thumbnails', [])
+                    cover = thumb[-1]['url'] if thumb else ""
+                    year = str(item.get('year') or '')
+                    
+                    singles.append({
+                        "type": "single",
+                        "collectionId": item.get('browseId'),
+                        "collectionName": item.get('title'),
+                        "artistName": artist.get('name'),
+                        "artworkUrl": cover,
+                        "year": year,
+                        "releaseDate": year,
+                        "source": "YTMusic"
+                    })
+
+            # 4. Top Tracks (Songs)
+            top_tracks = []
+            if 'songs' in artist and 'results' in artist['songs']:
+                for item in artist['songs']['results']:
+                    thumb = item.get('thumbnails', [])
+                    cover = thumb[-1]['url'] if thumb else ""
+                    
+                    # Tenta pegar info do álbum se disponível na listagem (raro no top songs do YT)
+                    album_name = "Single"
+                    if item.get('album'):
+                         album_name = item['album'].get('name', 'Single')
+
+                    top_tracks.append({
+                        "type": "song",
+                        "trackName": item.get('title'),
+                        "artistName": artist.get('name'),
+                        "collectionName": album_name,
+                        "artworkUrl": cover,
+                        "videoId": item.get('videoId'),
+                        "source": "YTMusic"
+                    })
+
+            return {
+                "artist": artist_info,
+                "albums": albums,
+                "singles": singles,
+                "topTracks": top_tracks
+            }
+
+        except Exception as e:
+            print(f"❌ Erro YTMusic Artist Details: {e}")
             raise e

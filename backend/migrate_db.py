@@ -23,6 +23,7 @@ def run_migration():
             ("tracks", "genre", "ALTER TABLE tracks ADD COLUMN genre VARCHAR(100)"),
             ("tracks", "album_id", "ALTER TABLE tracks ADD COLUMN album_id VARCHAR(100)"),
             ("users", "profile_image_url", "ALTER TABLE users ADD COLUMN profile_image_url TEXT"),
+            ("playlists", "cover_url", "ALTER TABLE playlists ADD COLUMN cover_url TEXT"),
         ]
         
         for table, column, sql in migrations:

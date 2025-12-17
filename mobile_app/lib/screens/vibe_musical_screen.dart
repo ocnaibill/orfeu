@@ -193,8 +193,16 @@ class VibeMusicalScreen extends ConsumerWidget {
                     decoration: BoxDecoration(
                       color: const Color(0xFFD4AF37),
                       borderRadius: BorderRadius.circular(30),
+                      image: monthly['top_artist_image'] != null && monthly['top_artist_image'].toString().isNotEmpty
+                          ? DecorationImage(
+                              image: NetworkImage(monthly['top_artist_image']),
+                              fit: BoxFit.cover,
+                            )
+                          : null,
                     ),
-                    child: const Icon(Icons.star, color: Colors.black, size: 30),
+                    child: monthly['top_artist_image'] == null || monthly['top_artist_image'].toString().isEmpty
+                        ? const Icon(Icons.star, color: Colors.black, size: 30)
+                        : null,
                   ),
                   const SizedBox(width: 15),
                   Expanded(

@@ -92,6 +92,7 @@ class Playlist(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     name = Column(String)
+    cover_url = Column(String, nullable=True)  # URL da capa personalizada
     is_public = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

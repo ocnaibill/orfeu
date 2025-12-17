@@ -467,6 +467,22 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     ),
 
                     const SizedBox(height: 20),
+                    // Username (somente leitura)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: TextField(
+                        controller: TextEditingController(text: profile.username),
+                        enabled: false,
+                        style: const TextStyle(color: Colors.white54),
+                        decoration: const InputDecoration(
+                          labelText: "Nome de Usuário",
+                          labelStyle: TextStyle(color: Colors.white54),
+                          disabledBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Colors.white12)),
+                          suffixIcon: Icon(Icons.lock_outline, color: Colors.white24, size: 18),
+                        ),
+                      ),
+                    ),
                     _buildTextField("Nome Completo", fullNameCtrl),
                     _buildTextField("Email", emailCtrl),
                     const Divider(color: Colors.white24, height: 30),
@@ -515,7 +531,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     }
                                   }
 
-                                  // Atualiza nome e email se foram alterados
+                                  // Atualiza nome, email e senha se foram alterados
                                   final success = await notifier.updateProfile(
                                     fullName:
                                         fullNameCtrl.text != profile.fullName
@@ -523,6 +539,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                             : null,
                                     email: emailCtrl.text != profile.email
                                         ? emailCtrl.text
+                                        : null,
+                                    currentPassword: oldPassCtrl.text.isNotEmpty 
+                                        ? oldPassCtrl.text 
+                                        : null,
+                                    newPassword: passCtrl.text.isNotEmpty 
+                                        ? passCtrl.text 
                                         : null,
                                   );
 

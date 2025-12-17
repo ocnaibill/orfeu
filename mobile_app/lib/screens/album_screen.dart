@@ -10,7 +10,15 @@ import '../widgets/bottom_nav_area.dart'; // <--- Import restaurado
 // Provider para carregar os detalhes do álbum
 final albumDetailsProvider = FutureProvider.family
     .autoDispose<Map<String, dynamic>, String>((ref, id) async {
-  return ref.read(searchControllerProvider).getAlbumDetails(id);
+  final details = await ref.read(searchControllerProvider).getAlbumDetails(id);
+  
+  // Atualiza o gênero de todas as tracks do álbum no backend
+  final genre = details['genre']?.toString() ?? '';
+  if (genre.isNotEmpty && genre != 'Desconhecido') {
+    ref.read(libraryControllerProvider).updateAlbumGenre(id, genre);
+  }
+  
+  return details;
 });
 
 class AlbumScreen extends ConsumerStatefulWidget {
@@ -124,6 +132,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
         data: (albumData) {
           final artworkUrl = albumData['artworkUrl'] ?? '';
           final tracks = List<Map<String, dynamic>>.from(albumData['tracks']);
+          final albumGenre = albumData['genre']?.toString() ?? '';
 
           if (artworkUrl.isNotEmpty && !_colorCalculated) {
             _extractColor(artworkUrl);
@@ -157,7 +166,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                               icon: Icons.more_horiz,
                               color: _vibrantColor,
                               isVibrantBackground: true,
-                              onTap: () {},
+                              onTap: () => _showAlbumOptionsModal(albumData, tracks),
                             ),
                           ),
                           Positioned(
@@ -252,7 +261,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                               label: "Reproduzir",
                               icon: Icons.play_arrow,
                               onTap: () => _playAlbum(context, ref, tracks, 0,
-                                  shuffle: false, albumCover: artworkUrl),
+                                  shuffle: false, albumCover: artworkUrl, albumGenre: albumGenre),
                             ),
                           ),
                           Positioned(
@@ -261,7 +270,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                               label: "Aleatório",
                               icon: Icons.shuffle,
                               onTap: () => _playAlbum(context, ref, tracks, 0,
-                                  shuffle: true, albumCover: artworkUrl),
+                                  shuffle: true, albumCover: artworkUrl, albumGenre: albumGenre),
                             ),
                           ),
                         ],
@@ -298,7 +307,7 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                             child: InkWell(
                               onTap: () => _playAlbum(
                                   context, ref, tracks, index,
-                                  shuffle: false, albumCover: artworkUrl),
+                                  shuffle: false, albumCover: artworkUrl, albumGenre: albumGenre),
                               child: SizedBox(
                                 height: 50,
                                 child: Row(
@@ -438,47 +447,67 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
 
   Future<void> _playAlbum(BuildContext context, WidgetRef ref,
       List<Map<String, dynamic>> tracks, int startIndex,
-      {required bool shuffle, required String albumCover}) async {
+      {required bool shuffle, required String albumCover, String? albumGenre}) async {
     if (tracks.isEmpty) return;
 
     // Feedback visual
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-          content: Text("Preparando música...",
+          content: Text("Preparando fila...",
               style: TextStyle(color: Colors.black)),
           backgroundColor: Color(0xFFD9D9D9),
-          duration: Duration(milliseconds: 1000)),
+          duration: Duration(milliseconds: 1500)),
     );
 
     try {
-      final targetTrack = Map<String, dynamic>.from(tracks[startIndex]);
+      // Prepara todas as tracks do álbum com metadados completos
+      final albumDetails = ref.read(albumDetailsProvider(widget.collectionId)).value;
+      final genre = albumGenre ?? albumDetails?['genre'] ?? '';
+      
+      final preparedTracks = tracks.map((t) {
+        final track = Map<String, dynamic>.from(t);
+        if (track['artworkUrl'] == null || track['artworkUrl'].toString().isEmpty) {
+          track['artworkUrl'] = albumCover;
+        }
+        track['collectionId'] = widget.collectionId;
+        track['genre'] = genre;
+        return track;
+      }).toList();
 
-      // Garante metadados essenciais
-      if (targetTrack['artworkUrl'] == null ||
-          targetTrack['artworkUrl'].toString().isEmpty) {
-        targetTrack['artworkUrl'] = albumCover;
+      // Faz download da primeira música selecionada (obrigatório)
+      final targetTrack = preparedTracks[startIndex];
+      final filename = await ref.read(searchControllerProvider).smartDownload(targetTrack);
+
+      if (filename == null) {
+        throw Exception('Não foi possível preparar a música');
+      }
+      preparedTracks[startIndex]['filename'] = filename;
+
+      // Monta a fila na ordem correta (ou embaralhada)
+      List<Map<String, dynamic>> playQueue;
+      int playIndex = startIndex;
+      
+      if (shuffle) {
+        // Embaralha mas mantém a música selecionada primeiro
+        final first = preparedTracks.removeAt(startIndex);
+        preparedTracks.shuffle();
+        preparedTracks.insert(0, first);
+        playQueue = preparedTracks;
+        playIndex = 0;
+      } else {
+        playQueue = preparedTracks;
       }
 
-      // Passa o collectionId do álbum para ser salvo no histórico
-      targetTrack['collectionId'] = widget.collectionId;
+      // Inicia reprodução com a fila completa
+      ref.read(playerProvider.notifier).playContext(
+        queue: playQueue,
+        initialIndex: playIndex,
+        shuffle: false, // Já embaralhamos manualmente se necessário
+      );
 
-      // Resolve o arquivo (Smart Download)
-      final filename =
-          await ref.read(searchControllerProvider).smartDownload(targetTrack);
+      // Pré-download da próxima música em background
+      _preloadNextTrack(ref, playQueue, playIndex);
 
-      if (filename != null) {
-        targetTrack['filename'] = filename;
-
-        // Toca a música resolvida
-        // Nota: O AudioService filtra itens sem filename.
-        // Para uma experiência completa de álbum, o ideal seria resolver o próximo em background.
-        // Aqui tocamos o que foi clicado.
-        ref.read(playerProvider.notifier).playContext(
-          queue: [targetTrack],
-          initialIndex: 0,
-          shuffle: shuffle,
-        );
-      }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text("Erro ao reproduzir: $e"),
@@ -486,9 +515,182 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
     }
   }
 
+  /// Faz pré-download da próxima música em background
+  void _preloadNextTrack(WidgetRef ref, List<Map<String, dynamic>> queue, int currentIndex) async {
+    final nextIndex = currentIndex + 1;
+    if (nextIndex >= queue.length) return;
+    
+    final nextTrack = queue[nextIndex];
+    if (nextTrack['filename'] != null) return; // Já tem download
+    
+    try {
+      print("📥 Pré-carregando próxima: ${nextTrack['trackName']}");
+      await ref.read(searchControllerProvider).smartDownload(nextTrack);
+    } catch (e) {
+      print("⚠️ Erro ao pré-carregar próxima música: $e");
+    }
+  }
+
   String _formatDuration(int ms) {
     final duration = Duration(milliseconds: ms);
     return "${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}";
+  }
+
+  void _showAlbumOptionsModal(Map<String, dynamic> albumData, List<Map<String, dynamic>> tracks) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(Icons.playlist_add, color: _vibrantColor),
+                title: Text("Adicionar álbum a uma playlist",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showPlaylistSelectionModal(albumData, tracks);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                    _isLibraryAdded == true ? Icons.check : Icons.add,
+                    color: _vibrantColor),
+                title: Text(
+                    _isLibraryAdded == true
+                        ? "Remover da biblioteca"
+                        : "Adicionar à biblioteca",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _toggleLibrary(albumData);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.share, color: _vibrantColor),
+                title: Text("Compartilhar",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showPlaylistSelectionModal(Map<String, dynamic> albumData, List<Map<String, dynamic>> tracks) {
+    final playlists = ref.read(userPlaylistsProvider);
+    
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text("Adicionar álbum a playlist",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 8),
+              Text("${tracks.length} músicas serão adicionadas",
+                  style: GoogleFonts.firaSans(
+                      fontSize: 14,
+                      color: Colors.white70)),
+              const SizedBox(height: 16),
+              if (playlists.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    "Você ainda não tem playlists.\nCrie uma na sua biblioteca!",
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.firaSans(color: Colors.white70),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: playlists.length,
+                    itemBuilder: (context, index) {
+                      final playlist = playlists[index];
+                      if (playlist['name']?.toLowerCase() == 'músicas curtidas') {
+                        return const SizedBox.shrink();
+                      }
+                      return ListTile(
+                        leading: Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            color: Colors.white10,
+                          ),
+                          child: playlist['cover_url'] != null && playlist['cover_url'].toString().isNotEmpty
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.network(
+                                    playlist['cover_url'],
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => const Icon(Icons.queue_music, color: Colors.white54),
+                                  ),
+                                )
+                              : const Icon(Icons.queue_music, color: Colors.white54),
+                        ),
+                        title: Text(
+                          playlist['name'] ?? 'Playlist',
+                          style: GoogleFonts.firaSans(color: Colors.white),
+                        ),
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          // Prepara as tracks do álbum para o formato correto
+                          final albumTracks = tracks.map((t) => {
+                            'trackName': t['trackName'],
+                            'artistName': t['artistName'] ?? albumData['artistName'],
+                            'albumName': albumData['collectionName'],
+                            'artworkUrl': t['artworkUrl'] ?? albumData['artworkUrl'],
+                            'durationMs': t['durationMs'],
+                            'tidalId': t['tidalId'],
+                            'collectionId': widget.collectionId,
+                          }).toList();
+                          
+                          final success = await ref
+                              .read(libraryControllerProvider)
+                              .addAlbumToPlaylist(playlist['id'], albumTracks);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(success
+                                    ? 'Álbum adicionado a "${playlist['name']}"'
+                                    : 'Erro ao adicionar álbum'),
+                                backgroundColor: success ? Colors.green : Colors.red,
+                              ),
+                            );
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 
