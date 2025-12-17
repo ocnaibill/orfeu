@@ -22,6 +22,8 @@ class TidalProvider:
                 param_key = "al"
             elif type == "artist":
                 param_key = "a"
+            elif type == "playlist":
+                param_key = "p"
                 
             params = {
                 param_key: query,
@@ -47,23 +49,34 @@ class TidalProvider:
             normalized_results = []
             
             for item in items:
-                album_cover_id = None
+                image_uuid = None
+                
+                # Lógica de Imagem/Capa
                 if type == "album":
-                    album_cover_id = item.get('cover')
-                else:
-                    album_cover_id = item.get('album', {}).get('cover')
+                    image_uuid = item.get('cover')
+                elif type == "artist":
+                    image_uuid = item.get('picture') # Artistas usam 'picture'
+                else: # song
+                    image_uuid = item.get('album', {}).get('cover')
 
                 artwork_url = ""
-                if album_cover_id:
-                    path = album_cover_id.replace('-', '/')
-                    artwork_url = f"{TidalProvider.CDN_URL}/{path}/640x640.jpg"
+                if image_uuid:
+                    path = image_uuid.replace('-', '/')
+                    # Artistas costumam ter resoluções 320x320 ou 750x750. 
+                    # Usamos 750x750 para artistas para melhor qualidade, 640x640 para o resto.
+                    res = "750x750" if type == "artist" else "640x640"
+                    artwork_url = f"{TidalProvider.CDN_URL}/{path}/{res}.jpg"
 
+                # Lógica de Nome do Artista
                 artist_name = "Desconhecido"
-                if item.get('artist'):
+                if type == "artist":
+                    artist_name = item.get('name')
+                elif item.get('artist'):
                     artist_name = item['artist'].get('name')
                 elif item.get('artists'):
                     artist_name = item['artists'][0].get('name')
 
+                # FORMATAÇÃO DO RESULTADO
                 if type == "song":
                     album_name = item.get('album', {}).get('title', 'Single')
                     normalized_results.append({
@@ -88,6 +101,15 @@ class TidalProvider:
                         "year": str(item.get('releaseDate', ''))[:4],
                         "trackCount": item.get('numberOfTracks'),
                         "source": "Tidal"
+                    })
+                elif type == "artist":
+                    normalized_results.append({
+                        "type": "artist",
+                        "artistName": item.get('name'),
+                        "artistId": str(item.get('id')),
+                        "artworkUrl": artwork_url,
+                        "source": "Tidal",
+                        "popularity": item.get('popularity')
                     })
             
             return normalized_results
@@ -114,17 +136,14 @@ class TidalProvider:
                         resp = client.get(url, params=params, timeout=10.0)
                         
                         if resp.status_code != 200: 
-                            print(f"   ⚠️ Tidal HTTP {resp.status_code} para {q}")
                             continue
 
                         if not resp.content:
-                            print(f"   ⚠️ Tidal retornou corpo vazio para {q}")
                             continue
 
                         data = resp.json()
                         
                         if 'error' in data:
-                            print(f"   ⚠️ Tidal API Error ({q}): {data.get('error')}")
                             continue
 
                         manifest_b64 = data.get('data', {}).get('manifest')
@@ -143,10 +162,8 @@ class TidalProvider:
                                 }
                                 
                     except json.JSONDecodeError:
-                        print(f"   ❌ Resposta inválida (Não-JSON) do Tidal para {q}. Body: {resp.text[:50]}...")
                         continue
                     except Exception as loop_e:
-                        print(f"   ❌ Erro no loop Tidal ({q}): {loop_e}")
                         continue
                         
             return None

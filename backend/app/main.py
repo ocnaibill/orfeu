@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from sqlalchemy import func, desc
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 from .database import engine, get_db, Base
@@ -27,6 +28,9 @@ from app.services.lyrics_provider import LyricsProvider
 from app.services.catalog_provider import CatalogProvider
 from app.services.tidal_provider import TidalProvider
 from app.services.analytics_service import AnalyticsService
+from app.services.release_date_provider import ReleaseDateProvider
+from app.services.recommendation_service import MusicRecommender
+
 
 
 
@@ -39,7 +43,7 @@ from . import models, auth_utils
 models.Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI(title="Orfeu API", version="2.2.0")
+app = FastAPI(title="Orfeu API", version="2.4.0")
 
 # Esquema de Segurança
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -284,6 +288,7 @@ def get_favorites(db: Session = Depends(get_db), current_user: models.User = Dep
         "display_name": t.title,
         "artist": t.artist,
         "album": t.album,
+        "duration": t.duration,
         "format": t.filename.split('.')[-1] if t.filename else "",
         "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
         "isFavorite": True
@@ -354,6 +359,7 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
             "display_name": t.title,
             "artist": t.artist,
             "album": t.album,
+            "duration": t.duration,
             "format": t.filename.split('.')[-1] if t.filename else "",
             "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
             "id": t.id,
@@ -367,22 +373,83 @@ def get_playlist_details(playlist_id: int, db: Session = Depends(get_db), curren
         "tracks": tracks_data
     }
 
-# --- ANALYTICS ---
 
+# --- ROTAS DA HOME (FEED & ANALYTICS)  ---
+@app.get("/home/continue-listening")
+def get_continue_listening(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return AnalyticsService.get_recently_played(db, current_user.id, limit)
+
+@app.get("/home/trajectory")
+def get_trajectory(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    retro_playlists = db.query(models.Playlist)\
+        .filter(models.Playlist.user_id == current_user.id, models.Playlist.name.like("Retrospectiva%"))\
+        .order_by(models.Playlist.created_at.desc())\
+        .all()
+    return [{
+        "id": p.id,
+        "title": p.name,
+        "artist": "Orfeu Rewind",
+        "imageUrl": f"https://ui-avatars.com/api/?name={quote(p.name)}&background=D4AF37&color=000&size=300",
+        "type": "playlist"
+    } for p in retro_playlists]
+
+@app.get("/home/recommendations")
+async def get_recommendations(limit: int = 10):
+    try:
+        results = await run_in_threadpool(TidalProvider.search_catalog, "Top Hits", limit, "album")
+        recommendations = []
+        for item in results:
+            recommendations.append({
+                "title": item['collectionName'],
+                "artist": item['artistName'],
+                "imageUrl": item['artworkUrl'],
+                "type": "album",
+                "id": item['collectionId']
+            })
+        return recommendations
+    except: return []
+
+# --- NOVIDADES PERSONALIZADAS ---
+@app.get("/home/new-releases")
+async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Seção 'Novidades dos seus favoritos':
+    Delega a lógica de busca, filtro de ano e 'tira-teima' de datas para o MusicRecommender.
+    """
+    try:
+        # 1. Identifica Top Artistas (Query mantida no Controller para acesso ao DB)
+        top_artists_query = db.query(models.Track.artist, func.count(models.ListenHistory.id).label('count'))\
+            .join(models.ListenHistory)\
+            .filter(models.ListenHistory.user_id == current_user.id)\
+            .group_by(models.Track.artist)\
+            .order_by(desc('count'))\
+            .limit(10)\
+            .all()
+        
+        # Lista limpa de strings
+        top_artists_names = [a[0] for a in top_artists_query if a[0] != "Desconhecido"]
+        
+        # 2. Chama o Recomendador Inteligente
+        recommender = MusicRecommender()
+        news = await recommender.get_new_releases(top_artists_names, limit=limit)
+            
+        return news
+
+    except Exception as e:
+        print(f"❌ Erro crítico em new-releases: {e}")
+        # Fallback de emergência simples para não quebrar a home
+        return []
+
+
+# --- ANALYTICS (PERFIL) ---
 @app.get("/users/me/analytics/summary")
 def get_my_analytics(days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    """
-    Retorna resumo: Total minutos, Top Artista, Total Plays.
-    Padrão: Últimos 30 dias.
-    """
     return AnalyticsService.get_user_stats(db, current_user.id, days)
 
 @app.get("/users/me/analytics/top-tracks")
 def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    """
-    Retorna as músicas mais ouvidas.
-    """
     return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
+
 
 @app.get("/analytics/rankings")
 def get_global_rankings(db: Session = Depends(get_db)):
@@ -536,33 +603,61 @@ async def proxy_cover_art(hash_id: str):
 # --- BUSCA ---
 @app.get("/search/catalog")
 async def search_catalog(
-    query: str, limit: int = 20, offset: int = 0, type: str = Query("song", enum=["song", "album"])
+    query: str, 
+    limit: int = 20, 
+    offset: int = 0, 
+    type: str = Query("song", enum=["song", "album", "artist"]) 
 ):
-    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}]")
+    print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}, Limit: {limit}, Offset: {offset}]")
     results = []
-    if type == "song":
-        try:
-            tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, limit, type)
-            if tidal_results: results = tidal_results
-        except Exception as e: print(f"⚠️ Tidal falhou: {e}")
+    
+    # Precisamos pedir (limit + offset) aos providers porque eles não suportam paginação real (stateful)
+    # e podem sempre retornar do início. Assim garantimos que temos itens suficientes para o slice final.
+    fetch_limit = limit + offset
 
+    # 1. Tenta TIDAL primeiro
+    try:
+        tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, fetch_limit, type)
+        if tidal_results: 
+            print(f"   ✅ Tidal retornou {len(tidal_results)} resultados.")
+            results = tidal_results
+        else:
+            print("   ⚠️ Tidal retornou lista vazia.")
+    except Exception as e: 
+        print(f"   ❌ Erro no Tidal: {e}")
+
+    # 2. Fallback para YTMusic/CatalogProvider se Tidal falhar
     if not results:
-        yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
-        results = yt_results
+        print("   -> Fallback para CatalogProvider (YTMusic)...")
+        try:
+            yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
+            if yt_results:
+                print(f"   ✅ YTMusic retornou {len(yt_results)} resultados.")
+                results = yt_results
+            else:
+                print("   ⚠️ YTMusic retornou lista vazia.")
+        except Exception as e:
+            print(f"   ❌ Erro no YTMusic: {e}")
 
-    final_page = results
-    if len(results) > limit:
-         start = offset
-         end = offset + limit
-         if start < len(results): final_page = results[start:end]
-         else: final_page = []
+    # 3. Paginação Manual Robusta
+    # Garante que o slice respeite os limites da lista retornada
+    total_items = len(results)
+    final_page = []
+    
+    if total_items > offset:
+        end = offset + limit
+        final_page = results[offset : end]
+    
+    print(f"   📤 Retornando {len(final_page)} itens (Offset: {offset}, Total Bruto: {total_items})")
 
+    # 4. Verifica downloads locais
     for item in final_page:
         if item.get('type') == 'song':
-            local_file = find_local_match(item['artistName'], item['trackName'])
+            local_file = find_local_match(item.get('artistName', ''), item.get('trackName', ''))
             item['isDownloaded'] = local_file is not None
             item['filename'] = local_file
         else:
+            # Artistas e álbuns não têm arquivo único associado dessa forma
             item['isDownloaded'] = False
             item['filename'] = None
 
@@ -838,4 +933,5 @@ async def get_library():
                         "coverProxyUrl": get_short_cover_url(file) 
                     })
                 except: pass
+
     return library
