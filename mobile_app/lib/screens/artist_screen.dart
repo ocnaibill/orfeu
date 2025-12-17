@@ -23,29 +23,14 @@ final artistDetailsProvider =
           await ref.read(dioProvider).get('/catalog/artist/$artistId');
       final data = response.data as Map<String, dynamic>;
 
-      // Simula Artistas Relacionados (mantém placeholder por enquanto)
-      final relatedArtists = [
-        {
-          "name": "Laufey",
-          "image":
-              "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"
-        },
-        {
-          "name": "Beabadoobee",
-          "image":
-              "https://i.scdn.co/image/ab6761610000e5eb3e0b29952003eb7cb8338302"
-        },
-        {
-          "name": "Mitski",
-          "image":
-              "https://i.scdn.co/image/ab6761610000e5eb1436df76059b0ae99c086438"
-        },
-        {
-          "name": "Clairo",
-          "image":
-              "https://i.scdn.co/image/ab6761610000e5eb817c95a319409b68eb943477"
-        },
-      ];
+      // Usa artistas similares da API (agora real)
+      final similarArtists = List<Map<String, dynamic>>.from(
+        (data['similarArtists'] ?? []).map((a) => {
+          'name': a['name'] ?? 'Artista',
+          'image': a['image'] ?? '',
+          'artistId': a['artistId']?.toString(),
+        })
+      );
 
       List<dynamic> albums = List.from(data['albums'] ?? []);
       List<dynamic> singles = List.from(data['singles'] ?? []);
@@ -67,7 +52,7 @@ final artistDetailsProvider =
         "latest": latestRelease,
         "albums": albums,
         "singles": topTracks.isNotEmpty ? topTracks : singles,
-        "related": relatedArtists,
+        "related": similarArtists,
         "artistInfo": data['artist'],
       };
     } catch (e) {
@@ -85,29 +70,25 @@ final artistDetailsProvider =
   final songsRaw = await ref.read(dioProvider).get('/search/catalog',
       queryParameters: {'query': artistName, 'type': 'song', 'limit': 20});
 
-  // 3. Simula Artistas Relacionados
-  final relatedArtists = [
-    {
-      "name": "Laufey",
-      "image":
-          "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"
-    },
-    {
-      "name": "Beabadoobee",
-      "image":
-          "https://i.scdn.co/image/ab6761610000e5eb3e0b29952003eb7cb8338302"
-    },
-    {
-      "name": "Mitski",
-      "image":
-          "https://i.scdn.co/image/ab6761610000e5eb1436df76059b0ae99c086438"
-    },
-    {
-      "name": "Clairo",
-      "image":
-          "https://i.scdn.co/image/ab6761610000e5eb817c95a319409b68eb943477"
-    },
-  ];
+  // 3. Busca Artistas Relacionados (via busca de artistas do mesmo nome/gênero)
+  List<Map<String, dynamic>> relatedArtists = [];
+  try {
+    final artistsRaw = await ref.read(dioProvider).get('/search/catalog',
+        queryParameters: {'query': artistName, 'type': 'artist', 'limit': 10});
+    final artists = List<Map<String, dynamic>>.from(artistsRaw.data);
+    // Filtra para remover o próprio artista
+    relatedArtists = artists
+        .where((a) => (a['artistName'] ?? '').toLowerCase() != artistName.toLowerCase())
+        .take(6)
+        .map((a) => {
+          'name': a['artistName'] ?? 'Artista',
+          'image': a['artworkUrl'] ?? '',
+          'artistId': a['artistId']?.toString(),
+        })
+        .toList();
+  } catch (e) {
+    print("Erro ao buscar artistas relacionados: $e");
+  }
 
   List<dynamic> albums = List.from(albumsRaw.data);
   List<dynamic> songs = List.from(songsRaw.data);
@@ -227,14 +208,89 @@ class _ArtistScreenState extends ConsumerState<ArtistScreen> {
     }
   }
 
+  /// Constrói o header do artista com imagem de fundo
+  Widget _buildArtistHeader(String artistName, String artistImage, [AsyncValue<Map<String, dynamic>>? asyncDetails]) {
+    return Stack(
+      children: [
+        Container(
+          width: double.infinity,
+          height: 317,
+          decoration: BoxDecoration(
+            image: artistImage.isNotEmpty
+                ? DecorationImage(
+                    image: NetworkImage(artistImage),
+                    fit: BoxFit.cover)
+                : null,
+            color: Colors.grey[900],
+          ),
+          child: artistImage.isEmpty
+              ? const Center(
+                  child: Icon(Icons.person,
+                      size: 80, color: Colors.white24))
+              : null,
+        ),
+        Positioned.fill(
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.black.withOpacity(0.8)
+                ],
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          top: 50,
+          left: 20,
+          child: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        Positioned(
+          bottom: 30,
+          left: 20,
+          child: Text(
+            artistName,
+            style: GoogleFonts.firaSans(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: Colors.white),
+          ),
+        ),
+        // Botão Play Aleatório (Shuffle)
+        Positioned(
+          bottom: 20,
+          right: 20,
+          child: FloatingActionButton(
+            backgroundColor: const Color(0xFFD4AF37),
+            shape: const CircleBorder(),
+            onPressed: () {
+              if (asyncDetails?.hasValue == true) {
+                _playArtistShuffle(context, ref, asyncDetails!.value);
+              }
+            },
+            child: const Icon(Icons.play_arrow,
+                color: Colors.black, size: 30),
+          ),
+        )
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final artistName =
         widget.artist['artistName'] ?? widget.artist['name'] ?? 'Artista';
-    final artistImage =
-        widget.artist['artworkUrl'] ?? widget.artist['imageUrl'] ?? '';
     // Passa o mapa completo do artista para poder usar artistId quando disponível
     final asyncDetails = ref.watch(artistDetailsProvider(widget.artist));
+
+    // A imagem pode vir do widget.artist ou do artistInfo carregado
+    String artistImage = widget.artist['artworkUrl'] ?? widget.artist['imageUrl'] ?? '';
 
     final double bottomPadding = getBottomNavAreaHeight(ref);
 
@@ -250,77 +306,16 @@ class _ArtistScreenState extends ConsumerState<ArtistScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // --- 1. TOPO (VÍDEO/IMAGEM) ---
-                  Stack(
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        height: 317,
-                        decoration: BoxDecoration(
-                          image: artistImage.isNotEmpty
-                              ? DecorationImage(
-                                  image: NetworkImage(artistImage),
-                                  fit: BoxFit.cover)
-                              : null,
-                          color: Colors.grey[900],
-                        ),
-                        child: artistImage.isEmpty
-                            ? const Center(
-                                child: Icon(Icons.person,
-                                    size: 80, color: Colors.white24))
-                            : null,
-                      ),
-                      Positioned.fill(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                Colors.transparent,
-                                Colors.black.withOpacity(0.8)
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      Positioned(
-                        top: 50,
-                        left: 20,
-                        child: IconButton(
-                          icon:
-                              const Icon(Icons.arrow_back, color: Colors.white),
-                          onPressed: () => Navigator.pop(context),
-                        ),
-                      ),
-                      Positioned(
-                        bottom: 30,
-                        left: 20,
-                        child: Text(
-                          artistName,
-                          style: GoogleFonts.firaSans(
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                      ),
-                      // Botão Play Aleatório (Shuffle)
-                      Positioned(
-                        bottom: 20,
-                        right: 20,
-                        child: FloatingActionButton(
-                          backgroundColor: const Color(0xFFD4AF37),
-                          shape: const CircleBorder(),
-                          onPressed: () {
-                            if (asyncDetails.hasValue) {
-                              _playArtistShuffle(
-                                  context, ref, asyncDetails.value);
-                            }
-                          },
-                          child: const Icon(Icons.play_arrow,
-                              color: Colors.black, size: 30),
-                        ),
-                      )
-                    ],
+                  asyncDetails.when(
+                    loading: () => _buildArtistHeader(artistName, artistImage),
+                    error: (_, __) => _buildArtistHeader(artistName, artistImage),
+                    data: (data) {
+                      // Usa a imagem do artistInfo se disponível e a imagem original está vazia
+                      final artistInfo = data['artistInfo'] as Map<String, dynamic>?;
+                      final loadedImage = artistInfo?['artworkUrl'] ?? '';
+                      final displayImage = artistImage.isNotEmpty ? artistImage : loadedImage;
+                      return _buildArtistHeader(artistName, displayImage, asyncDetails);
+                    },
                   ),
 
                   // --- 2. DADOS ---

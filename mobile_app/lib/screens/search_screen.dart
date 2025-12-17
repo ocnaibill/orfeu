@@ -348,12 +348,54 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final favoriteGenresAsync = ref.watch(favoriteGenresProvider);
     // Busca todos os gêneros disponíveis
     final allGenresAsync = ref.watch(allGenresProvider);
+    // Busca gêneros da biblioteca (músicas baixadas)
+    final libraryGenresAsync = ref.watch(libraryGenresProvider);
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 164),
+          
+          // === SUA BIBLIOTECA (GÊNEROS DAS MÚSICAS BAIXADAS) ===
+          libraryGenresAsync.when(
+            loading: () => const SizedBox.shrink(),
+            error: (_, __) => const SizedBox.shrink(),
+            data: (libraryGenres) {
+              if (libraryGenres.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 33, bottom: 20),
+                    child: Text("Sua Biblioteca",
+                        style: GoogleFonts.firaSans(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white)),
+                  ),
+                  SizedBox(
+                    height: 120,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: libraryGenres.length,
+                      itemBuilder: (context, index) {
+                        final genre = libraryGenres[index];
+                        return Padding(
+                          padding: EdgeInsets.only(
+                            left: index == 0 ? 32 : 12,
+                            right: index == libraryGenres.length - 1 ? 32 : 0,
+                          ),
+                          child: _buildLibraryGenreChip(genre),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                ],
+              );
+            },
+          ),
           
           // === SEUS GÊNEROS FAVORITOS ===
           Padding(
@@ -537,6 +579,91 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         ),
       ),
     );
+  }
+
+  /// Widget para mostrar gêneros da biblioteca (chips compactos)
+  Widget _buildLibraryGenreChip(Map<String, dynamic> genre) {
+    final genreName = genre['name'] ?? 'Gênero';
+    final color = _parseColor(genre['color']);
+    final count = genre['count'] ?? 0;
+    final searchQuery = genre['search_query'] ?? genreName;
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => GenrePlaylistScreen(
+              genreName: genreName,
+              genreColor: color,
+              searchQuery: searchQuery,
+            ),
+          ),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.8),
+          borderRadius: BorderRadius.circular(25),
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(0.3),
+              blurRadius: 6,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              _getGenreIcon(genreName),
+              size: 32,
+              color: Colors.white,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              genreName,
+              style: GoogleFonts.firaSans(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            Text(
+              "$count músicas",
+              style: GoogleFonts.firaSans(
+                fontSize: 11,
+                color: Colors.white.withOpacity(0.8),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Retorna um ícone apropriado para o gênero
+  IconData _getGenreIcon(String genreName) {
+    final name = genreName.toLowerCase();
+    if (name.contains('pop')) return Icons.star;
+    if (name.contains('rock')) return Icons.bolt;
+    if (name.contains('jazz')) return Icons.music_note;
+    if (name.contains('hip') || name.contains('rap')) return Icons.mic;
+    if (name.contains('electronic') || name.contains('edm')) return Icons.waves;
+    if (name.contains('classical')) return Icons.piano;
+    if (name.contains('r&b') || name.contains('soul')) return Icons.favorite;
+    if (name.contains('country')) return Icons.landscape;
+    if (name.contains('latin') || name.contains('reggae')) return Icons.sunny;
+    if (name.contains('metal')) return Icons.whatshot;
+    if (name.contains('folk') || name.contains('indie')) return Icons.park;
+    if (name.contains('blues')) return Icons.nightlight;
+    if (name.contains('soundtrack') || name.contains('video game') || name.contains('anime')) return Icons.movie;
+    if (name.contains('j-pop') || name.contains('k-pop')) return Icons.auto_awesome;
+    if (name.contains('bossa') || name.contains('mpb')) return Icons.wb_sunny;
+    if (name.contains('alternative')) return Icons.alt_route;
+    return Icons.album;
   }
 
   Widget _buildSearchResults() {

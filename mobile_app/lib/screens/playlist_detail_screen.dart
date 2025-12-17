@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:palette_generator/palette_generator.dart';
+import 'package:image_picker/image_picker.dart';
 import 'dart:ui';
+import 'dart:io';
 import '../providers.dart';
 import '../services/audio_service.dart';
 import '../widgets/bottom_nav_area.dart';
@@ -729,6 +731,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
 
   void _showChangeCoverModal(Map<String, dynamic> playlistData) {
     final controller = TextEditingController(text: playlistData['cover_url'] ?? '');
+    final picker = ImagePicker();
     
     showModalBottomSheet(
       context: context,
@@ -753,12 +756,80 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
-              const SizedBox(height: 8),
-              Text("Cole a URL de uma imagem:",
+              const SizedBox(height: 16),
+              
+              // --- OPÇÃO 1: ESCOLHER DA GALERIA ---
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _vibrantColor.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.photo_library, color: _vibrantColor),
+                ),
+                title: Text("Escolher da galeria",
+                    style: GoogleFonts.firaSans(color: Colors.white)),
+                subtitle: Text("Selecione uma imagem do dispositivo",
+                    style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  try {
+                    final XFile? image = await picker.pickImage(
+                      source: ImageSource.gallery,
+                      maxWidth: 800,
+                      maxHeight: 800,
+                      imageQuality: 85,
+                    );
+                    if (image != null) {
+                      final file = File(image.path);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Fazendo upload da imagem...'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                      final coverUrl = await ref
+                          .read(libraryControllerProvider)
+                          .uploadPlaylistCover(int.parse(widget.playlistId), file);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(coverUrl != null
+                                ? 'Capa atualizada!'
+                                : 'Erro ao atualizar capa'),
+                            backgroundColor: coverUrl != null ? Colors.green : Colors.red,
+                          ),
+                        );
+                        if (coverUrl != null) {
+                          ref.invalidate(playlistDetailsProvider(widget.playlistId));
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Erro ao selecionar imagem: $e'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
+              
+              const Divider(color: Colors.white24),
+              
+              // --- OPÇÃO 2: COLAR URL ---
+              Text("Ou cole a URL de uma imagem:",
                   style: GoogleFonts.firaSans(
                       fontSize: 14,
                       color: Colors.white70)),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               TextField(
                 controller: controller,
                 style: GoogleFonts.firaSans(color: Colors.white),
@@ -773,7 +844,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -806,7 +877,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                       }
                     }
                   },
-                  child: Text("Salvar",
+                  child: Text("Salvar URL",
                       style: GoogleFonts.firaSans(
                           color: Colors.black, fontWeight: FontWeight.bold)),
                 ),

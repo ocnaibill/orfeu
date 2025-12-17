@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:io';
 
 // --- Configuração de Rede ---
 const String serverIp = '127.0.0.1';
@@ -231,6 +232,20 @@ final favoriteGenresProvider = FutureProvider<List<Map<String, dynamic>>>((ref) 
   }
 });
 
+/// Provider para estatísticas de gêneros da biblioteca (músicas baixadas)
+final libraryGenresProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final dio = ref.read(dioProvider);
+  try {
+    final resp = await dio.get('/genres/stats');
+    final data = resp.data as Map<String, dynamic>;
+    final genres = data['genres'] as List<dynamic>? ?? [];
+    return genres.cast<Map<String, dynamic>>();
+  } catch (e) {
+    print("⚠️ Erro ao carregar estatísticas de gêneros: $e");
+    return [];
+  }
+});
+
 /// Provider para todos os gêneros disponíveis (para "Conheça mais")
 final allGenresProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   final dio = ref.read(dioProvider);
@@ -259,6 +274,9 @@ final genreTracksProvider = FutureProvider.family<List<Map<String, dynamic>>, St
   }
 });
 
+// Provider que guarda os dados completos dos favoritos (para verificação por filename ou tidalId)
+final favoriteTracksDataProvider = StateProvider<List<Map<String, dynamic>>>((ref) => []);
+
 class LibraryController {
   final Ref ref;
   LibraryController(this.ref);
@@ -268,11 +286,40 @@ class LibraryController {
     try {
       final response = await dio.get('/users/me/favorites');
       final List<dynamic> data = response.data;
+      
+      // Guarda os filenames para compatibilidade
       final favorites = data.map((item) => item['filename'].toString()).toSet();
       ref.read(favoriteTracksProvider.notifier).state = favorites;
+      
+      // Guarda os dados completos para verificação por tidalId
+      ref.read(favoriteTracksDataProvider.notifier).state = 
+          data.map((item) => Map<String, dynamic>.from(item)).toList();
     } catch (e) {
       print("⚠️ Erro ao carregar favoritos: $e");
     }
+  }
+  
+  /// Verifica se uma track está nos favoritos (por filename ou tidalId)
+  bool isFavorite(Map<String, dynamic> track) {
+    final filename = track['filename'];
+    final tidalId = track['tidalId']?.toString();
+    
+    // Verifica por filename primeiro
+    if (filename != null) {
+      final favorites = ref.read(favoriteTracksProvider);
+      if (favorites.contains(filename)) return true;
+    }
+    
+    // Verifica por tidalId nos dados completos
+    if (tidalId != null) {
+      final favoritesData = ref.read(favoriteTracksDataProvider);
+      return favoritesData.any((fav) => 
+        fav['tidal_id']?.toString() == tidalId ||
+        fav['tidalId']?.toString() == tidalId
+      );
+    }
+    
+    return false;
   }
 
   Future<void> fetchPlaylists() async {
@@ -312,12 +359,17 @@ class LibraryController {
   Future<void> toggleFavorite(Map<String, dynamic> track) async {
     final dio = ref.read(dioProvider);
     final filename = track['filename'];
-    if (filename == null) return;
+    if (filename == null) {
+      print("⚠️ toggleFavorite: track sem filename");
+      return;
+    }
 
+    // Verifica se já é favorito usando o método melhorado
+    final isCurrentlyFavorite = isFavorite(track);
     final currentFavorites = ref.read(favoriteTracksProvider);
-    final isFavorite = currentFavorites.contains(filename);
 
-    if (isFavorite) {
+    // Atualiza estado local otimisticamente
+    if (isCurrentlyFavorite) {
       ref.read(favoriteTracksProvider.notifier).state = {...currentFavorites}
         ..remove(filename);
     } else {
@@ -345,11 +397,16 @@ class LibraryController {
         "title": track['display_name'] ?? track['trackName'] ?? track['title'],
         "artist": track['artist'] ?? track['artistName'],
         "album": track['album'] ?? track['collectionName'],
-        "cover": cover, // Salva a capa
-        "duration": durationSec, // Salva a duração em segundos
+        "cover": cover,
+        "duration": durationSec,
+        "tidal_id": track['tidalId']?.toString(),
       });
+      
+      // Recarrega favoritos do servidor para garantir sincronização
+      await fetchFavorites();
     } catch (e) {
       print("❌ Erro ao favoritar: $e");
+      // Reverte estado local
       ref.read(favoriteTracksProvider.notifier).state = currentFavorites;
     }
   }
@@ -516,7 +573,7 @@ class LibraryController {
   Future<bool> updatePlaylistCover(int playlistId, String coverUrl) async {
     final dio = ref.read(dioProvider);
     try {
-      await dio.patch('/users/me/playlists/$playlistId', data: {
+      await dio.put('/users/me/playlists/$playlistId', data: {
         "cover_url": coverUrl,
       });
       await fetchPlaylists();
@@ -524,6 +581,34 @@ class LibraryController {
     } catch (e) {
       print("❌ Erro ao atualizar cover: $e");
       return false;
+    }
+  }
+
+  // --- UPLOAD DE IMAGEM PARA COVER DA PLAYLIST ---
+  Future<String?> uploadPlaylistCover(int playlistId, File imageFile) async {
+    final dio = ref.read(dioProvider);
+    try {
+      final fileName = imageFile.path.split('/').last;
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(
+          imageFile.path,
+          filename: fileName,
+        ),
+      });
+      
+      final response = await dio.post(
+        '/users/me/playlists/$playlistId/cover',
+        data: formData,
+        options: Options(
+          contentType: 'multipart/form-data',
+        ),
+      );
+      
+      await fetchPlaylists();
+      return response.data['cover_url'] as String?;
+    } catch (e) {
+      print("❌ Erro ao fazer upload de cover: $e");
+      return null;
     }
   }
 }

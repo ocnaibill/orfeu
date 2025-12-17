@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, Query, Request, Response, BackgroundTasks, Depends, status
-from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response, BackgroundTasks, Depends, status, UploadFile, File
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
@@ -20,6 +20,7 @@ from thefuzz import fuzz
 import hashlib
 import time
 import json
+import uuid
 
 # Importação dos Serviços
 from app.services.slskd_client import search_slskd, get_search_results, download_slskd, get_transfer_status
@@ -54,6 +55,10 @@ ALGORITHM = "HS256"
 # --- Configuração de Arquivos Estáticos (OTA Updates) ---
 os.makedirs("/downloads_public", exist_ok=True)
 app.mount("/downloads", StaticFiles(directory="/downloads_public"), name="downloads")
+
+# --- Configuração de Capas de Playlist ---
+PLAYLIST_COVERS_DIR = "/downloads_public/playlist_covers"
+os.makedirs(PLAYLIST_COVERS_DIR, exist_ok=True)
 
 # --- Constantes ---
 TIERS = {"low": "128k", "medium": "192k", "high": "320k", "lossless": "original"}
@@ -314,6 +319,20 @@ def register_download(tidal_id: int = None, ytmusic_id: str = None,
         db.close()
     return None
 
+def fetch_and_assign_genre(artist: str, album: str = None, title: str = None) -> str:
+    """
+    Busca o gênero de uma track usando a API do iTunes.
+    Retorna o gênero encontrado ou None.
+    """
+    try:
+        genre = MetadataProvider.get_genre(artist or "", album or "", title or "")
+        if genre and genre != "Desconhecido":
+            print(f"🎵 Gênero encontrado: {artist} - {title} → {genre}")
+            return genre
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar gênero: {e}")
+    return None
+
 def get_short_cover_url(filename: str) -> str:
     hash_object = hashlib.sha256(filename.encode())
     short_hash = hash_object.hexdigest()[:12]
@@ -542,7 +561,17 @@ def toggle_favorite(req: FavoriteRequest, db: Session = Depends(get_db), current
             duration = meta.get('duration', 0)
         except: pass
         
-        track = models.Track(filename=req.filename, title=req.title, artist=req.artist, album=req.album, duration=duration)
+        # Busca gênero automaticamente
+        genre = fetch_and_assign_genre(req.artist, req.album, req.title)
+        
+        track = models.Track(
+            filename=req.filename, 
+            title=req.title, 
+            artist=req.artist, 
+            album=req.album, 
+            duration=duration,
+            genre=genre
+        )
         db.add(track)
         db.commit()
         db.refresh(track)
@@ -571,7 +600,8 @@ def get_favorites(db: Session = Depends(get_db), current_user: models.User = Dep
         "duration": t.duration,
         "format": t.filename.split('.')[-1] if t.filename else "",
         "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
-        "isFavorite": True
+        "isFavorite": True,
+        "tidalId": t.tidal_id  # Inclui tidal_id para verificação de favoritos
     } for t in favorites]
 
 # --- BIBLIOTECA DE ÁLBUNS E ARTISTAS ---
@@ -718,12 +748,16 @@ def add_track_to_playlist(playlist_id: int, item: PlaylistItemAdd, db: Session =
             duration = meta.get('duration', 0)
         except: pass
         
+        # Busca gênero automaticamente
+        genre = fetch_and_assign_genre(item.artist, item.album, item.title)
+        
         track = models.Track(
             filename=item.filename, 
             title=item.title or "Desconhecido", 
             artist=item.artist or "Desconhecido", 
             album=item.album, 
-            duration=duration
+            duration=duration,
+            genre=genre
         )
         db.add(track)
         db.commit()
@@ -803,6 +837,53 @@ def update_playlist(playlist_id: int, req: PlaylistUpdateRequest, db: Session = 
             "cover_url": playlist.cover_url,
             "is_public": playlist.is_public
         }
+    }
+
+
+@app.post("/users/me/playlists/{playlist_id}/cover")
+async def upload_playlist_cover(
+    playlist_id: int, 
+    file: UploadFile = File(...), 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    """Faz upload de uma imagem para ser a capa da playlist."""
+    playlist = db.query(models.Playlist).filter(models.Playlist.id == playlist_id).first()
+    if not playlist:
+        raise HTTPException(404, "Playlist não encontrada")
+    
+    if playlist.user_id != current_user.id:
+        raise HTTPException(403, "Sem permissão para editar esta playlist")
+    
+    # Valida tipo de arquivo
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "O arquivo deve ser uma imagem")
+    
+    # Gera nome único para o arquivo
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
+    unique_filename = f"playlist_{playlist_id}_{uuid.uuid4().hex[:8]}.{ext}"
+    file_path = os.path.join(PLAYLIST_COVERS_DIR, unique_filename)
+    
+    # Remove capa antiga se existir (e for do mesmo sistema)
+    if playlist.cover_url and "/playlist_covers/" in playlist.cover_url:
+        old_filename = playlist.cover_url.split("/")[-1]
+        old_path = os.path.join(PLAYLIST_COVERS_DIR, old_filename)
+        if os.path.exists(old_path):
+            os.remove(old_path)
+    
+    # Salva o arquivo
+    contents = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(contents)
+    
+    # Atualiza URL no banco
+    cover_url = f"https://orfeu.ocnaibill.dev/downloads/playlist_covers/{unique_filename}"
+    playlist.cover_url = cover_url
+    db.commit()
+    
+    return {
+        "status": "uploaded",
+        "cover_url": cover_url
     }
 
 
@@ -1255,6 +1336,67 @@ def list_all_genres():
     """
     return {"genres": get_all_genres()}
 
+@app.get("/genres/stats")
+def get_genre_statistics(db: Session = Depends(get_db)):
+    """
+    Retorna estatísticas dos gêneros das músicas baixadas.
+    Útil para mostrar gêneros reais na biblioteca.
+    """
+    # Conta tracks por gênero
+    genre_counts = db.query(
+        models.Track.genre, 
+        func.count(models.Track.id).label('count')
+    ).filter(
+        models.Track.genre.isnot(None), 
+        models.Track.genre != '',
+        models.Track.genre != 'Desconhecido'
+    ).group_by(models.Track.genre).order_by(desc('count')).all()
+    
+    # Cores padrão para gêneros populares
+    genre_colors = {
+        'Pop': 0xFFE91E63,
+        'Rock': 0xFFF44336,
+        'Jazz': 0xFF9C27B0,
+        'Hip-Hop': 0xFF673AB7,
+        'R&B': 0xFF3F51B5,
+        'R&B/Soul': 0xFF3F51B5,
+        'Electronic': 0xFF00BCD4,
+        'Dance': 0xFF00BCD4,
+        'Classical': 0xFF795548,
+        'Country': 0xFFFF9800,
+        'Latin': 0xFFFFEB3B,
+        'Reggae': 0xFF4CAF50,
+        'Blues': 0xFF2196F3,
+        'Metal': 0xFF424242,
+        'Folk': 0xFF8BC34A,
+        'Soul': 0xFF9C27B0,
+        'Funk': 0xFFFF5722,
+        'Punk': 0xFFE91E63,
+        'Indie': 0xFF009688,
+        'Alternative': 0xFF607D8B,
+        'J-Pop': 0xFFFF4081,
+        'K-Pop': 0xFFE040FB,
+        'Anime': 0xFFFF6E40,
+        'Soundtrack': 0xFF7C4DFF,
+        'Video Game': 0xFF536DFE,
+        'Bossa Nova': 0xFF26A69A,
+        'MPB': 0xFF66BB6A,
+        'Singer-Songwriter': 0xFFAB47BC,
+    }
+    
+    genres = []
+    for genre, count in genre_counts:
+        config = get_genre_config(genre)
+        color = genre_colors.get(genre, config.get("color", 0xFF9E9E9E) if config else 0xFF9E9E9E)
+        genres.append({
+            "name": genre,
+            "count": count,
+            "color": color,
+            "search_query": config.get("search_query", genre) if config else genre,
+        })
+    
+    return {"genres": genres, "total_tracks": sum(c for _, c in genre_counts)}
+
 @app.get("/genres/featured")
 def list_featured_genres(limit: int = 20):
     """
@@ -1409,13 +1551,22 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
             meta = AudioManager.get_audio_metadata(fp)
             tags = AudioManager.get_audio_tags(fp)
             
+            # Busca gênero: primeiro dos metadados, depois online
+            genre = tags.get('genre')
+            artist_name = tags.get('artist') or "Desconhecido"
+            album_name = tags.get('album')
+            title_name = tags.get('title') or os.path.splitext(req.filename)[0]
+            
+            if not genre or genre == "" or genre == "Desconhecido":
+                genre = fetch_and_assign_genre(artist_name, album_name, title_name)
+            
             track = models.Track(
                 filename=req.filename,
-                title=tags.get('title') or os.path.splitext(req.filename)[0],
-                artist=tags.get('artist') or "Desconhecido",
-                album=tags.get('album'),
+                title=title_name,
+                artist=artist_name,
+                album=album_name,
                 album_id=req.album_id,  # Salva o ID do álbum se fornecido
-                genre=tags.get('genre'),
+                genre=genre,
                 duration=meta.get('duration', 0),
                 format=meta.get('format'),
                 bitrate=meta.get('bitrate')
@@ -1432,9 +1583,17 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
         if req.album_id and not track.album_id:
             track.album_id = req.album_id
             updated = True
-        if req.genre and (not track.genre or track.genre == "" or track.genre == "Desconhecido"):
-            track.genre = req.genre
-            updated = True
+        if not track.genre or track.genre == "" or track.genre == "Desconhecido":
+            # Busca gênero se ainda não tem
+            if req.genre and req.genre != "Desconhecido":
+                track.genre = req.genre
+                updated = True
+            else:
+                # Tenta buscar online
+                genre = fetch_and_assign_genre(track.artist, track.album, track.title)
+                if genre:
+                    track.genre = genre
+                    updated = True
         if updated:
             db.commit()
     
@@ -1467,12 +1626,20 @@ async def sync_files_to_db(db: Session):
                         tags = AudioManager.get_audio_tags(full_path)
                         meta = AudioManager.get_audio_metadata(full_path)
                         
+                        # Se não tem gênero nos metadados, busca online
+                        genre = tags.get('genre')
+                        if not genre or genre == "" or genre == "Desconhecido":
+                            artist = tags.get('artist') or "Desconhecido"
+                            album = tags.get('album')
+                            title = tags.get('title') or file
+                            genre = fetch_and_assign_genre(artist, album, title)
+                        
                         track = models.Track(
                             filename=rel_path,
                             title=tags.get('title') or file,
                             artist=tags.get('artist') or "Desconhecido",
                             album=tags.get('album'),
-                            genre=tags.get('genre'),  # Adicionado gênero
+                            genre=genre,
                             duration=meta.get('duration', 0),
                             format=meta.get('format'),
                             bitrate=meta.get('bitrate')

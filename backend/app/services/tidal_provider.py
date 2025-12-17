@@ -359,15 +359,60 @@ class TidalProvider:
                 full_albums.sort(key=lambda x: x.get('releaseDate', '0000'), reverse=True)
                 singles.sort(key=lambda x: x.get('releaseDate', '0000'), reverse=True)
                 
-                print(f"✅ Artista {artist_info.get('artistName', artist_id)}: {len(full_albums)} álbuns, {len(singles)} singles, {len(top_tracks)} tracks")
+                # Busca artistas similares
+                similar_artists = TidalProvider.get_similar_artists(artist_info.get('artistName', ''))
+                
+                print(f"✅ Artista {artist_info.get('artistName', artist_id)}: {len(full_albums)} álbuns, {len(singles)} singles, {len(top_tracks)} tracks, {len(similar_artists)} similares")
                 
                 return {
                     "artist": artist_info,
                     "albums": full_albums,
                     "singles": singles,
-                    "topTracks": top_tracks
+                    "topTracks": top_tracks,
+                    "similarArtists": similar_artists
                 }
                 
         except Exception as e:
             print(f"❌ Erro Tidal Artist Details: {e}")
             raise e
+
+    @staticmethod
+    def get_similar_artists(artist_name: str, limit: int = 6):
+        """
+        Busca artistas similares baseado no gênero do artista.
+        Usa o iTunes para descobrir o gênero e depois busca artistas do mesmo gênero no Tidal.
+        """
+        if not artist_name:
+            return []
+        
+        try:
+            # 1. Descobre o gênero do artista via iTunes
+            genre = MetadataProvider.get_genre(artist_name)
+            if not genre or genre == "Desconhecido":
+                # Tenta usar o nome do artista para buscar artistas relacionados
+                genre = "pop"  # Fallback para pop
+            
+            # 2. Busca artistas do mesmo gênero
+            search_query = f"{genre} artists"
+            artists_result = TidalProvider.search_catalog(search_query, limit=20, type="artist")
+            
+            similar = []
+            for artist in artists_result:
+                # Exclui o próprio artista
+                if artist.get('artistName', '').lower() == artist_name.lower():
+                    continue
+                    
+                similar.append({
+                    "artistId": artist.get('artistId'),
+                    "name": artist.get('artistName'),
+                    "image": artist.get('artworkUrl', ''),
+                })
+                
+                if len(similar) >= limit:
+                    break
+            
+            return similar
+            
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar artistas similares: {e}")
+            return []

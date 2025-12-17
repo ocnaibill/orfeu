@@ -317,10 +317,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                         top: 430,
                         right: 33,
                         child: Builder(builder: (context) {
-                          final favorites = ref.watch(favoriteTracksProvider);
-                          final filename = currentTrack['filename'];
-                          final isFavorite =
-                              filename != null && favorites.contains(filename);
+                          // Watch para reagir a mudanças nos favoritos
+                          ref.watch(favoriteTracksDataProvider);
+                          final libraryController = ref.read(libraryControllerProvider);
+                          final isFavorite = libraryController.isFavorite(currentTrack);
 
                           return Row(
                             children: [
@@ -352,75 +352,74 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                       // --- BARRA DE PROGRESSO (SLIDER CUSTOMIZADO) ---
                       Positioned(
                         top: 510,
-                        child: SizedBox(
-                          width: 250, // Largura fixa solicitada
-                          child: Column(
-                            children: [
-                              SliderTheme(
-                                data: SliderTheme.of(context).copyWith(
-                                  trackHeight: 7.0,
-                                  // ThumbShape com raio 0 para ficar invisível/reto como pedido ("line... arredondada")
-                                  // Se quiser bolinha, aumente o radius.
-                                  thumbShape: const RoundSliderThumbShape(
-                                      enabledThumbRadius: 0.0,
-                                      pressedElevation: 0),
-                                  overlayShape: const RoundSliderOverlayShape(
-                                      overlayRadius: 15.0), // Área de toque
-                                  activeTrackColor: Colors.white,
-                                  inactiveTrackColor:
-                                      Colors.white.withOpacity(0.4),
-                                  trackShape:
-                                      const RoundedRectSliderTrackShape(),
-                                ),
-                                child: Slider(
-                                  value: _isDragging
-                                      ? _dragValue
-                                      : position.inMilliseconds
-                                          .toDouble()
-                                          .clamp(
-                                              0.0,
-                                              duration.inMilliseconds
-                                                  .toDouble()),
-                                  min: 0.0,
-                                  max: duration.inMilliseconds.toDouble() > 0
-                                      ? duration.inMilliseconds.toDouble()
-                                      : 1.0, // Evita divisão por zero
-                                  onChangeStart: (value) {
-                                    setState(() {
-                                      _isDragging = true;
-                                      _dragValue = value;
-                                    });
-                                  },
-                                  onChanged: (value) {
-                                    setState(() {
-                                      _dragValue = value;
-                                    });
-                                  },
-                                  onChangeEnd: (value) {
-                                    setState(() {
-                                      _isDragging = false;
-                                    });
-                                    notifier.seek(
-                                        Duration(milliseconds: value.toInt()));
-                                  },
-                                ),
+                        left: 33,
+                        right: 33,
+                        child: Column(
+                          children: [
+                            SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 7.0,
+                                // ThumbShape com raio 0 para ficar invisível/reto como pedido ("line... arredondada")
+                                // Se quiser bolinha, aumente o radius.
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 0.0,
+                                    pressedElevation: 0),
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 15.0), // Área de toque
+                                activeTrackColor: Colors.white,
+                                inactiveTrackColor:
+                                    Colors.white.withOpacity(0.4),
+                                trackShape:
+                                    const RoundedRectSliderTrackShape(),
                               ),
-                              const SizedBox(height: 5),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(_formatDuration(position),
-                                      style: GoogleFonts.firaSans(
-                                          color: Colors.white, fontSize: 12)),
-                                  Text(
-                                      "-${_formatDuration(duration - position)}",
-                                      style: GoogleFonts.firaSans(
-                                          color: Colors.white, fontSize: 12)),
-                                ],
+                              child: Slider(
+                                value: _isDragging
+                                    ? _dragValue
+                                    : position.inMilliseconds
+                                        .toDouble()
+                                        .clamp(
+                                            0.0,
+                                            duration.inMilliseconds
+                                                .toDouble()),
+                                min: 0.0,
+                                max: duration.inMilliseconds.toDouble() > 0
+                                    ? duration.inMilliseconds.toDouble()
+                                    : 1.0, // Evita divisão por zero
+                                onChangeStart: (value) {
+                                  setState(() {
+                                    _isDragging = true;
+                                    _dragValue = value;
+                                  });
+                                },
+                                onChanged: (value) {
+                                  setState(() {
+                                    _dragValue = value;
+                                  });
+                                },
+                                onChangeEnd: (value) {
+                                  setState(() {
+                                    _isDragging = false;
+                                  });
+                                  notifier.seek(
+                                      Duration(milliseconds: value.toInt()));
+                                },
                               ),
-                            ],
-                          ),
+                            ),
+                            const SizedBox(height: 5),
+                            Row(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(_formatDuration(position),
+                                    style: GoogleFonts.firaSans(
+                                        color: Colors.white, fontSize: 12)),
+                                Text(
+                                    "-${_formatDuration(duration - position)}",
+                                    style: GoogleFonts.firaSans(
+                                        color: Colors.white, fontSize: 12)),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
 
@@ -585,6 +584,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   void _showNavigationModal(BuildContext context, Map<String, dynamic> track) {
+    final artistName = track['artistName'] ?? track['artist'] ?? 'Unknown';
+    final albumName = track['collectionName'] ?? track['album'] ?? 'Unknown';
+    final albumId = track['albumId'] ?? track['collectionId'];
+    final artistId = track['artistId'];
+    
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
@@ -604,7 +608,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               const SizedBox(height: 20),
               ListTile(
                 leading: const Icon(Icons.person, color: Colors.white),
-                title: Text("Ver Artista (${track['artistName'] ?? 'Unknown'})",
+                title: Text("Ver Artista ($artistName)",
                     style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -612,17 +616,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                       context,
                       MaterialPageRoute(
                           builder: (_) => ArtistScreen(
-                              artist: {"artistName": track['artistName']})));
+                              artist: {
+                                "artistName": artistName,
+                                "artistId": artistId,
+                              })));
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.album, color: Colors.white),
                 title: Text(
-                    "Ver Álbum (${track['collectionName'] ?? 'Unknown'})",
+                    "Ver Álbum ($albumName)",
                     style: GoogleFonts.firaSans(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
-                  final albumId = track['collectionId'] ?? track['tidalId'];
                   if (albumId != null) {
                     Navigator.push(
                         context,

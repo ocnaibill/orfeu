@@ -59,11 +59,22 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       _player.processingStateStream.listen(
         (state) {
           if (state == ProcessingState.completed) {
-            if (_player.hasNext) {
+            print('✅ Música completou. Index: $_currentIndex, Total: ${_mediaQueue.length}');
+            // Verifica se há próxima usando nossa própria lógica
+            if (_currentIndex < _mediaQueue.length - 1) {
+              print('▶️ Avançando para próxima música...');
               skipToNext();
             } else {
-              // Fim da fila
-              stop();
+              print('🎵 Fim da fila');
+              // Fim da fila - pode parar ou fazer loop
+              final loopMode = _player.loopMode;
+              if (loopMode == LoopMode.all && _mediaQueue.isNotEmpty) {
+                // Loop de toda a fila: volta para o início
+                skipToQueueItem(0);
+                play();
+              } else {
+                stop();
+              }
             }
           }
         },
@@ -87,19 +98,28 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       _sessionTimer.stop();
     }
     
+    // Verifica se pode ir para próxima/anterior
+    final hasNext = _currentIndex < _mediaQueue.length - 1;
+    final hasPrevious = _currentIndex > 0;
+    
     playbackState.add(playbackState.value.copyWith(
       controls: [
+        // Controles na notificação expandida
         MediaControl.skipToPrevious,
         if (playing) MediaControl.pause else MediaControl.play,
-        MediaControl.stop,
         MediaControl.skipToNext,
       ],
       systemActions: const {
         MediaAction.seek,
         MediaAction.seekForward,
         MediaAction.seekBackward,
+        MediaAction.skipToNext,
+        MediaAction.skipToPrevious,
+        MediaAction.setShuffleMode,
+        MediaAction.setRepeatMode,
       },
-      androidCompactActionIndices: const [0, 1, 3],
+      // Índices dos botões na notificação compacta: [prev, play/pause, next]
+      androidCompactActionIndices: const [0, 1, 2],
       processingState: const {
         ProcessingState.idle: AudioProcessingState.idle,
         ProcessingState.loading: AudioProcessingState.loading,
@@ -135,27 +155,70 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
 
   @override
   Future<void> skipToNext() async {
-    if (_player.hasNext) {
-      await _player.seekToNext();
+    print('🎵 skipToNext chamado. Index atual: $_currentIndex, Total: ${_mediaQueue.length}');
+    if (_currentIndex < _mediaQueue.length - 1) {
+      _currentIndex++;
+      try {
+        // Para o player para garantir reset do estado
+        await _player.pause();
+        // Seek para o novo índice
+        await _player.seek(Duration.zero, index: _currentIndex);
+        // Atualiza o mediaItem
+        mediaItem.add(_mediaQueue[_currentIndex]);
+        // Emite novo estado
+        _broadcastState(_player.playbackEvent);
+        // Retoma a reprodução
+        await _player.play();
+        print('⏭️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
+      } catch (e) {
+        print('❌ Erro no skipToNext: $e');
+      }
+    } else {
+      print('⚠️ Já está na última música da fila');
     }
   }
 
   @override
   Future<void> skipToPrevious() async {
+    print('🎵 skipToPrevious chamado. Index atual: $_currentIndex, Posição: ${_player.position.inSeconds}s');
     // Se está no começo da música (< 3s), volta para anterior
     // Senão, volta ao início da música atual
-    if (_player.position.inSeconds < 3 && _player.hasPrevious) {
-      await _player.seekToPrevious();
+    if (_player.position.inSeconds < 3 && _currentIndex > 0) {
+      _currentIndex--;
+      try {
+        await _player.pause();
+        await _player.seek(Duration.zero, index: _currentIndex);
+        mediaItem.add(_mediaQueue[_currentIndex]);
+        _broadcastState(_player.playbackEvent);
+        await _player.play();
+        print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
+      } catch (e) {
+        print('❌ Erro no skipToPrevious: $e');
+      }
     } else {
       await _player.seek(Duration.zero);
+      print('🔄 Voltou ao início da música atual');
     }
   }
 
   @override
   Future<void> skipToQueueItem(int index) async {
-    if (index < 0 || index >= _mediaQueue.length) return;
+    print('🎵 skipToQueueItem: $index (total: ${_mediaQueue.length})');
+    if (index < 0 || index >= _mediaQueue.length) {
+      print('⚠️ Índice inválido para skipToQueueItem');
+      return;
+    }
     _currentIndex = index;
-    await _player.seek(Duration.zero, index: index);
+    try {
+      await _player.pause();
+      await _player.seek(Duration.zero, index: index);
+      mediaItem.add(_mediaQueue[index]);
+      _broadcastState(_player.playbackEvent);
+      await _player.play();
+      print('✅ Pulou para: ${_mediaQueue[index].title}');
+    } catch (e) {
+      print('❌ Erro em skipToQueueItem: $e');
+    }
   }
 
   @override
@@ -219,13 +282,25 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         artUri = '$baseUrl/cover?filename=$encoded';
       }
       
+      // Extrai duração em milissegundos (se disponível)
+      Duration? duration;
+      final durationValue = track['duration'] ?? track['durationSeconds'];
+      if (durationValue != null) {
+        if (durationValue is int) {
+          duration = Duration(seconds: durationValue);
+        } else if (durationValue is double) {
+          duration = Duration(seconds: durationValue.toInt());
+        }
+      }
+      
       return MediaItem(
         id: id,
         title: title,
         artist: artist,
         album: album,
+        duration: duration,
         artUri: artUri != null ? Uri.parse(artUri) : null,
-        extras: {'filename': filename},
+        extras: {'filename': filename, 'tidalId': track['tidalId']},
       );
     }).toList();
 
