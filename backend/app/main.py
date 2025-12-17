@@ -402,6 +402,7 @@ def read_users_me(current_user: models.User = Depends(get_current_user), db: Ses
         "username": current_user.username, 
         "full_name": current_user.full_name,
         "email": current_user.email,
+        "profile_image_url": current_user.profile_image_url,
         "stats": {
             "hours_listened": round(total_seconds / 3600, 1),
             "minutes_listened": int(total_seconds / 60),
@@ -411,6 +412,33 @@ def read_users_me(current_user: models.User = Depends(get_current_user), db: Ses
         },
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None
     }
+
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    profile_image_url: Optional[str] = None  # base64 ou URL externa
+
+@app.put("/users/me")
+def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """Atualiza dados do perfil do usuário"""
+    if profile.full_name is not None:
+        current_user.full_name = profile.full_name
+    if profile.email is not None:
+        # Verifica se email já está em uso por outro usuário
+        existing = db.query(models.User).filter(
+            models.User.email == profile.email, 
+            models.User.id != current_user.id
+        ).first()
+        if existing:
+            raise HTTPException(400, "Email já está em uso")
+        current_user.email = profile.email
+    if profile.profile_image_url is not None:
+        current_user.profile_image_url = profile.profile_image_url
+    
+    db.commit()
+    db.refresh(current_user)
+    
+    return {"status": "updated", "username": current_user.username}
 
 # Favoritos
 @app.post("/users/me/favorites")
@@ -457,6 +485,122 @@ def get_favorites(db: Session = Depends(get_db), current_user: models.User = Dep
         "coverProxyUrl": get_short_cover_url(t.filename) if t.filename else None,
         "isFavorite": True
     } for t in favorites]
+
+# --- BIBLIOTECA DE ÁLBUNS E ARTISTAS ---
+class SaveAlbumRequest(BaseModel):
+    album_id: str
+    title: str
+    artist: str
+    artwork_url: Optional[str] = None
+    year: Optional[int] = None
+
+class SaveArtistRequest(BaseModel):
+    artist_id: str
+    name: str
+    image_url: Optional[str] = None
+
+@app.get("/users/me/albums")
+def get_saved_albums(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    albums = db.query(models.SavedAlbum).filter(models.SavedAlbum.user_id == current_user.id).order_by(models.SavedAlbum.saved_at.desc()).all()
+    return [{
+        "id": a.album_id,
+        "title": a.title,
+        "artist": a.artist,
+        "artworkUrl": a.artwork_url,
+        "year": a.year,
+        "isPinned": a.is_pinned,
+        "savedAt": a.saved_at.isoformat() if a.saved_at else None
+    } for a in albums]
+
+@app.post("/users/me/albums")
+def save_album(req: SaveAlbumRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Verifica se já está salvo
+    existing = db.query(models.SavedAlbum).filter(
+        models.SavedAlbum.user_id == current_user.id,
+        models.SavedAlbum.album_id == req.album_id
+    ).first()
+    if existing:
+        return {"message": "Álbum já está na biblioteca", "id": existing.id}
+    
+    album = models.SavedAlbum(
+        user_id=current_user.id,
+        album_id=req.album_id,
+        title=req.title,
+        artist=req.artist,
+        artwork_url=req.artwork_url,
+        year=req.year
+    )
+    db.add(album)
+    db.commit()
+    db.refresh(album)
+    return {"message": "Álbum adicionado à biblioteca", "id": album.id}
+
+@app.delete("/users/me/albums/{album_id}")
+def remove_saved_album(album_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    album = db.query(models.SavedAlbum).filter(
+        models.SavedAlbum.user_id == current_user.id,
+        models.SavedAlbum.album_id == album_id
+    ).first()
+    if not album:
+        raise HTTPException(404, "Álbum não encontrado na biblioteca")
+    db.delete(album)
+    db.commit()
+    return {"message": "Álbum removido da biblioteca"}
+
+@app.patch("/users/me/albums/{album_id}/pin")
+def toggle_album_pin(album_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    album = db.query(models.SavedAlbum).filter(
+        models.SavedAlbum.user_id == current_user.id,
+        models.SavedAlbum.album_id == album_id
+    ).first()
+    if not album:
+        raise HTTPException(404, "Álbum não encontrado na biblioteca")
+    album.is_pinned = not album.is_pinned
+    db.commit()
+    return {"isPinned": album.is_pinned}
+
+@app.get("/users/me/artists")
+def get_saved_artists(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    artists = db.query(models.SavedArtist).filter(models.SavedArtist.user_id == current_user.id).order_by(models.SavedArtist.saved_at.desc()).all()
+    return [{
+        "id": a.artist_id,
+        "name": a.name,
+        "imageUrl": a.image_url,
+        "isPinned": a.is_pinned,
+        "savedAt": a.saved_at.isoformat() if a.saved_at else None
+    } for a in artists]
+
+@app.post("/users/me/artists")
+def save_artist(req: SaveArtistRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    existing = db.query(models.SavedArtist).filter(
+        models.SavedArtist.user_id == current_user.id,
+        models.SavedArtist.artist_id == req.artist_id
+    ).first()
+    if existing:
+        return {"message": "Artista já está na biblioteca", "id": existing.id}
+    
+    artist = models.SavedArtist(
+        user_id=current_user.id,
+        artist_id=req.artist_id,
+        name=req.name,
+        image_url=req.image_url
+    )
+    db.add(artist)
+    db.commit()
+    db.refresh(artist)
+    return {"message": "Artista adicionado à biblioteca", "id": artist.id}
+
+@app.delete("/users/me/artists/{artist_id}")
+def remove_saved_artist(artist_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    artist = db.query(models.SavedArtist).filter(
+        models.SavedArtist.user_id == current_user.id,
+        models.SavedArtist.artist_id == artist_id
+    ).first()
+    if not artist:
+        raise HTTPException(404, "Artista não encontrado na biblioteca")
+    db.delete(artist)
+    db.commit()
+    return {"message": "Artista removido da biblioteca"}
 
 # --- PLAYLISTS (NOVAS ROTAS) ---
 @app.post("/users/me/playlists")
@@ -1088,21 +1232,35 @@ async def get_artist_details(artist_id: str):
 @app.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
     try:
-        album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
+        # Detecta se é ID do Tidal (numérico) ou do YTMusic (começa com MPRE ou letras)
+        is_tidal_id = collection_id.isdigit()
+        
+        if is_tidal_id:
+            # Busca detalhes do álbum no Tidal
+            album_data = await run_in_threadpool(TidalProvider.get_album_details, collection_id)
+        else:
+            # Busca detalhes do álbum no YTMusic (CatalogProvider)
+            album_data = await run_in_threadpool(CatalogProvider.get_album_details, collection_id)
+        
+        if not album_data:
+            raise HTTPException(404, "Álbum não encontrado")
+            
         album_name = album_data.get('collectionName')
         
-        for track in album_data['tracks']:
+        for track in album_data.get('tracks', []):
             tidal_id = track.get('tidalId')
             # Usa busca precisa com tidal_id e álbum
             local_file = find_local_match(
-                artist=track['artistName'], 
-                track=track['trackName'],
+                artist=track.get('artistName', ''), 
+                track=track.get('trackName', ''),
                 album=album_name,
                 tidal_id=tidal_id
             )
             track['isDownloaded'] = local_file is not None
             track['filename'] = local_file
         return album_data
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Erro álbum: {e}")
         raise HTTPException(500, str(e))

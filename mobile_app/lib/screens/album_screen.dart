@@ -31,7 +31,55 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
     with SingleTickerProviderStateMixin {
   Color _vibrantColor = Colors.white;
   bool _colorCalculated = false;
-  bool _isLibraryAdded = false;
+  bool? _isLibraryAdded; // null = não verificado ainda
+  
+  @override
+  void initState() {
+    super.initState();
+    // Verifica se o álbum já está na biblioteca
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkIfAlbumSaved();
+    });
+  }
+  
+  void _checkIfAlbumSaved() {
+    final isSaved = ref.read(libraryControllerProvider).isAlbumSaved(widget.collectionId);
+    if (mounted) {
+      setState(() {
+        _isLibraryAdded = isSaved;
+      });
+    }
+  }
+  
+  Future<void> _toggleLibrary(Map<String, dynamic> albumData) async {
+    final controller = ref.read(libraryControllerProvider);
+    
+    if (_isLibraryAdded == true) {
+      // Remove da biblioteca
+      final success = await controller.removeAlbum(widget.collectionId);
+      if (success && mounted) {
+        setState(() => _isLibraryAdded = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Álbum removido da biblioteca')),
+        );
+      }
+    } else {
+      // Adiciona à biblioteca
+      final success = await controller.saveAlbum({
+        'id': widget.collectionId,
+        'title': albumData['collectionName'],
+        'artist': albumData['artistName'],
+        'artworkUrl': albumData['artworkUrl'],
+        'year': albumData['year'],
+      });
+      if (success && mounted) {
+        setState(() => _isLibraryAdded = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Álbum adicionado à biblioteca')),
+        );
+      }
+    }
+  }
 
   Future<void> _extractColor(String url) async {
     if (_colorCalculated) return;
@@ -115,11 +163,10 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                             right: 100,
                             top: 0,
                             child: _buildGlassButton(
-                              icon: _isLibraryAdded ? Icons.check : Icons.add,
+                              icon: _isLibraryAdded == true ? Icons.check : Icons.add,
                               color: Colors.white,
                               isVibrantBackground: true,
-                              onTap: () => setState(
-                                  () => _isLibraryAdded = !_isLibraryAdded),
+                              onTap: () => _toggleLibrary(albumData),
                             ),
                           ),
                         ],
@@ -179,13 +226,14 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                           color: _vibrantColor),
                     ),
 
-                    Text(
-                      "Gênero",
-                      style: GoogleFonts.firaSans(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w300,
-                          color: _vibrantColor),
-                    ),
+                    if (albumData['genre'] != null && albumData['genre'].toString().isNotEmpty)
+                      Text(
+                        albumData['genre'],
+                        style: GoogleFonts.firaSans(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w300,
+                            color: _vibrantColor),
+                      ),
 
                     const SizedBox(height: 10),
 

@@ -24,9 +24,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   @override
   void initState() {
     super.initState();
-    // Garante que as playlists do usuário estejam carregadas
+    // Garante que os dados da biblioteca estejam carregados
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(libraryControllerProvider).fetchPlaylists();
+      final controller = ref.read(libraryControllerProvider);
+      controller.fetchPlaylists();
+      controller.fetchSavedAlbums();
+      controller.fetchSavedArtists();
     });
   }
 
@@ -53,49 +56,14 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
-    final userImage = "https://i.scdn.co/image/ab6761610000e5eb56653303e94d8c792982d69f"; // Mock
+    final userImage = "https://ui-avatars.com/api/?name=${Uri.encodeComponent(authState.username ?? 'User')}&background=D4AF37&color=000&size=100";
 
     // 1. Coleta dados reais de Playlists
     final userPlaylists = ref.watch(userPlaylistsProvider);
     
-    // 2. Mocks para Álbuns e Artistas (enquanto backend não tem endpoint /me/albums)
-    final savedAlbums = [
-      {
-        "type": "album",
-        "id": "297839093", // Bewitched
-        "title": "Bewitched",
-        "artist": "Laufey",
-        "year": "2023",
-        "imageUrl": "https://resources.tidal.com/images/cbdcd847/9c57/4999/95c0/bd24f9178694/640x640.jpg",
-        "isPinned": true,
-        "vibrantColor": Colors.orangeAccent
-      },
-      {
-        "type": "album",
-        "id": "320084588",
-        "title": "A Night To Remember",
-        "artist": "Beabadoobee",
-        "year": "2023",
-        "imageUrl": "https://resources.tidal.com/images/b3a85202/2ec3/452e/bad7/3a887c2fe132/640x640.jpg",
-        "isPinned": false,
-      }
-    ];
-
-    final savedArtists = [
-      {
-        "type": "artist",
-        "name": "Laufey",
-        "imageUrl": "https://resources.tidal.com/images/ea7b3f6d/0e60/4071/8c61/920219a090e8/750x750.jpg",
-        "isPinned": true,
-        "vibrantColor": Colors.pinkAccent
-      },
-      {
-        "type": "artist",
-        "name": "Mitski",
-        "imageUrl": "https://i.scdn.co/image/ab6761610000e5eb1436df76059b0ae99c086438",
-        "isPinned": false,
-      }
-    ];
+    // 2. Dados reais de Álbuns e Artistas salvos
+    final savedAlbums = ref.watch(savedAlbumsProvider);
+    final savedArtists = ref.watch(savedArtistsProvider);
 
     // 3. Unifica a lista (Normalizando campos para o Widget)
     List<Map<String, dynamic>> allItems = [];
@@ -118,10 +86,9 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         "type": "album",
         "id": a['id'],
         "title": a['title'],
-        "subtitle": "Álbum • ${a['artist']} • ${a['year']}",
-        "imageUrl": a['imageUrl'],
-        "isPinned": a['isPinned'],
-        "vibrantColor": a['vibrantColor']
+        "subtitle": "Álbum • ${a['artist']} • ${a['year'] ?? ''}",
+        "imageUrl": a['artworkUrl'],
+        "isPinned": a['isPinned'] ?? false,
       });
     }
 
@@ -129,10 +96,10 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     for (var ar in savedArtists) {
       allItems.add({
         "type": "artist",
+        "id": ar['id'],
         "name": ar['name'], // Artistas usam 'name' e layout diferente
         "imageUrl": ar['imageUrl'],
-        "isPinned": ar['isPinned'],
-        "vibrantColor": ar['vibrantColor']
+        "isPinned": ar['isPinned'] ?? false,
       });
     }
 

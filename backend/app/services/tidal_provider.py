@@ -178,6 +178,41 @@ class TidalProvider:
         Busca faixas de um álbum no Tidal.
         """
         try:
+            # Primeiro tenta buscar metadados do álbum diretamente
+            album_genre = None
+            album_year = ""
+            album_title = ""
+            album_artist = ""
+            album_artwork = ""
+            
+            # Tenta buscar info do álbum
+            with httpx.Client() as client:
+                album_url = f"{TidalProvider.BASE_API}/album/"
+                resp_album = client.get(album_url, params={"id": collection_id}, timeout=10.0)
+                if resp_album.status_code == 200:
+                    try:
+                        album_info = resp_album.json()
+                        album_data = album_info.get('data', {})
+                        album_title = album_data.get('title', '')
+                        album_year = str(album_data.get('releaseDate', ''))[:4]
+                        # Tenta buscar gênero de diferentes campos
+                        if album_data.get('genre'):
+                            album_genre = album_data.get('genre')
+                        elif album_data.get('genres'):
+                            genres = album_data.get('genres', [])
+                            if genres:
+                                album_genre = ', '.join(genres) if isinstance(genres, list) else str(genres)
+                        cover_id = album_data.get('cover')
+                        if cover_id:
+                            album_artwork = f"{TidalProvider.CDN_URL}/{cover_id.replace('-', '/')}/640x640.jpg"
+                        if album_data.get('artist'):
+                            album_artist = album_data['artist'].get('name', '')
+                        elif album_data.get('artists'):
+                            album_artist = album_data['artists'][0].get('name', '')
+                    except:
+                        pass
+            
+            # Agora busca as tracks
             url = f"{TidalProvider.BASE_API}/album/items" 
             params = {"id": collection_id, "limit": 100, "offset": 0}
             
@@ -185,12 +220,8 @@ class TidalProvider:
                 resp = client.get(url, params=params, timeout=10.0)
                 
                 if resp.status_code != 200:
-                     print(f"⚠️ Tidal Album Items falhou ({resp.status_code}), tentando rota alternativa...")
-                     url_alt = f"{TidalProvider.BASE_API}/album/"
-                     resp = client.get(url_alt, params={"id": collection_id}, timeout=10.0)
-                
-                if resp.status_code != 200:
-                    raise Exception(f"Album not found (HTTP {resp.status_code})")
+                     print(f"⚠️ Tidal Album Items falhou ({resp.status_code})")
+                     raise Exception(f"Album not found (HTTP {resp.status_code})")
 
                 try:
                     data = resp.json()
@@ -201,17 +232,15 @@ class TidalProvider:
             if not items and 'items' in data: items = data['items']
 
             tracks = []
-            album_meta_cache = {}
             
-            if items:
+            # Fallback para metadados da primeira track se não pegou antes
+            if items and not album_title:
                 first = items[0]
                 album_obj = first.get('album', {})
-                album_meta_cache['title'] = album_obj.get('title', 'Álbum')
+                album_title = album_obj.get('title', 'Álbum')
                 cover_id = album_obj.get('cover')
                 if cover_id:
-                     album_meta_cache['artwork'] = f"{TidalProvider.CDN_URL}/{cover_id.replace('-', '/')}/640x640.jpg"
-                else:
-                     album_meta_cache['artwork'] = ""
+                     album_artwork = f"{TidalProvider.CDN_URL}/{cover_id.replace('-', '/')}/640x640.jpg"
 
             for item in items:
                 track_title = item.get('title')
@@ -221,24 +250,27 @@ class TidalProvider:
                 
                 artist_name = "Vários"
                 if item.get('artist'): artist_name = item['artist'].get('name')
+                if not album_artist:
+                    album_artist = artist_name
 
                 tracks.append({
                     "trackNumber": track_num,
                     "trackName": track_title,
                     "artistName": artist_name,
-                    "collectionName": album_meta_cache.get('title'),
+                    "collectionName": album_title,
                     "durationMs": duration,
                     "previewUrl": None,
-                    "artworkUrl": album_meta_cache.get('artwork'),
+                    "artworkUrl": album_artwork,
                     "tidalId": track_id 
                 })
 
             return {
                 "collectionId": collection_id,
-                "collectionName": album_meta_cache.get('title', 'Álbum Tidal'),
-                "artistName": items[0].get('artist', {}).get('name') if items else "Artista",
-                "artworkUrl": album_meta_cache.get('artwork', ''),
-                "year": "", 
+                "collectionName": album_title or 'Álbum Tidal',
+                "artistName": album_artist or "Artista",
+                "artworkUrl": album_artwork,
+                "year": album_year,
+                "genre": album_genre,
                 "tracks": tracks
             }
 

@@ -260,22 +260,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                       Positioned(
                         top: 430,
                         right: 33,
-                        child: Row(
-                          children: [
-                            _buildGlassActionButton(
-                              icon: Icons.favorite_border, 
-                              onTap: () {
-                                ref.read(libraryControllerProvider).toggleFavorite(currentTrack);
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Adicionado às curtidas")));
-                              }
-                            ),
-                            const SizedBox(width: 10),
-                            _buildGlassActionButton(
-                              icon: Icons.more_horiz, 
-                              onTap: () => _showOptionsModal(context, currentTrack)
-                            ),
-                          ],
-                        ),
+                        child: Builder(builder: (context) {
+                          final favorites = ref.watch(favoriteTracksProvider);
+                          final filename = currentTrack['filename'];
+                          final isFavorite = filename != null && favorites.contains(filename);
+                          
+                          return Row(
+                            children: [
+                              _buildGlassActionButton(
+                                icon: isFavorite ? Icons.favorite : Icons.favorite_border,
+                                color: isFavorite ? Colors.red : null,
+                                onTap: () {
+                                  ref.read(libraryControllerProvider).toggleFavorite(currentTrack);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(isFavorite ? "Removido das curtidas" : "Adicionado às curtidas"))
+                                  );
+                                }
+                              ),
+                              const SizedBox(width: 10),
+                              _buildGlassActionButton(
+                                icon: Icons.more_horiz, 
+                                onTap: () => _showOptionsModal(context, currentTrack)
+                              ),
+                            ],
+                          );
+                        }),
                       ),
 
                       // BARRA DE PROGRESSO
@@ -285,41 +294,52 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
                           width: 250,
                           child: Column(
                             children: [
-                              LayoutBuilder(
-                                builder: (context, constraints) {
+                              Builder(
+                                builder: (context) {
+                                  const double barWidth = 250.0;
                                   final double progress = (duration.inMilliseconds > 0) 
                                       ? position.inMilliseconds / duration.inMilliseconds 
                                       : 0.0;
                                   return GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onHorizontalDragStart: (details) {
+                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
+                                      notifier.seek(Duration(milliseconds: seekPos.toInt()));
+                                    },
                                     onHorizontalDragUpdate: (details) {
-                                      final seekPos = (details.localPosition.dx / constraints.maxWidth) * duration.inMilliseconds;
+                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
                                       notifier.seek(Duration(milliseconds: seekPos.toInt()));
                                     },
-                                    onTapUp: (details) {
-                                      final seekPos = (details.localPosition.dx / constraints.maxWidth) * duration.inMilliseconds;
+                                    onTapDown: (details) {
+                                      final seekPos = (details.localPosition.dx / barWidth).clamp(0.0, 1.0) * duration.inMilliseconds;
                                       notifier.seek(Duration(milliseconds: seekPos.toInt()));
                                     },
-                                    child: Stack(
-                                      children: [
-                                        Container(
-                                          height: 7,
-                                          width: double.infinity,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withOpacity(0.4),
-                                            borderRadius: BorderRadius.circular(3.5),
-                                          ),
-                                        ),
-                                        FractionallySizedBox(
-                                          widthFactor: progress.clamp(0.0, 1.0),
-                                          child: Container(
+                                    child: Container(
+                                      height: 30, // Área de toque maior
+                                      width: barWidth,
+                                      color: Colors.transparent,
+                                      alignment: Alignment.center,
+                                      child: Stack(
+                                        alignment: Alignment.centerLeft,
+                                        children: [
+                                          Container(
                                             height: 7,
+                                            width: barWidth,
+                                            decoration: BoxDecoration(
+                                              color: Colors.white.withOpacity(0.4),
+                                              borderRadius: BorderRadius.circular(3.5),
+                                            ),
+                                          ),
+                                          Container(
+                                            height: 7,
+                                            width: barWidth * progress.clamp(0.0, 1.0),
                                             decoration: BoxDecoration(
                                               color: Colors.white,
                                               borderRadius: BorderRadius.circular(3.5),
                                             ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   );
                                 }
@@ -437,7 +457,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
   }
 
   // ... (Widgets auxiliares mantidos iguais, apenas certifique-se de que estão no arquivo) ...
-  Widget _buildGlassActionButton({required IconData icon, required VoidCallback onTap}) {
+  Widget _buildGlassActionButton({required IconData icon, required VoidCallback onTap, Color? color}) {
     return GestureDetector(
       onTap: onTap,
       child: ClipRRect(
@@ -450,7 +470,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> with TickerProvider
               color: _gradientColors[1].withOpacity(0.3),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, color: Colors.white, size: 18),
+            child: Icon(icon, color: color ?? Colors.white, size: 18),
           ),
         ),
       ),

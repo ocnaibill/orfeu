@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, Float
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, Float, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -12,6 +12,7 @@ class User(Base):
     full_name = Column(String)
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
+    profile_image_url = Column(Text, nullable=True)  # URL ou base64 da imagem de perfil
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     history = relationship("ListenHistory", back_populates="user")
@@ -106,3 +107,29 @@ class PlaylistItem(Base):
 
     playlist = relationship("Playlist", back_populates="items")
     track = relationship("Track")
+
+class SavedAlbum(Base):
+    """Álbuns salvos na biblioteca do usuário"""
+    __tablename__ = "saved_albums"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    album_id = Column(String, index=True)  # Tidal ID ou YTMusic ID
+    title = Column(String)
+    artist = Column(String)
+    artwork_url = Column(Text)
+    year = Column(String, nullable=True)
+    is_pinned = Column(Boolean, default=False)
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SavedArtist(Base):
+    """Artistas salvos na biblioteca do usuário"""
+    __tablename__ = "saved_artists"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    artist_id = Column(String, index=True)  # Tidal ID ou YTMusic ID
+    name = Column(String)
+    image_url = Column(Text)
+    is_pinned = Column(Boolean, default=False)
+    added_at = Column(DateTime(timezone=True), server_default=func.now())

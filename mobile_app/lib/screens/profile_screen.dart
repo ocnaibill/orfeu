@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers.dart';
 import '../services/discord_service.dart';
+import 'vibe_musical_screen.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
@@ -203,7 +204,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 33),
               child: GestureDetector(
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Calculando sua vibe...")));
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const VibeMusicalScreen()));
                 },
                 child: Container(
                   height: 120,

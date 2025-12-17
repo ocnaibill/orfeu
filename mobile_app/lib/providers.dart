@@ -178,6 +178,8 @@ final currentSearchIdProvider = StateProvider<String?>((ref) => null);
 // --- BIBLIOTECA E PLAYLISTS ---
 final favoriteTracksProvider = StateProvider<Set<String>>((ref) => {});
 final userPlaylistsProvider = StateProvider<List<dynamic>>((ref) => []);
+final savedAlbumsProvider = StateProvider<List<dynamic>>((ref) => []);
+final savedArtistsProvider = StateProvider<List<dynamic>>((ref) => []);
 
 final searchControllerProvider = Provider((ref) => SearchController(ref));
 final libraryControllerProvider = Provider((ref) => LibraryController(ref));
@@ -320,6 +322,96 @@ class LibraryController {
       print("⚠️ Erro ao registrar play: $e");
     }
   }
+  
+  // --- ÁLBUNS SALVOS ---
+  Future<void> fetchSavedAlbums() async {
+    final dio = ref.read(dioProvider);
+    try {
+      final response = await dio.get('/users/me/albums');
+      ref.read(savedAlbumsProvider.notifier).state = response.data;
+    } catch (e) {
+      print("⚠️ Erro ao carregar álbuns salvos: $e");
+    }
+  }
+  
+  Future<bool> saveAlbum(Map<String, dynamic> album) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/users/me/albums', data: {
+        "album_id": album['id']?.toString() ?? album['collectionId']?.toString(),
+        "title": album['title'] ?? album['collectionName'],
+        "artist": album['artist'] ?? album['artistName'],
+        "artwork_url": album['artworkUrl'] ?? album['imageUrl'],
+        "year": album['year'] ?? album['releaseYear'],
+      });
+      await fetchSavedAlbums();
+      return true;
+    } catch (e) {
+      print("❌ Erro ao salvar álbum: $e");
+      return false;
+    }
+  }
+  
+  Future<bool> removeAlbum(String albumId) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.delete('/users/me/albums/$albumId');
+      await fetchSavedAlbums();
+      return true;
+    } catch (e) {
+      print("❌ Erro ao remover álbum: $e");
+      return false;
+    }
+  }
+  
+  bool isAlbumSaved(String albumId) {
+    final albums = ref.read(savedAlbumsProvider);
+    return albums.any((a) => a['id'] == albumId);
+  }
+  
+  // --- ARTISTAS SALVOS ---
+  Future<void> fetchSavedArtists() async {
+    final dio = ref.read(dioProvider);
+    try {
+      final response = await dio.get('/users/me/artists');
+      ref.read(savedArtistsProvider.notifier).state = response.data;
+    } catch (e) {
+      print("⚠️ Erro ao carregar artistas salvos: $e");
+    }
+  }
+  
+  Future<bool> saveArtist(Map<String, dynamic> artist) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.post('/users/me/artists', data: {
+        "artist_id": artist['id']?.toString() ?? artist['artistId']?.toString(),
+        "name": artist['name'] ?? artist['artistName'],
+        "image_url": artist['imageUrl'] ?? artist['image'],
+      });
+      await fetchSavedArtists();
+      return true;
+    } catch (e) {
+      print("❌ Erro ao salvar artista: $e");
+      return false;
+    }
+  }
+  
+  Future<bool> removeArtist(String artistId) async {
+    final dio = ref.read(dioProvider);
+    try {
+      await dio.delete('/users/me/artists/$artistId');
+      await fetchSavedArtists();
+      return true;
+    } catch (e) {
+      print("❌ Erro ao remover artista: $e");
+      return false;
+    }
+  }
+  
+  bool isArtistSaved(String artistId) {
+    final artists = ref.read(savedArtistsProvider);
+    return artists.any((a) => a['id'] == artistId);
+  }
 }
 
 class SearchController {
@@ -434,6 +526,25 @@ class SearchController {
       });
 
       final filename = resp.data['file'];
+      final status = resp.data['status'];
+      
+      // Se o arquivo já estava baixado, retorna imediatamente
+      if (status == "Already downloaded") {
+        return filename;
+      }
+      
+      // Se o download foi iniciado, aguarda ele completar
+      if (status == "Download started" || status == "Queued") {
+        print('⏳ Aguardando download completar: $filename');
+        final completed = await _waitForDownload(filename);
+        if (completed) {
+          return filename;
+        } else {
+          throw Exception('Download falhou ou timeout');
+        }
+      }
+      
+      // Para Soulseek (que pode retornar "Queued")
       _pollDownloadStatus(filename);
       return filename;
     } catch (e) {
@@ -442,6 +553,48 @@ class SearchController {
     } finally {
       processing.update((state) => {...state}..remove(itemId));
     }
+  }
+  
+  Future<bool> _waitForDownload(String filename) async {
+    final dio = ref.read(dioProvider);
+    final statusNotifier = ref.read(downloadStatusProvider.notifier);
+    int attempts = 0;
+    const maxAttempts = 120; // 2 minutos máximo
+    
+    while (attempts < maxAttempts) {
+      await Future.delayed(const Duration(seconds: 1));
+      attempts++;
+      
+      try {
+        final encodedName = Uri.encodeComponent(filename);
+        final resp = await dio.get('/download/status?filename=$encodedName');
+        final state = resp.data['state'];
+        
+        statusNotifier.update((data) => {...data, filename: resp.data});
+        
+        if (state == 'Completed') {
+          print('✅ Download concluído: $filename');
+          return true;
+        }
+        
+        if (state == 'Aborted' || state == 'Failed') {
+          print('❌ Download falhou: $filename');
+          return false;
+        }
+        
+        // Log progresso a cada 10 segundos
+        if (attempts % 10 == 0) {
+          final progress = resp.data['progress'] ?? 0;
+          print('⏳ Download em andamento ($attempts s): ${progress.toStringAsFixed(1)}%');
+        }
+      } catch (e) {
+        // Ignora erros de rede temporários
+        print('⚠️ Erro ao verificar status: $e');
+      }
+    }
+    
+    print('⚠️ Timeout aguardando download: $filename');
+    return false;
   }
 
   Future<void> refresh() async {
@@ -537,7 +690,7 @@ class ProfileStatsNotifier extends StateNotifier<ProfileStats> {
       // Faz as requisições em paralelo
       final results = await Future.wait([
         dio.get('/users/me/analytics/summary').catchError((e) => Response(requestOptions: RequestOptions(), data: {})),
-        dio.get('/playlists').catchError((e) => Response(requestOptions: RequestOptions(), data: [])),
+        dio.get('/users/me/playlists').catchError((e) => Response(requestOptions: RequestOptions(), data: [])),
       ]);
 
       final analyticsData = results[0].data as Map<String, dynamic>? ?? {};
