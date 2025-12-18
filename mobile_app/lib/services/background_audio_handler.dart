@@ -216,10 +216,26 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     if (index < 0 || index >= _fullQueue.length) return;
     
     final track = _fullQueue[index];
+    final trackKey = _getTrackKey(track);
     final trackName = track['trackName'] ?? track['title'] ?? 'Música';
     final artistName = track['artistName'] ?? track['artist'] ?? 'Artista';
     
-    print('📥 Baixando: $trackName - $artistName');
+    print('📥 Baixando: $trackName - $artistName (key: $trackKey)');
+    
+    // Verifica se já está em download
+    if (_downloadsInProgress.contains(trackKey)) {
+      print('⏳ Track já está sendo baixada, aguardando...');
+      // Aguarda o download terminar em vez de iniciar outro
+      while (_downloadsInProgress.contains(trackKey)) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      // Verifica se o download foi bem sucedido
+      final currentIndex = _findTrackIndexByKey(trackKey);
+      if (currentIndex >= 0 && _fullQueue[currentIndex]['filename'] != null) {
+        await _rebuildPlaylistAndPlay(currentIndex);
+        return;
+      }
+    }
     
     // Atualiza UI para mostrar que está carregando
     _currentIndex = index;
@@ -231,6 +247,8 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       queueIndex: index,
     ));
     
+    _downloadsInProgress.add(trackKey);
+    
     try {
       // Usa o SearchController para fazer o download
       if (_ref != null) {
@@ -240,11 +258,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         if (filename != null) {
           print('✅ Download concluído: $filename');
           
-          // Atualiza o filename na fila
-          _fullQueue[index]['filename'] = filename;
+          // IMPORTANTE: Encontra o índice atual da track pelo seu ID único
+          final currentTrackIndex = _findTrackIndexByKey(trackKey);
           
-          // Reconstrói a playlist com a nova track
-          await _rebuildPlaylistAndPlay(index);
+          if (currentTrackIndex >= 0) {
+            // Atualiza o filename na fila usando o índice correto
+            _fullQueue[currentTrackIndex]['filename'] = filename;
+            
+            // Reconstrói a playlist com a nova track
+            await _rebuildPlaylistAndPlay(currentTrackIndex);
+          } else {
+            print('⚠️ Track não encontrada na fila após download');
+          }
         } else {
           print('❌ Download falhou, tentando próxima...');
           // Tenta a próxima música
@@ -264,6 +289,8 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       if (index + 1 < _mediaQueue.length) {
         await _downloadAndPlayTrack(index + 1);
       }
+    } finally {
+      _downloadsInProgress.remove(trackKey);
     }
   }
   
@@ -327,6 +354,31 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   // Flag para evitar múltiplos downloads simultâneos
   bool _isPreloading = false;
   
+  // Set de downloads em andamento (por trackKey)
+  final Set<String> _downloadsInProgress = {};
+  
+  /// Gera uma chave única para identificar uma track
+  String _getTrackKey(Map<String, dynamic> track) {
+    final tidalId = track['tidalId']?.toString() ?? '';
+    final ytmusicId = track['ytmusicId']?.toString() ?? '';
+    final trackName = track['trackName'] ?? track['title'] ?? '';
+    final artistName = track['artistName'] ?? track['artist'] ?? '';
+    
+    if (tidalId.isNotEmpty) return 'tidal:$tidalId';
+    if (ytmusicId.isNotEmpty) return 'ytmusic:$ytmusicId';
+    return 'name:$artistName-$trackName';
+  }
+  
+  /// Encontra o índice de uma track pela sua chave única
+  int _findTrackIndexByKey(String trackKey) {
+    for (int i = 0; i < _fullQueue.length; i++) {
+      if (_getTrackKey(_fullQueue[i]) == trackKey) {
+        return i;
+      }
+    }
+    return -1;
+  }
+  
   /// Pré-carrega a próxima música da fila em background
   Future<void> _preloadNextTrack() async {
     // Evita múltiplos downloads simultâneos
@@ -340,9 +392,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       return;
     }
     
+    final track = _fullQueue[nextIndex];
+    final trackKey = _getTrackKey(track);
+    
     // Verifica se já tem filename
-    if (_fullQueue[nextIndex]['filename'] != null) {
+    if (track['filename'] != null) {
       print('✅ Próxima música já está baixada');
+      return;
+    }
+    
+    // Verifica se já está em download
+    if (_downloadsInProgress.contains(trackKey)) {
+      print('⏳ Próxima música já está sendo baixada');
       return;
     }
     
@@ -353,12 +414,12 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     }
     
     _isPreloading = true;
+    _downloadsInProgress.add(trackKey);
     
-    final track = _fullQueue[nextIndex];
     final trackName = track['trackName'] ?? track['title'] ?? 'Música';
     final artistName = track['artistName'] ?? track['artist'] ?? 'Artista';
     
-    print('📥 Pré-carregando próxima: $trackName - $artistName');
+    print('📥 Pré-carregando próxima: $trackName - $artistName (key: $trackKey)');
     
     try {
       final searchCtrl = _ref!.read(searchControllerProvider);
@@ -367,19 +428,28 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       if (filename != null) {
         print('✅ Pré-carregamento concluído: $filename');
         
-        // Atualiza o filename na fila
-        _fullQueue[nextIndex]['filename'] = filename;
+        // IMPORTANTE: Encontra o índice atual da track pelo seu ID único
+        // (o índice pode ter mudado durante o download)
+        final currentTrackIndex = _findTrackIndexByKey(trackKey);
         
-        // Atualiza o mapeamento de índices
-        _updatePlayerIndexMap();
-        
-        // Adiciona à playlist do player sem interromper a reprodução atual
-        await _addTrackToPlaylist(nextIndex, filename);
+        if (currentTrackIndex >= 0) {
+          // Atualiza o filename na fila usando o índice correto
+          _fullQueue[currentTrackIndex]['filename'] = filename;
+          
+          // Atualiza o mapeamento de índices
+          _updatePlayerIndexMap();
+          
+          // Adiciona à playlist do player sem interromper a reprodução atual
+          await _addTrackToPlaylist(currentTrackIndex, filename);
+        } else {
+          print('⚠️ Track não encontrada na fila após download: $trackKey');
+        }
       }
     } catch (e) {
       print('⚠️ Erro no pré-carregamento: $e');
     } finally {
       _isPreloading = false;
+      _downloadsInProgress.remove(trackKey);
     }
   }
   

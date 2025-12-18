@@ -86,10 +86,24 @@ class HomeTabV2 extends ConsumerWidget {
                         // Ao voltar, atualiza dados
                         if (context.mounted) _refreshData(ref);
                       },
-                      child: const CircleAvatar(
-                          radius: 24,
-                          backgroundColor: Color(0xFFD4AF37),
-                          child: Icon(Icons.person, color: Colors.black)),
+                      child: Consumer(
+                        builder: (context, ref, _) {
+                          final userProfile = ref.watch(userProfileProvider);
+                          final userImage = userProfile.avatarUrl;
+                          return Container(
+                            width: 50,
+                            height: 50,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              image: DecorationImage(
+                                image: NetworkImage(userImage),
+                                fit: BoxFit.cover,
+                              ),
+                              color: Colors.grey[800],
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ],
                 ),

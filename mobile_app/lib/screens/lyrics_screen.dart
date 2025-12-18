@@ -82,8 +82,17 @@ class SyncedLyrics {
     );
   }
 
+  /// Verifica se tem sincronização por sílaba (Apple Music)
   bool get hasSyllableSync => syncType == 'syllable';
-  bool get hasLineSync => syncType == 'line' || syncType == 'syllable';
+  
+  /// Verifica se tem sincronização por palavra (Musixmatch Enhanced)
+  bool get hasWordSync => syncType == 'word';
+  
+  /// Verifica se tem sincronização granular (palavra ou sílaba)
+  bool get hasGranularSync => hasSyllableSync || hasWordSync;
+  
+  /// Verifica se tem sincronização por linha ou melhor
+  bool get hasLineSync => syncType == 'line' || hasGranularSync;
 }
 
 /// Classe para identificar parâmetros de busca de letras (com igualdade correta)
@@ -192,14 +201,23 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
         final line = lyrics.lines[i];
         if (position >= line.startTime && position < line.endTime) {
           newLineIndex = i;
-
-          // Encontra segmento atual (se tiver sincronização por sílaba)
-          if (lyrics.hasSyllableSync) {
+          
+          // Encontra segmento atual (se tiver sincronização por palavra/sílaba)
+          if (lyrics.hasGranularSync && line.segments.isNotEmpty) {
             for (int j = 0; j < line.segments.length; j++) {
               final seg = line.segments[j];
               if (position >= seg.startTime && position < seg.endTime) {
                 newSegmentIndex = j;
                 break;
+              }
+            }
+            // Se não encontrou mas está na linha, destaca a última palavra já passada
+            if (newSegmentIndex == -1) {
+              for (int j = line.segments.length - 1; j >= 0; j--) {
+                if (position >= line.segments[j].startTime) {
+                  newSegmentIndex = j;
+                  break;
+                }
               }
             }
           }
@@ -392,26 +410,40 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
 
                 // Footer com info da fonte
                 lyricsAsync.whenData((lyrics) {
-                      if (lyrics == null) return const SizedBox();
-
-                      String sourceText = '';
-                      if (lyrics.source == 'apple_music') {
-                        sourceText = 'Apple Music • Sincronizado por sílaba';
-                      } else if (lyrics.source == 'lrclib') {
-                        sourceText =
-                            'LRCLIB • ${lyrics.hasLineSync ? 'Sincronizado por linha' : 'Texto'}';
-                      }
-
-                      return Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Text(
+                  if (lyrics == null) return const SizedBox();
+                  
+                  String sourceText = _getSourceText(lyrics);
+                  
+                  return Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (lyrics.hasWordSync)
+                          Container(
+                            margin: const EdgeInsets.only(right: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFD4AF37).withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'KARAOKE',
+                              style: GoogleFonts.firaSans(
+                                color: const Color(0xFFD4AF37),
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        Text(
                           sourceText,
-                          style: GoogleFonts.firaSans(
-                              color: Colors.white38, fontSize: 12),
+                          style: GoogleFonts.firaSans(color: Colors.white38, fontSize: 12),
                         ),
-                      );
-                    }).value ??
-                    const SizedBox(),
+                      ],
+                    ),
+                  );
+                }).value ?? const SizedBox(),
               ],
             ),
           ),
@@ -448,10 +480,10 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
         final line = lyrics.lines[index];
         final isCurrentLine = index == _currentLineIndex;
         final isPastLine = index < _currentLineIndex;
-
-        // Se tem sincronização por sílaba, renderiza palavra por palavra
-        if (lyrics.hasSyllableSync && line.segments.isNotEmpty) {
-          return _buildSyllableLine(line, index, isCurrentLine, isPastLine);
+        
+        // Se tem sincronização granular (palavra/sílaba), renderiza com destaque
+        if (lyrics.hasGranularSync && line.segments.isNotEmpty) {
+          return _buildWordByWordLine(line, index, isCurrentLine, isPastLine, lyrics.hasWordSync);
         }
 
         // Sincronização por linha
@@ -488,8 +520,8 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
     );
   }
 
-  Widget _buildSyllableLine(
-      LyricLine line, int lineIndex, bool isCurrentLine, bool isPastLine) {
+  /// Constrói linha com sincronização word-by-word ou syllable
+  Widget _buildWordByWordLine(LyricLine line, int lineIndex, bool isCurrentLine, bool isPastLine, bool isWordSync) {
     return GestureDetector(
       onTap: () => _seekToLine(line),
       child: Padding(
@@ -499,30 +531,56 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
           children: line.segments.asMap().entries.map((entry) {
             final segIndex = entry.key;
             final segment = entry.value;
-
-            final isCurrentSegment =
-                isCurrentLine && segIndex == _currentSegmentIndex;
-            final isPastSegment = isPastLine ||
-                (isCurrentLine && segIndex < _currentSegmentIndex);
-
-            return AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 100),
-              style: GoogleFonts.firaSans(
-                color: isCurrentSegment
-                    ? const Color(0xFFD4AF37)
-                    : isPastSegment
-                        ? const Color(0xFFD4AF37).withOpacity(0.5)
-                        : isCurrentLine
-                            ? Colors.white
-                            : isPastLine
-                                ? Colors.white38
-                                : Colors.white70,
-                fontSize: isCurrentLine ? 26 : 22,
-                fontWeight:
-                    isCurrentSegment ? FontWeight.bold : FontWeight.normal,
-                height: 1.4,
-              ),
-              child: Text(segment.text),
+            
+            final isCurrentSegment = isCurrentLine && segIndex == _currentSegmentIndex;
+            final isPastSegment = isPastLine || 
+                (isCurrentLine && _currentSegmentIndex >= 0 && segIndex < _currentSegmentIndex);
+            
+            // Cores para word-by-word (mais vibrante)
+            Color textColor;
+            if (isCurrentSegment) {
+              textColor = const Color(0xFFD4AF37); // Dourado brilhante
+            } else if (isPastSegment) {
+              textColor = const Color(0xFFD4AF37).withOpacity(0.6); // Dourado esmaecido
+            } else if (isCurrentLine) {
+              textColor = Colors.white.withOpacity(0.9); // Branco para próximas palavras
+            } else if (isPastLine) {
+              textColor = Colors.white38; // Linhas passadas
+            } else {
+              textColor = Colors.white60; // Linhas futuras
+            }
+            
+            // Espaçamento entre palavras (word sync usa espaços, syllable não)
+            final needsSpace = isWordSync && segIndex < line.segments.length - 1;
+            
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isCurrentSegment ? 4 : 0,
+                    vertical: isCurrentSegment ? 2 : 0,
+                  ),
+                  decoration: isCurrentSegment
+                      ? BoxDecoration(
+                          color: const Color(0xFFD4AF37).withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        )
+                      : null,
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 150),
+                    style: GoogleFonts.firaSans(
+                      color: textColor,
+                      fontSize: isCurrentLine ? 26 : 22,
+                      fontWeight: isCurrentSegment ? FontWeight.bold : FontWeight.normal,
+                      height: 1.4,
+                    ),
+                    child: Text(segment.text),
+                  ),
+                ),
+                if (needsSpace) const SizedBox(width: 6),
+              ],
             );
           }).toList(),
         ),
@@ -534,5 +592,31 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
     ref.read(playerProvider.notifier).seek(
           Duration(milliseconds: (line.startTime * 1000).toInt()),
         );
+  }
+
+  /// Retorna texto descritivo da fonte das letras
+  String _getSourceText(SyncedLyrics lyrics) {
+    final source = lyrics.source.toLowerCase();
+    
+    if (source.contains('musixmatch_enhanced') || lyrics.hasWordSync) {
+      return 'Musixmatch • Palavra por palavra';
+    } else if (source.contains('musixmatch')) {
+      return 'Musixmatch • Sincronizado';
+    } else if (source == 'apple_music') {
+      return 'Apple Music • Sílaba por sílaba';
+    } else if (source.contains('lrclib')) {
+      return 'LRCLIB • ${lyrics.hasLineSync ? 'Sincronizado' : 'Texto'}';
+    } else if (source.contains('netease')) {
+      return 'NetEase • Sincronizado';
+    } else if (source.contains('syncedlyrics')) {
+      if (lyrics.hasWordSync) {
+        return 'Palavra por palavra';
+      } else if (lyrics.hasLineSync) {
+        return 'Sincronizado por linha';
+      }
+      return 'Texto';
+    }
+    
+    return lyrics.hasLineSync ? 'Sincronizado' : 'Texto';
   }
 }

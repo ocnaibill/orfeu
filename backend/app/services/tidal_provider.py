@@ -118,13 +118,16 @@ class TidalProvider:
                         "trackName": item.get('title'),
                         "artistName": artist_name,
                         "collectionName": album_obj.get('title', 'Single'),
+                        "collectionId": str(album_obj.get('id', '')),
                         "artworkUrl": artwork_url,
                         "previewUrl": None,
                         "year": str(item.get('streamStartDate', ''))[:4], 
                         "releaseDate": item.get('streamStartDate'),
                         "isLossless": item.get('audioQuality') == 'LOSSLESS',
                         "source": "Tidal",
-                        "tidalId": item.get('id') 
+                        "tidalId": item.get('id'),
+                        "duration": item.get('duration', 0),  # segundos
+                        "durationMs": (item.get('duration', 0) or 0) * 1000  # milissegundos
                     })
 
             return normalized_results

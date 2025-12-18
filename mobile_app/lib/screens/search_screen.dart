@@ -212,17 +212,30 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
           // Ícone de Usuário
           Positioned(
-            top: 41,
-            right: 22,
+            top: 54,
+            right: 26,
             child: GestureDetector(
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ProfileScreen()));
               },
-              child: const CircleAvatar(
-                radius: 18,
-                backgroundColor: Colors.grey,
-                child: Icon(Icons.person, color: Colors.white, size: 20),
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final userProfile = ref.watch(userProfileProvider);
+                  final userImage = userProfile.avatarUrl;
+                  return Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      image: DecorationImage(
+                        image: NetworkImage(userImage),
+                        fit: BoxFit.cover,
+                      ),
+                      color: Colors.grey[800],
+                    ),
+                  );
+                },
               ),
             ),
           ),

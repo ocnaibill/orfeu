@@ -1455,7 +1455,7 @@ async def get_genre_top_tracks(
         if config and config.get("playlist_id"):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(
-                    f"{TidalProvider.TIDAL_API}/playlist/",
+                    f"{TidalProvider.BASE_API}/playlist/",
                     params={"id": config["playlist_id"], "limit": limit}
                 )
                 if resp.status_code == 200:
@@ -1496,7 +1496,7 @@ async def get_genre_top_tracks(
         # Fallback: busca por query
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
-                f"{TidalProvider.TIDAL_API}/search/",
+                f"{TidalProvider.BASE_API}/search/",
                 params={"s": search_query}
             )
             
@@ -2111,7 +2111,14 @@ async def get_cover_art(filename: str):
 
 
 # --- LETRAS SINCRONIZADAS ---
-from app.services.synced_lyrics_provider import synced_lyrics_provider, SyncedLyrics
+from app.services.synced_lyrics_provider import (
+    synced_lyrics_provider, 
+    SyncedLyrics,
+    get_available_providers,
+    get_musixmatch_token_status,
+    reset_musixmatch_token,
+    test_musixmatch_connection,
+)
 
 @app.get("/lyrics/synced")
 async def get_synced_lyrics(
@@ -2161,6 +2168,42 @@ async def get_synced_lyrics(
             }
             for line in lyrics.lines
         ]
+    }
+
+
+@app.get("/lyrics/providers")
+async def list_lyrics_providers():
+    """Lista os providers de letras disponíveis e seus status."""
+    return {
+        "providers": get_available_providers(),
+        "musixmatch": get_musixmatch_token_status(),
+    }
+
+
+@app.get("/lyrics/providers/test")
+async def test_lyrics_providers():
+    """Testa se os providers de letras estão funcionando."""
+    musixmatch_status = await test_musixmatch_connection()
+    
+    return {
+        "musixmatch": musixmatch_status,
+        "token_status": get_musixmatch_token_status(),
+    }
+
+
+@app.post("/lyrics/providers/musixmatch/reset")
+async def reset_musixmatch():
+    """
+    Reseta o token do Musixmatch.
+    
+    Use quando o Musixmatch estiver retornando erro 401.
+    """
+    was_reset = reset_musixmatch_token()
+    
+    return {
+        "reset": was_reset,
+        "message": "Token removido. Próxima busca vai gerar um novo." if was_reset else "Token não existia.",
+        "token_status": get_musixmatch_token_status(),
     }
 
 

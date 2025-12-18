@@ -10,6 +10,9 @@ mutagen
 unidecode
 thefuzz
 python-levenshtein
+syncedlyrics
+beautifulsoup4
+lxml
 ytmusicapi
 passlib[argon2]
 python-jose[cryptography]
