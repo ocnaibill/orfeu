@@ -34,7 +34,7 @@ jobs:
       - name: Build Web Release
         run: |
           cd mobile_app
-          flutter build web --release --web-renderer canvaskit --base-href /
+          flutter build web --release --base-href /
           
       - name: Upload Web Artifact
         uses: actions/upload-artifact@v4
