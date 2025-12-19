@@ -1,6 +1,5 @@
-/// Discord Service - Exporta a implementação correta baseado na plataforma
-///
-/// Na Web: usa stub (no-op)
-/// Em outras plataformas: usa implementação nativa com flutter_discord_rpc
-export 'discord_service_stub.dart'
-    if (dart.library.io) 'discord_service_native.dart';
+// Discord Service - Usa conditional export para selecionar implementação
+// Web: stub vazio (discord_service_web.dart)
+// Nativo: implementação real (discord_service_native.dart)
+export 'discord_service_web.dart'
+    if (dart.library.io) 'discord_service_io.dart';
