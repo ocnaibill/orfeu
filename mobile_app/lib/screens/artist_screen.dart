@@ -62,13 +62,22 @@ final artistDetailsProvider =
   }
 
   // Fallback: busca por nome (menos preciso)
+  // Helper para verificar se o artista é o correto (match exato ou muito próximo)
+  bool isCorrectArtist(String itemArtist) {
+    final normalizedItem = itemArtist.toLowerCase().trim();
+    final normalizedSearch = artistName.toLowerCase().trim();
+    // Match exato ou o item é exatamente o artista buscado (não apenas contém)
+    return normalizedItem == normalizedSearch ||
+           normalizedItem.split(',').map((s) => s.trim()).contains(normalizedSearch);
+  }
+
   // 1. Busca Álbuns
   final albumsRaw = await ref.read(dioProvider).get('/search/catalog',
-      queryParameters: {'query': artistName, 'type': 'album', 'limit': 20});
+      queryParameters: {'query': artistName, 'type': 'album', 'limit': 40});
 
   // 2. Busca Músicas (Singles/Top Songs)
   final songsRaw = await ref.read(dioProvider).get('/search/catalog',
-      queryParameters: {'query': artistName, 'type': 'song', 'limit': 20});
+      queryParameters: {'query': artistName, 'type': 'song', 'limit': 40});
 
   // 3. Busca Artistas Relacionados (via busca de artistas do mesmo nome/gênero)
   List<Map<String, dynamic>> relatedArtists = [];
@@ -90,8 +99,13 @@ final artistDetailsProvider =
     print("Erro ao buscar artistas relacionados: $e");
   }
 
-  List<dynamic> albums = List.from(albumsRaw.data);
-  List<dynamic> songs = List.from(songsRaw.data);
+  // Filtra álbuns e músicas para mostrar APENAS do artista correto
+  List<dynamic> albums = List.from(albumsRaw.data)
+      .where((a) => isCorrectArtist(a['artistName'] ?? ''))
+      .toList();
+  List<dynamic> songs = List.from(songsRaw.data)
+      .where((s) => isCorrectArtist(s['artistName'] ?? ''))
+      .toList();
 
   Map<String, dynamic>? latestRelease;
 
