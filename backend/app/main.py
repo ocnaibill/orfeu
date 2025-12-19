@@ -10,6 +10,7 @@ from typing import Optional, Dict, List
 from .database import engine, get_db, Base
 from . import models, auth_utils
 import os
+import re
 import asyncio
 import httpx
 import subprocess
@@ -2120,55 +2121,52 @@ async def search_catalog(
     offset: int = 0, 
     type: str = Query("song", enum=["song", "album", "artist"]) 
 ):
+    """
+    Busca no catálogo de músicas.
+    Prioridade: YouTube Music (mais resultados) com enriquecimento do Tidal.
+    Remove duplicatas automaticamente.
+    """
     print(f"🔎 Buscando no catálogo: '{query}' [Type: {type}, Limit: {limit}, Offset: {offset}]")
-    results = []
     
-    # Precisamos pedir (limit + offset) aos providers porque eles não suportam paginação real (stateful)
-    # e podem sempre retornar do início. Assim garantimos que temos itens suficientes para o slice final.
-    fetch_limit = limit + offset
-
-    # 1. Tenta TIDAL primeiro
+    fetch_limit = limit + offset + 20  # Pega mais para compensar duplicatas removidas
+    
+    yt_results = []
+    tidal_results = []
+    
+    # 1. YouTube Music PRIMEIRO (mais resultados, melhor cobertura)
+    try:
+        yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type, fetch_limit)
+        print(f"   ✅ YTMusic retornou {len(yt_results)} resultados.")
+    except Exception as e:
+        print(f"   ❌ Erro no YTMusic: {e}")
+    
+    # 2. Tidal em PARALELO (para enriquecimento e fallback)
     try:
         tidal_results = await run_in_threadpool(TidalProvider.search_catalog, query, fetch_limit, type)
-        if tidal_results: 
-            print(f"   ✅ Tidal retornou {len(tidal_results)} resultados.")
-            results = tidal_results
-        else:
-            print("   ⚠️ Tidal retornou lista vazia.")
-    except Exception as e: 
+        print(f"   ✅ Tidal retornou {len(tidal_results)} resultados.")
+    except Exception as e:
         print(f"   ❌ Erro no Tidal: {e}")
-
-    # 2. Fallback para YTMusic/CatalogProvider se Tidal falhar
-    if not results:
-        print("   -> Fallback para CatalogProvider (YTMusic)...")
-        try:
-            yt_results = await run_in_threadpool(CatalogProvider.search_catalog, query, type)
-            if yt_results:
-                print(f"   ✅ YTMusic retornou {len(yt_results)} resultados.")
-                results = yt_results
-            else:
-                print("   ⚠️ YTMusic retornou lista vazia.")
-        except Exception as e:
-            print(f"   ❌ Erro no YTMusic: {e}")
-
-    # 3. Paginação Manual Robusta
-    # Garante que o slice respeite os limites da lista retornada
+    
+    # 3. Mescla resultados com deduplicação inteligente
+    results = merge_and_deduplicate_results(yt_results, tidal_results, type)
+    print(f"   🔀 Após merge/dedup: {len(results)} resultados únicos")
+    
+    # 4. Paginação
     total_items = len(results)
     final_page = []
     
     if total_items > offset:
         end = offset + limit
-        final_page = results[offset : end]
+        final_page = results[offset:end]
     
-    print(f"   📤 Retornando {len(final_page)} itens (Offset: {offset}, Total Bruto: {total_items})")
+    print(f"   📤 Retornando {len(final_page)} itens (Offset: {offset}, Total: {total_items})")
 
-    # 4. Verifica downloads locais usando tidal_id para precisão
+    # 5. Verifica downloads locais
     for item in final_page:
         if item.get('type') == 'song':
             tidal_id = item.get('tidalId')
             album = item.get('collectionName')
             
-            # Busca precisa usando tidal_id + metadados
             local_file = find_local_match(
                 artist=item.get('artistName', ''), 
                 track=item.get('trackName', ''),
@@ -2178,7 +2176,6 @@ async def search_catalog(
             item['isDownloaded'] = local_file is not None
             item['filename'] = local_file
             
-            # Se arquivo existe localmente, extrai gênero dos metadados
             if local_file:
                 try:
                     tags = AudioManager.get_audio_tags(local_file)
@@ -2186,11 +2183,77 @@ async def search_catalog(
                 except:
                     pass
         else:
-            # Artistas e álbuns não têm arquivo único associado dessa forma
             item['isDownloaded'] = False
             item['filename'] = None
 
     return final_page
+
+
+def merge_and_deduplicate_results(yt_results: list, tidal_results: list, result_type: str) -> list:
+    """
+    Mescla resultados do YTMusic e Tidal, removendo duplicatas.
+    Prioriza YTMusic mas enriquece com tidalId quando disponível.
+    """
+    seen = {}  # Chave normalizada -> item
+    final_results = []
+    
+    def make_key(item: dict) -> str:
+        """Cria chave única normalizada para detectar duplicatas."""
+        if result_type == "artist":
+            name = normalize_text(item.get('artistName', ''))
+            # Remove sufixos comuns que criam duplicatas
+            name = name.replace(' official', '').replace(' music', '').replace(' vevo', '')
+            return f"artist:{name}"
+        
+        elif result_type == "album":
+            artist = normalize_text(item.get('artistName', ''))
+            album = normalize_text(item.get('collectionName', ''))
+            # Remove anos e edições do nome do álbum para agrupar versões
+            album = re.sub(r'\s*\(?(deluxe|remaster|edition|version|expanded|anniversary)\)?.*$', '', album, flags=re.IGNORECASE)
+            return f"album:{artist}:{album}"
+        
+        else:  # song
+            artist = normalize_text(item.get('artistName', ''))
+            track = normalize_text(item.get('trackName', ''))
+            # Remove indicadores de versão da música
+            track = re.sub(r'\s*\(?(remix|remaster|live|acoustic|radio edit|explicit|clean)\)?.*$', '', track, flags=re.IGNORECASE)
+            return f"song:{artist}:{track}"
+    
+    def enrich_with_tidal(yt_item: dict, tidal_item: dict) -> dict:
+        """Enriquece item do YTMusic com dados do Tidal."""
+        if tidal_item.get('tidalId'):
+            yt_item['tidalId'] = tidal_item['tidalId']
+        if result_type == "album" and tidal_item.get('collectionId'):
+            yt_item['tidalCollectionId'] = tidal_item['collectionId']
+        if result_type == "artist" and tidal_item.get('artistId'):
+            yt_item['tidalArtistId'] = tidal_item['artistId']
+        return yt_item
+    
+    # Indexa resultados do Tidal para lookup rápido
+    tidal_index = {}
+    for item in tidal_results:
+        key = make_key(item)
+        if key not in tidal_index:
+            tidal_index[key] = item
+    
+    # Processa YTMusic primeiro (prioridade)
+    for item in yt_results:
+        key = make_key(item)
+        if key not in seen:
+            # Tenta enriquecer com Tidal
+            if key in tidal_index:
+                item = enrich_with_tidal(item, tidal_index[key])
+            seen[key] = item
+            final_results.append(item)
+    
+    # Adiciona itens do Tidal que não existem no YTMusic
+    for item in tidal_results:
+        key = make_key(item)
+        if key not in seen:
+            seen[key] = item
+            final_results.append(item)
+    
+    return final_results
 
 @app.get("/catalog/artist/{artist_id}")
 async def get_artist_details(artist_id: str):
