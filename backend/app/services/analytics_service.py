@@ -184,6 +184,7 @@ class AnalyticsService:
         Mostra apenas uma entrada por álbum (o mais recente).
         """
         import re
+        from collections import Counter
         
         def normalize_string(s: str) -> str:
             """Normaliza string removendo acentos e caracteres especiais"""
@@ -195,6 +196,29 @@ class AnalyticsService:
             s = re.sub(r'[^\w\s]', '', s)
             s = re.sub(r'\s+', ' ', s)
             return s
+        
+        def get_album_info_from_tracks(db: Session, album_id: str) -> tuple:
+            """
+            Busca as informações do álbum baseado nas tracks que têm esse album_id.
+            Retorna o nome do álbum e artista mais comuns entre as tracks.
+            Isso evita usar metadados errados de uma única track.
+            """
+            tracks_with_album = db.query(models.Track.album, models.Track.artist)\
+                .filter(models.Track.album_id == album_id)\
+                .all()
+            
+            if not tracks_with_album:
+                return None, None
+            
+            # Conta as ocorrências de cada nome de álbum e artista
+            album_names = Counter([t.album for t in tracks_with_album if t.album])
+            artist_names = Counter([t.artist for t in tracks_with_album if t.artist])
+            
+            # Retorna os mais comuns
+            most_common_album = album_names.most_common(1)[0][0] if album_names else None
+            most_common_artist = artist_names.most_common(1)[0][0] if artist_names else None
+            
+            return most_common_album, most_common_artist
         
         # Pega mais histórico para filtrar duplicatas de álbum
         history = db.query(models.ListenHistory.track_id, models.ListenHistory.played_at)\
@@ -226,13 +250,29 @@ class AnalyticsService:
             
             seen_albums.add(album_key)
             
-            # Se tiver album_id salvo, usa diretamente
+            # Se tiver album_id salvo, busca informações corretas do álbum
             if t.album_id:
+                # Primeiro, tenta buscar em SavedAlbum (cache confiável)
+                saved_album = db.query(models.SavedAlbum)\
+                    .filter(models.SavedAlbum.album_id == t.album_id)\
+                    .first()
+                
+                if saved_album:
+                    # Usa os metadados do álbum salvo (mais confiável)
+                    album_title = saved_album.title
+                    album_artist = saved_album.artist
+                else:
+                    # Busca nas tracks: pega os metadados mais comuns
+                    # para evitar usar metadados errados de uma única track
+                    common_album, common_artist = get_album_info_from_tracks(db, t.album_id)
+                    album_title = common_album or t.album
+                    album_artist = common_artist or t.artist
+                
                 recent_albums.append({
                     "type": "album",
                     "id": t.album_id,
-                    "title": t.album,
-                    "artist": t.artist,
+                    "title": album_title,
+                    "artist": album_artist,
                     "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
                     "played_at": played_at
                 })

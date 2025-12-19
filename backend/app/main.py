@@ -106,6 +106,10 @@ class HistoryRequest(BaseModel):
     duration_listened: float
     album_id: Optional[str] = None  # ID do álbum no catálogo (Tidal/YTMusic)
     genre: Optional[str] = None  # Gênero do álbum
+    # Metadados do catálogo (mais confiáveis que tags do arquivo)
+    catalog_title: Optional[str] = None
+    catalog_artist: Optional[str] = None
+    catalog_album: Optional[str] = None
 
 class PlaylistCreate(BaseModel):
     name: str
@@ -1820,12 +1824,14 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
             meta = AudioManager.get_audio_metadata(fp)
             tags = AudioManager.get_audio_tags(fp)
             
-            # Busca gênero: primeiro dos metadados, depois online
-            genre = tags.get('genre')
-            artist_name = tags.get('artist') or "Desconhecido"
-            album_name = tags.get('album')
-            title_name = tags.get('title') or os.path.splitext(req.filename)[0]
+            # PRIORIDADE: Metadados do catálogo > Tags do arquivo
+            # Isso evita problemas com arquivos que têm metadados incorretos
+            artist_name = req.catalog_artist or tags.get('artist') or "Desconhecido"
+            album_name = req.catalog_album or tags.get('album')
+            title_name = req.catalog_title or tags.get('title') or os.path.splitext(req.filename)[0]
             
+            # Busca gênero: primeiro do request, depois dos metadados, depois online
+            genre = req.genre or tags.get('genre')
             if not genre or genre == "" or genre == "Desconhecido":
                 genre = fetch_and_assign_genre(artist_name, album_name, title_name)
             
@@ -1847,18 +1853,35 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
             print(f"⚠️ Erro ao criar track no histórico: {e}")
             return {"status": "error", "message": "Track não encontrada"}
     else:
-        # Se track existe mas não tem album_id ou genre, atualiza
+        # Se track existe, atualiza com metadados do catálogo se disponíveis
         updated = False
+        
+        # Atualiza album_id se não tiver
         if req.album_id and not track.album_id:
             track.album_id = req.album_id
             updated = True
+        
+        # Se temos metadados do catálogo E eles são diferentes dos atuais, atualiza
+        # (metadados do catálogo são mais confiáveis que tags de arquivo)
+        if req.catalog_artist and track.artist != req.catalog_artist:
+            print(f"📝 Corrigindo artista: '{track.artist}' -> '{req.catalog_artist}'")
+            track.artist = req.catalog_artist
+            updated = True
+        if req.catalog_album and track.album != req.catalog_album:
+            print(f"📝 Corrigindo álbum: '{track.album}' -> '{req.catalog_album}'")
+            track.album = req.catalog_album
+            updated = True
+        if req.catalog_title and track.title != req.catalog_title:
+            print(f"📝 Corrigindo título: '{track.title}' -> '{req.catalog_title}'")
+            track.title = req.catalog_title
+            updated = True
+            
+        # Atualiza gênero se não tiver
         if not track.genre or track.genre == "" or track.genre == "Desconhecido":
-            # Busca gênero se ainda não tem
             if req.genre and req.genre != "Desconhecido":
                 track.genre = req.genre
                 updated = True
             else:
-                # Tenta buscar online
                 genre = fetch_and_assign_genre(track.artist, track.album, track.title)
                 if genre:
                     track.genre = genre
@@ -2678,6 +2701,7 @@ async def get_plain_lyrics(filename: str):
 @app.get("/stream")
 async def stream_music(request: Request, filename: str, quality: str = Query("lossless")):
     full_path = AudioManager.find_local_file(filename)
+    print(f"🎵 Stream: '{filename}' -> '{full_path}'")  # Debug log
     if quality != "lossless":
         return StreamingResponse(AudioManager.transcode_stream(full_path, quality), media_type="audio/mpeg")
     

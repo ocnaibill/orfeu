@@ -22,14 +22,34 @@ class AudioManager:
     def find_local_file(filename: str) -> str:
         # Limpeza de segurança
         sanitized_filename = filename.replace("\\", "/").lstrip("/")
+        
+        # PRIMEIRO: Tenta o caminho completo (mais preciso)
+        full_path = os.path.join(AudioManager.BASE_PATH, sanitized_filename)
+        if os.path.isfile(full_path):
+            return full_path
+        
+        # SEGUNDO: Busca por nome de arquivo (fallback para compatibilidade)
+        # Só usa se o caminho completo não existir
         target_file_name = os.path.basename(sanitized_filename)
         
-        # Varredura
+        # Varredura - mas agora priorizamos matches com caminho similar
+        matches = []
         for root, dirs, files in os.walk(AudioManager.BASE_PATH):
             if target_file_name in files:
-                return os.path.join(root, target_file_name)
+                found_path = os.path.join(root, target_file_name)
+                # Calcula similaridade do caminho
+                rel_path = os.path.relpath(found_path, AudioManager.BASE_PATH)
+                if rel_path.lower() == sanitized_filename.lower():
+                    return found_path  # Match exato (case insensitive)
+                matches.append(found_path)
+        
+        # Se encontrou algum match, retorna o primeiro (comportamento antigo)
+        if matches:
+            if len(matches) > 1:
+                print(f"⚠️ Múltiplos arquivos encontrados para '{target_file_name}': {matches}")
+            return matches[0]
                 
-        raise HTTPException(status_code=404, detail=f"Ficheiro '{target_file_name}' não encontrado.")
+        raise HTTPException(status_code=404, detail=f"Ficheiro '{sanitized_filename}' não encontrado.")
 
     @staticmethod
     def get_audio_tags(file_path: str) -> dict:

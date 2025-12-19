@@ -463,6 +463,12 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
           track['albumId']?.toString() ??
           track['album_id']?.toString();
 
+      // Extrai metadados do catálogo (mais confiáveis que tags do arquivo)
+      final catalogTitle = track['title']?.toString() ?? track['trackName']?.toString();
+      final catalogArtist = track['artist']?.toString() ?? track['artistName']?.toString();
+      final catalogAlbum = track['album']?.toString() ?? track['collectionName']?.toString();
+      final genre = track['genre']?.toString();
+
       final response = await http.post(
         Uri.parse('$baseUrl/users/me/history'),
         headers: {
@@ -473,6 +479,10 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
           'filename': filename,
           'duration_listened': durationListened,
           if (albumId != null) 'album_id': albumId,
+          if (catalogTitle != null) 'catalog_title': catalogTitle,
+          if (catalogArtist != null) 'catalog_artist': catalogArtist,
+          if (catalogAlbum != null) 'catalog_album': catalogAlbum,
+          if (genre != null) 'genre': genre,
         }),
       );
 
