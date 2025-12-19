@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:ui';
-import 'dart:io';
+import 'dart:typed_data';
 import '../providers.dart';
 import '../services/audio_service.dart';
 import '../widgets/bottom_nav_area.dart';
@@ -783,7 +784,8 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                       imageQuality: 85,
                     );
                     if (image != null) {
-                      final file = File(image.path);
+                      final bytes = await image.readAsBytes();
+                      final fileName = image.name;
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -794,7 +796,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
                       }
                       final coverUrl = await ref
                           .read(libraryControllerProvider)
-                          .uploadPlaylistCover(int.parse(widget.playlistId), file);
+                          .uploadPlaylistCover(int.parse(widget.playlistId), bytes, fileName);
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(

@@ -1,10 +1,14 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:version/version.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../providers.dart';
+
+// Import condicional para Platform
+import 'platform_info_stub.dart'
+    if (dart.library.io) 'platform_info_native.dart';
 
 class UpdateInfo {
   final Version latestVersion;
@@ -25,6 +29,9 @@ class UpdateService {
 
   /// Verifica se há atualização disponível
   Future<UpdateInfo?> checkForUpdate() async {
+    // Na web não há updates de app
+    if (kIsWeb) return null;
+    
     final dio = ref.read(dioProvider);
 
     late PackageInfo packageInfo;
@@ -35,16 +42,10 @@ class UpdateService {
       return null;
     }
 
-    // Derminar a plataforma
-    String platformKey;
-    if (Platform.isAndroid) {
-      platformKey = 'android';
-    } else if (Platform.isWindows) {
-      platformKey = 'windows';
-    } else if (Platform.isMacOS) {
-      platformKey = 'macos';
-    } else {
-      return null; // Não suporta esta plataforma ou é iOS/Web
+    // Determinar a plataforma
+    String? platformKey = getPlatformKey();
+    if (platformKey == null) {
+      return null; // Não suporta esta plataforma
     }
 
     try {

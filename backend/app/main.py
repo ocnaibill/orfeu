@@ -599,10 +599,33 @@ async def shutdown_event():
 # FIM DO SISTEMA DE CACHE DE GÊNEROS
 # =====================================================
 
+# --- Configuração do Web App ---
+WEB_APP_DIR = "/downloads_public/web"
+if os.path.exists(WEB_APP_DIR):
+    app.mount("/app", StaticFiles(directory=WEB_APP_DIR, html=True), name="webapp")
+    print(f"🌐 Web App montado em /app")
+
 # --- Rotas ---
 @app.get("/")
-def read_root():
-    return {"status": "Orfeu is alive", "service": "Backend", "version": "2.2.0"}
+def read_root(request: Request):
+    """
+    Rota raiz: 
+    - Se acessado de navegador: redireciona para /app (web app)
+    - Se acessado de API: retorna status JSON
+    """
+    # Verifica se é um navegador pelo header Accept
+    accept = request.headers.get("accept", "")
+    user_agent = request.headers.get("user-agent", "").lower()
+    
+    # Se é um navegador pedindo HTML e o web app existe
+    is_browser = "text/html" in accept or "mozilla" in user_agent or "chrome" in user_agent
+    web_app_exists = os.path.exists(f"{WEB_APP_DIR}/index.html")
+    
+    if is_browser and web_app_exists:
+        return RedirectResponse(url="/app", status_code=302)
+    
+    # Caso contrário, retorna status da API
+    return {"status": "Orfeu is alive", "service": "Backend", "version": "2.4.0"}
 
 
 # --- ROTAS DE AUTENTICAÇÃO ---

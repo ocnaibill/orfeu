@@ -1,0 +1,81 @@
+name: Flutter Web Build & Deploy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "mobile_app/**"
+      - ".github/workflows/flutter_web.yml"
+  workflow_dispatch:
+
+jobs:
+  build_web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          
+      - name: Get Version
+        id: get_version
+        run: |
+          VERSION=$(grep 'version:' mobile_app/pubspec.yaml | head -1 | awk '{print $2}' | cut -d+ -f1)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "📱 Versão do App: $VERSION"
+          
+      - name: Install Dependencies
+        run: |
+          cd mobile_app
+          flutter pub get
+          
+      - name: Build Web Release
+        run: |
+          cd mobile_app
+          flutter build web --release --web-renderer canvaskit --base-href /
+          
+      - name: Upload Web Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-release
+          path: mobile_app/build/web/
+          retention-days: 7
+          
+  deploy_web:
+    needs: build_web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Web Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-release
+          path: web_build
+          
+      - name: List Files (Debug)
+        run: ls -la web_build/
+        
+      - name: Deploy Web para o Servidor
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOMELAB_HOST }}
+          username: ${{ secrets.HOMELAB_USER }}
+          key: ${{ secrets.HOMELAB_SSH_KEY }}
+          port: ${{ secrets.HOMELAB_PORT }}
+          source: "web_build/*"
+          target: ~/orfeu/public_downloads/web/
+          strip_components: 1
+          rm: true  # Remove arquivos antigos antes de copiar
+          
+      - name: Setup Nginx Config
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOMELAB_HOST }}
+          username: ${{ secrets.HOMELAB_USER }}
+          key: ${{ secrets.HOMELAB_SSH_KEY }}
+          port: ${{ secrets.HOMELAB_PORT }}
+          script: |
+            echo "✅ Web app atualizado em ~/orfeu/public_downloads/web/"
+            echo "📁 Conteúdo:"
+            ls -la ~/orfeu/public_downloads/web/ | head -20

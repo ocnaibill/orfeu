@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'dart:io';
+import 'dart:typed_data';
 
 // --- Configuração de Rede ---
 const String serverIp = '127.0.0.1';
@@ -585,13 +585,15 @@ class LibraryController {
   }
 
   // --- UPLOAD DE IMAGEM PARA COVER DA PLAYLIST ---
-  Future<String?> uploadPlaylistCover(int playlistId, File imageFile) async {
+  /// Faz upload de uma imagem como capa da playlist.
+  /// [imageBytes] são os bytes da imagem.
+  /// [fileName] é o nome do arquivo (ex: "cover.jpg").
+  Future<String?> uploadPlaylistCover(int playlistId, Uint8List imageBytes, String fileName) async {
     final dio = ref.read(dioProvider);
     try {
-      final fileName = imageFile.path.split('/').last;
       final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          imageFile.path,
+        'file': MultipartFile.fromBytes(
+          imageBytes,
           filename: fileName,
         ),
       });

@@ -26,6 +26,7 @@ mobile-app/.flutter-plugins-dependencies
 # --- Mídia e Downloads (MUITO IMPORTANTE) ---
 # Ignorar as pastas onde as músicas serão salvas
 downloads/
+public_downloads/
 music/
 data/
 *.flac

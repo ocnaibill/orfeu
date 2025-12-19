@@ -1,38 +1,114 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="$FLUTTER_BASE_HREF">
+  <base href="/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
-
-  <!-- iOS meta tags & icons -->
+  <meta name="description" content="Orfeu - Seu player de música pessoal">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  
+  <!-- PWA Meta Tags -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="mobile_app">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Orfeu">
+  <meta name="theme-color" content="#1A1A1A">
+  
+  <!-- Open Graph / Social -->
+  <meta property="og:title" content="Orfeu">
+  <meta property="og:description" content="Seu player de música pessoal">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://orfeu.ocnaibill.dev">
+  
+  <!-- Icons -->
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
-  <!-- Favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/Icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/Icon-16.png">
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>mobile_app</title>
+  <title>Orfeu</title>
   <link rel="manifest" href="manifest.json">
+  
+  <!-- Loading styles -->
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #1A1A1A;
+      overflow: hidden;
+    }
+    
+    .loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%);
+    }
+    
+    .loading-logo {
+      width: 120px;
+      height: 120px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    
+    .loading-text {
+      color: #D4AF37;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 24px;
+      font-weight: 600;
+      margin-top: 20px;
+      letter-spacing: 2px;
+    }
+    
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(212, 175, 55, 0.2);
+      border-top-color: #D4AF37;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-top: 30px;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.05); opacity: 0.8; }
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
 </head>
 <body>
+  <div class="loading-screen" id="loading">
+    <svg class="loading-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="50" cy="50" r="45" stroke="#D4AF37" stroke-width="2" fill="none"/>
+      <circle cx="50" cy="50" r="20" fill="#D4AF37"/>
+      <path d="M35 35 L65 50 L35 65 Z" fill="#1A1A1A"/>
+    </svg>
+    <div class="loading-text">ORFEU</div>
+    <div class="loading-spinner"></div>
+  </div>
+  
+  <script>
+    window.addEventListener('flutter-first-frame', function() {
+      const loading = document.getElementById('loading');
+      if (loading) {
+        loading.style.transition = 'opacity 0.3s ease-out';
+        loading.style.opacity = '0';
+        setTimeout(() => loading.remove(), 300);
+      }
+    });
+  </script>
+  
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

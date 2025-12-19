@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'dart:io' show Platform;
 import 'package:palette_generator/palette_generator.dart';
 import 'search_screen.dart';
 import 'library_screen.dart';
@@ -44,15 +44,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   }
 
   void _checkForUpdates() async {
-    if (Platform.isIOS ||
-        Platform.isAndroid ||
-        Platform.isWindows ||
-        Platform.isMacOS) {
-      final updateService = ref.read(updateServiceProvider);
-      final updateInfo = await updateService.checkForUpdate();
-      if (updateInfo != null && mounted) {
-        _showUpdateDialog(updateInfo, updateService);
-      }
+    // Na web não verificamos updates de app
+    if (kIsWeb) return;
+    
+    final updateService = ref.read(updateServiceProvider);
+    final updateInfo = await updateService.checkForUpdate();
+    if (updateInfo != null && mounted) {
+      _showUpdateDialog(updateInfo, updateService);
     }
   }
 

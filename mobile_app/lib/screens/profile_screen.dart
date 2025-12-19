@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 import '../providers.dart';
 import 'vibe_musical_screen.dart';
 
@@ -346,6 +347,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     String? selectedImagePath;
     String? selectedImageBase64;
     String? selectedImageType;
+    Uint8List? selectedImageBytes; // Para preview cross-platform
     bool isUploading = false;
 
     showModalBottomSheet(
@@ -408,6 +410,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               selectedImagePath = image.path;
                               selectedImageBase64 = base64;
                               selectedImageType = contentType;
+                              selectedImageBytes = bytes;
                             });
                           }
                         },
@@ -419,10 +422,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: Colors.grey[800],
-                                image: selectedImagePath != null
+                                image: selectedImageBytes != null
                                     ? DecorationImage(
-                                        image:
-                                            FileImage(File(selectedImagePath!)),
+                                        image: MemoryImage(selectedImageBytes!),
                                         fit: BoxFit.cover,
                                       )
                                     : (profile.profileImageUrl != null &&
