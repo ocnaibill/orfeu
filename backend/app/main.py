@@ -201,77 +201,65 @@ def find_local_match(artist: str, track: str, album: str = None, tidal_id: int =
     """
     Busca arquivo local. Prioridade:
     1. tidal_id (mais preciso - garante unicidade)
-    2. artist + track + album (fallback com contexto de álbum)
-    3. artist + track apenas (último recurso, mais fuzzy)
+    2. artist + track + album (match EXATO no banco)
+    3. NÃO faz mais fallback fuzzy para evitar falsos positivos
     """
+    print(f"🔍 find_local_match: artist='{artist}', track='{track}', album='{album}', tidal_id={tidal_id}")
+    
     # 1. Primeiro tenta pelo tidal_id (mais confiável)
     if tidal_id:
         result = find_local_match_by_tidal_id(tidal_id)
         if result:
+            print(f"   ✅ Encontrado por tidal_id: {result}")
             return result
+        else:
+            print(f"   ❌ Não encontrado por tidal_id")
     
-    # 2. Busca no banco downloaded_tracks por metadados exatos
+    # 2. Busca no banco downloaded_tracks - precisa ter TODOS os campos batendo
     db = get_db_session()
     try:
-        query = db.query(models.DownloadedTrack).filter(
-            models.DownloadedTrack.artist.ilike(f"%{artist}%"),
-            models.DownloadedTrack.title.ilike(f"%{track}%")
-        )
+        # Normaliza para comparação
+        artist_norm = normalize_text(artist).lower() if artist else ""
+        track_norm = normalize_text(track).lower() if track else ""
+        album_norm = normalize_text(album).lower() if album else ""
         
-        # Se temos álbum, filtra também por ele (mais preciso)
-        if album:
-            query = query.filter(models.DownloadedTrack.album.ilike(f"%{album}%"))
+        # Busca todos os registros do artista
+        candidates = db.query(models.DownloadedTrack).filter(
+            models.DownloadedTrack.artist.ilike(f"%{artist}%")
+        ).all()
         
-        downloaded = query.first()
-        if downloaded and downloaded.local_path:
-            full_path = os.path.join("/downloads", downloaded.local_path)
-            if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
-                return full_path
+        for candidate in candidates:
+            candidate_title = normalize_text(candidate.title or "").lower()
+            candidate_album = normalize_text(candidate.album or "").lower()
+            
+            # Verifica se o título bate (usando fuzzy com threshold alto)
+            title_score = fuzz.ratio(track_norm, candidate_title)
+            
+            # Precisa de score >= 85 para o título
+            if title_score >= 85:
+                # Se temos álbum, verifica também
+                if album:
+                    album_score = fuzz.ratio(album_norm, candidate_album)
+                    if album_score < 70:
+                        print(f"   ⚠️ Álbum não bate: '{album}' vs '{candidate.album}' (score: {album_score})")
+                        continue
+                
+                full_path = os.path.join("/downloads", candidate.local_path)
+                if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+                    print(f"   ✅ Encontrado no banco: {candidate.title} -> {full_path}")
+                    return full_path
+        
+        print(f"   ❌ Não encontrado no banco (nenhum match de título >= 85%)")
+        
     except Exception as e:
         print(f"⚠️ Erro ao buscar downloaded_tracks: {e}")
     finally:
         db.close()
     
-    # 3. Fallback: busca por arquivo no disco (legado, para arquivos antigos)
-    base_path = "/downloads"
-    target_str = normalize_text(f"{artist} {track}")
-    
-    # Se temos álbum, inclui na busca para maior precisão
-    if album:
-        target_str = normalize_text(f"{artist} {album} {track}")
-    
-    best_match = None
-    best_score = 0
-    
-    for root, dirs, files in os.walk(base_path):
-        for file in files:
-            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
-                full_path = os.path.join(root, file)
-                if os.path.getsize(full_path) == 0: 
-                    continue
-                
-                # Compara com "PastaPai NomeArquivo" para contexto
-                parent_folder = os.path.basename(root)
-                grandparent_folder = os.path.basename(os.path.dirname(root))
-                
-                # Constrói string candidata com contexto de pastas
-                candidate_str = normalize_text(f"{grandparent_folder} {parent_folder} {file}")
-                
-                # Se só tiver arquivo solto, compara só o nome
-                if parent_folder == "downloads": 
-                    candidate_str = normalize_text(file)
-                
-                # Se temos álbum e ele está no path, dá mais peso
-                score = fuzz.partial_token_sort_ratio(target_str, candidate_str)
-                
-                if album and normalize_text(album) in candidate_str.lower():
-                    score += 10  # Bonus por match de álbum
-                
-                if score > best_score and score > 85:
-                    best_score = score
-                    best_match = full_path
-    
-    return best_match
+    # NÃO faz mais fallback para busca fuzzy no disco
+    # Isso evita falsos positivos como músicas diferentes do mesmo álbum
+    print(f"   ❌ Nenhum match local encontrado para '{artist} - {track}'")
+    return None
 
 def register_download(tidal_id: int = None, ytmusic_id: str = None, 
                       title: str = None, artist: str = None, album: str = None,
@@ -349,6 +337,266 @@ def get_update_config() -> dict:
         with open(config_path, 'r') as f:
             return json.load(f)
     return {"latest_version": "0.0.0"}
+
+# =====================================================
+# CACHE DE GÊNEROS - Sistema de atualização automática
+# =====================================================
+
+# Lista de todos os gêneros suportados
+SUPPORTED_GENRES = [
+    "pop", "rock", "hip hop", "rap", "r&b", "electronic", "edm",
+    "jazz", "classical", "country", "latin", "reggaeton", "k-pop",
+    "j-pop", "metal", "indie", "alternative", "soul", "funk", 
+    "blues", "reggae", "folk", "acoustic", "dance", "house",
+    "techno", "ambient", "soundtrack", "anime", "brazilian",
+    "mpb", "sertanejo", "pagode", "forró", "bossa nova"
+]
+
+# Queries otimizadas para cada gênero
+GENRE_QUERIES = {
+    "pop": "top pop hits 2024",
+    "rock": "best rock songs",
+    "hip hop": "hip hop hits 2024",
+    "hip-hop": "hip hop hits 2024",
+    "rap": "rap hits 2024",
+    "r&b": "r&b hits 2024",
+    "rnb": "r&b hits 2024",
+    "electronic": "electronic dance music",
+    "edm": "edm hits",
+    "jazz": "jazz classics",
+    "classical": "classical music popular",
+    "country": "country hits 2024",
+    "latin": "latin hits 2024",
+    "reggaeton": "reggaeton hits 2024",
+    "k-pop": "kpop hits 2024",
+    "kpop": "kpop hits 2024",
+    "j-pop": "jpop hits",
+    "jpop": "jpop hits",
+    "metal": "metal songs",
+    "indie": "indie music hits",
+    "alternative": "alternative rock hits",
+    "soul": "soul music classics",
+    "funk": "funk music hits",
+    "blues": "blues music",
+    "reggae": "reggae hits",
+    "folk": "folk music",
+    "acoustic": "acoustic songs",
+    "dance": "dance music hits",
+    "house": "house music",
+    "techno": "techno music",
+    "ambient": "ambient music",
+    "soundtrack": "movie soundtracks popular",
+    "anime": "anime openings",
+    "brazilian": "brazilian music hits",
+    "mpb": "mpb musica popular brasileira",
+    "sertanejo": "sertanejo 2024",
+    "pagode": "pagode hits",
+    "forró": "forró hits",
+    "bossa nova": "bossa nova classics",
+}
+
+# Cache em memória para evitar I/O constante (atualizado quando o banco é atualizado)
+_genre_cache_memory: Dict[str, dict] = {}
+_cache_last_refresh: float = 0
+CACHE_MEMORY_TTL = 3600  # 1 hora em memória antes de revalidar com banco
+
+async def fetch_genre_tracks_from_api(genre_name: str, limit: int = 100) -> list:
+    """Busca tracks de um gênero no YouTube Music (chamada à API real)."""
+    genre_lower = genre_name.lower().strip()
+    search_query = GENRE_QUERIES.get(genre_lower, f"{genre_name} music hits")
+    
+    print(f"🎵 [API] Buscando tracks do gênero '{genre_name}' com query: '{search_query}'")
+    
+    results = await run_in_threadpool(
+        CatalogProvider.search_catalog, 
+        search_query, 
+        "song", 
+        limit
+    )
+    
+    if not results:
+        return []
+    
+    tracks = []
+    seen_tracks = set()
+    
+    for item in results:
+        track_key = f"{item.get('artistName', '').lower()}_{item.get('trackName', '').lower()}"
+        if track_key in seen_tracks:
+            continue
+        seen_tracks.add(track_key)
+        
+        duration_ms = item.get('durationMs', 0)
+        
+        # Filtra tracks muito longas ou curtas
+        if duration_ms > 600000 or (duration_ms > 0 and duration_ms < 30000):
+            continue
+        
+        tracks.append({
+            "trackName": item.get('trackName', ''),
+            "artistName": item.get('artistName', ''),
+            "collectionName": item.get('collectionName', ''),
+            "artworkUrl": item.get('artworkUrl', ''),
+            "videoId": item.get('videoId'),
+            "duration": item.get('duration', ''),
+            "durationMs": duration_ms,
+            "source": "YTMusic",
+            "genre": genre_name,
+        })
+    
+    return tracks
+
+async def update_genre_cache_single(db: Session, genre_name: str) -> bool:
+    """Atualiza o cache de um único gênero."""
+    try:
+        tracks = await fetch_genre_tracks_from_api(genre_name)
+        
+        if not tracks:
+            print(f"⚠️ Nenhuma track encontrada para '{genre_name}'")
+            return False
+        
+        genre_lower = genre_name.lower().strip()
+        
+        # Upsert no banco de dados
+        existing = db.query(models.GenreCache).filter(
+            models.GenreCache.genre_name == genre_lower
+        ).first()
+        
+        if existing:
+            existing.tracks = tracks
+            existing.track_count = len(tracks)
+            existing.source = "ytmusic"
+        else:
+            cache_entry = models.GenreCache(
+                genre_name=genre_lower,
+                tracks=tracks,
+                track_count=len(tracks),
+                source="ytmusic"
+            )
+            db.add(cache_entry)
+        
+        db.commit()
+        
+        # Atualiza cache em memória
+        _genre_cache_memory[genre_lower] = {
+            "tracks": tracks,
+            "track_count": len(tracks),
+            "source": "ytmusic"
+        }
+        
+        print(f"✅ Cache atualizado para '{genre_name}': {len(tracks)} tracks")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao atualizar cache de '{genre_name}': {e}")
+        db.rollback()
+        return False
+
+async def update_all_genres_cache():
+    """Atualiza o cache de todos os gêneros. Executado em background."""
+    from .database import SessionLocal
+    
+    print("🔄 Iniciando atualização completa do cache de gêneros...")
+    start_time = time.time()
+    
+    db = SessionLocal()
+    success_count = 0
+    
+    try:
+        for genre in SUPPORTED_GENRES:
+            try:
+                if await update_genre_cache_single(db, genre):
+                    success_count += 1
+                # Delay entre requests para não sobrecarregar a API
+                await asyncio.sleep(2)
+            except Exception as e:
+                print(f"❌ Erro no gênero '{genre}': {e}")
+                continue
+        
+        elapsed = time.time() - start_time
+        print(f"✅ Cache de gêneros atualizado! {success_count}/{len(SUPPORTED_GENRES)} gêneros em {elapsed:.1f}s")
+        
+        global _cache_last_refresh
+        _cache_last_refresh = time.time()
+        
+    finally:
+        db.close()
+
+def get_cached_genre_tracks(db: Session, genre_name: str) -> Optional[dict]:
+    """Busca tracks do cache (memória primeiro, depois banco)."""
+    genre_lower = genre_name.lower().strip()
+    
+    # Tenta cache em memória primeiro
+    if genre_lower in _genre_cache_memory:
+        return _genre_cache_memory[genre_lower]
+    
+    # Se não está em memória, busca no banco
+    cached = db.query(models.GenreCache).filter(
+        models.GenreCache.genre_name == genre_lower
+    ).first()
+    
+    if cached:
+        # Carrega em memória para próximas requisições
+        _genre_cache_memory[genre_lower] = {
+            "tracks": cached.tracks,
+            "track_count": cached.track_count,
+            "source": cached.source,
+            "updated_at": cached.updated_at.isoformat() if cached.updated_at else None
+        }
+        return _genre_cache_memory[genre_lower]
+    
+    return None
+
+# Background task scheduler
+_genre_cache_task: Optional[asyncio.Task] = None
+
+async def genre_cache_scheduler():
+    """Loop que atualiza o cache a cada 24 horas."""
+    while True:
+        try:
+            await update_all_genres_cache()
+        except Exception as e:
+            print(f"❌ Erro no scheduler de cache: {e}")
+        
+        # Aguarda 24 horas
+        await asyncio.sleep(24 * 60 * 60)
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicializa o scheduler de cache de gêneros na inicialização."""
+    global _genre_cache_task
+    
+    # Carrega cache existente do banco para memória
+    from .database import SessionLocal
+    db = SessionLocal()
+    try:
+        cached_genres = db.query(models.GenreCache).all()
+        for cached in cached_genres:
+            _genre_cache_memory[cached.genre_name] = {
+                "tracks": cached.tracks,
+                "track_count": cached.track_count,
+                "source": cached.source,
+                "updated_at": cached.updated_at.isoformat() if cached.updated_at else None
+            }
+        print(f"📦 Cache carregado: {len(cached_genres)} gêneros em memória")
+    finally:
+        db.close()
+    
+    # Inicia o scheduler em background
+    _genre_cache_task = asyncio.create_task(genre_cache_scheduler())
+    print("🚀 Scheduler de cache de gêneros iniciado (atualização a cada 24h)")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cancela o scheduler ao desligar."""
+    global _genre_cache_task
+    if _genre_cache_task:
+        _genre_cache_task.cancel()
+        print("⏹️ Scheduler de cache de gêneros encerrado")
+
+# =====================================================
+# FIM DO SISTEMA DE CACHE DE GÊNEROS
+# =====================================================
 
 # --- Rotas ---
 @app.get("/")
@@ -1436,107 +1684,104 @@ def get_user_favorite_genres(
 async def get_genre_top_tracks(
     genre_name: str,
     limit: int = 100,
+    force_refresh: bool = False,
+    db: Session = Depends(get_db),
 ):
     """
     Retorna as top tracks de um gênero específico.
-    Busca no Tidal usando a query configurada ou uma playlist específica.
+    Usa cache atualizado a cada 24h para resposta instantânea.
+    Use force_refresh=true para forçar atualização do cache.
     """
-    config = get_genre_config(genre_name)
-    
-    # Se não encontrou config exata, tenta buscar por nome
-    if not config:
-        # Usa o nome do gênero como query de busca
-        search_query = genre_name
-    else:
-        search_query = config.get("search_query", genre_name)
-    
     try:
-        # Se tem playlist_id configurada, usa ela
-        if config and config.get("playlist_id"):
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{TidalProvider.BASE_API}/playlist/",
-                    params={"id": config["playlist_id"], "limit": limit}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    items = data.get("items", [])
-                    
-                    tracks = []
-                    for item in items[:limit]:
-                        track = item.get("item", item)
-                        if not track.get("id"):
-                            continue
-                            
-                        # Monta artwork URL
-                        album = track.get("album", {})
-                        cover = album.get("cover", "")
-                        artwork_url = f"https://resources.tidal.com/images/{cover.replace('-', '/')}/640x640.jpg" if cover else ""
-                        
-                        # Artistas
-                        artists = track.get("artists", [])
-                        artist_name = artists[0].get("name", "Unknown") if artists else track.get("artist", {}).get("name", "Unknown")
-                        
-                        tracks.append({
-                            "tidalId": track.get("id"),
-                            "trackName": track.get("title", ""),
-                            "artistName": artist_name,
-                            "collectionName": album.get("title", ""),
-                            "collectionId": album.get("id"),
-                            "artworkUrl": artwork_url,
-                            "duration": track.get("duration", 0) * 1000,  # em ms
-                        })
-                    
-                    return {
-                        "genre": genre_name,
-                        "source": "playlist",
-                        "tracks": tracks
-                    }
+        genre_lower = genre_name.lower().strip()
         
-        # Fallback: busca por query
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                f"{TidalProvider.BASE_API}/search/",
-                params={"s": search_query}
-            )
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                items = data.get("items", [])
-                
-                tracks = []
-                for item in items[:limit]:
-                    track = item
-                    if not track.get("id"):
-                        continue
-                    
-                    album = track.get("album", {})
-                    cover = album.get("cover", "")
-                    artwork_url = f"https://resources.tidal.com/images/{cover.replace('-', '/')}/640x640.jpg" if cover else ""
-                    
-                    artists = track.get("artists", [])
-                    artist_name = artists[0].get("name", "Unknown") if artists else track.get("artist", {}).get("name", "Unknown")
-                    
-                    tracks.append({
-                        "tidalId": track.get("id"),
-                        "trackName": track.get("title", ""),
-                        "artistName": artist_name,
-                        "collectionName": album.get("title", ""),
-                        "collectionId": album.get("id"),
-                        "artworkUrl": artwork_url,
-                        "duration": track.get("duration", 0) * 1000,
-                    })
-                
+        # Tenta buscar do cache primeiro (se não forçar refresh)
+        if not force_refresh:
+            cached = get_cached_genre_tracks(db, genre_lower)
+            if cached and cached.get("tracks"):
+                tracks = cached["tracks"][:limit]  # Aplica limit
+                print(f"📦 [CACHE] Retornando {len(tracks)} tracks de '{genre_name}' do cache")
                 return {
                     "genre": genre_name,
-                    "source": "search",
+                    "source": "cache",
+                    "cached": True,
+                    "updated_at": cached.get("updated_at"),
                     "tracks": tracks
                 }
+        
+        # Se não tem cache ou force_refresh, busca da API e atualiza cache
+        print(f"🔄 [LIVE] Buscando tracks de '{genre_name}' da API...")
+        
+        tracks = await fetch_genre_tracks_from_api(genre_name, limit)
+        
+        if tracks:
+            # Atualiza cache em background
+            await update_genre_cache_single(db, genre_name)
+            
+            print(f"✅ Encontradas {len(tracks)} tracks para o gênero '{genre_name}'")
+            return {
+                "genre": genre_name,
+                "source": "ytmusic",
+                "cached": False,
+                "tracks": tracks[:limit]
+            }
+        
+        print(f"⚠️ Nenhum resultado para o gênero '{genre_name}'")
+        return {"genre": genre_name, "source": "ytmusic", "cached": False, "tracks": []}
                 
     except Exception as e:
         print(f"❌ Erro ao buscar tracks do gênero {genre_name}: {e}")
+        import traceback
+        traceback.print_exc()
     
-    return {"genre": genre_name, "source": "error", "tracks": []}
+    return {"genre": genre_name, "source": "error", "cached": False, "tracks": []}
+
+@app.post("/genres/refresh-cache")
+async def refresh_genres_cache(
+    genre: Optional[str] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db),
+):
+    """
+    Força atualização do cache de gêneros.
+    Se 'genre' for especificado, atualiza apenas esse gênero.
+    Caso contrário, atualiza todos os gêneros em background.
+    """
+    if genre:
+        # Atualiza um gênero específico
+        success = await update_genre_cache_single(db, genre)
+        if success:
+            return {"status": "success", "message": f"Cache de '{genre}' atualizado"}
+        return {"status": "error", "message": f"Falha ao atualizar cache de '{genre}'"}
+    
+    # Atualiza todos em background
+    background_tasks.add_task(update_all_genres_cache)
+    return {
+        "status": "started",
+        "message": f"Atualização de {len(SUPPORTED_GENRES)} gêneros iniciada em background"
+    }
+
+@app.get("/genres/cache-status")
+async def get_genres_cache_status(db: Session = Depends(get_db)):
+    """
+    Retorna o status do cache de gêneros.
+    """
+    cached_genres = db.query(models.GenreCache).all()
+    
+    status = []
+    for cached in cached_genres:
+        status.append({
+            "genre": cached.genre_name,
+            "track_count": cached.track_count,
+            "updated_at": cached.updated_at.isoformat() if cached.updated_at else None,
+        })
+    
+    return {
+        "total_cached": len(cached_genres),
+        "total_supported": len(SUPPORTED_GENRES),
+        "memory_cache_size": len(_genre_cache_memory),
+        "genres": status
+    }
 
 
 # Histórico
@@ -1715,6 +1960,137 @@ async def install_page():
             
     html_content += "</body></html>"
     return html_content
+
+
+@app.get("/latest")
+async def download_latest(request: Request):
+    """
+    Detecta o sistema operacional pelo User-Agent e redireciona para o download
+    da última versão disponível para aquela plataforma.
+    """
+    user_agent = request.headers.get("user-agent", "").lower()
+    
+    # Detecta a plataforma pelo User-Agent
+    if "android" in user_agent:
+        platform = "android"
+    elif "windows" in user_agent:
+        platform = "windows"
+    elif "macintosh" in user_agent or "mac os" in user_agent:
+        platform = "macos"
+    elif "linux" in user_agent:
+        # Linux desktop - oferece a versão Windows (AppImage/tar.gz seria melhor, mas não temos)
+        # Por enquanto redireciona para a página de instalação
+        platform = "linux"
+    elif "iphone" in user_agent or "ipad" in user_agent:
+        platform = "ios"
+    else:
+        platform = "unknown"
+    
+    # Busca a URL do updates.json
+    try:
+        config = get_update_config()
+        latest_version = config.get("latest_version", "0.0.0")
+        platforms = config.get("platforms", {})
+        
+        if platform in platforms and "url" in platforms[platform]:
+            download_url = platforms[platform]["url"]
+            return RedirectResponse(url=download_url, status_code=302)
+        
+        # Se não tem URL específica para a plataforma, mostra página informativa
+        html_content = f"""
+        <html>
+            <head>
+                <title>Download Orfeu</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>
+                    body {{ 
+                        font-family: -apple-system, BlinkMacSystemFont, sans-serif; 
+                        background: #121212; 
+                        color: white; 
+                        padding: 20px; 
+                        text-align: center;
+                        min-height: 100vh;
+                        display: flex;
+                        flex-direction: column;
+                        justify-content: center;
+                        align-items: center;
+                    }}
+                    h1 {{ color: #D4AF37; font-size: 2em; margin-bottom: 10px; }}
+                    .version {{ color: #888; margin-bottom: 30px; }}
+                    .message {{ 
+                        background: #222; 
+                        padding: 20px 30px; 
+                        border-radius: 10px; 
+                        margin: 20px 0;
+                        max-width: 400px;
+                    }}
+                    a {{ 
+                        display: inline-block;
+                        padding: 15px 30px; 
+                        background: #D4AF37; 
+                        color: #121212; 
+                        text-decoration: none; 
+                        border-radius: 8px; 
+                        font-weight: bold;
+                        margin: 10px;
+                    }}
+                    a:hover {{ background: #E5C048; }}
+                    .platforms {{ margin-top: 20px; }}
+                    .platform-link {{ 
+                        display: block; 
+                        padding: 12px 20px; 
+                        background: #333; 
+                        color: #D4AF37; 
+                        margin: 8px auto;
+                        border-radius: 5px;
+                        max-width: 300px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <h1>🎵 Orfeu</h1>
+                <p class="version">Versão {latest_version}</p>
+        """
+        
+        if platform == "ios":
+            html_content += """
+                <div class="message">
+                    <p>📱 O Orfeu ainda não está disponível para iOS.</p>
+                    <p>Por enquanto, está disponível para Android, Windows e macOS.</p>
+                </div>
+            """
+        elif platform == "linux":
+            html_content += """
+                <div class="message">
+                    <p>🐧 Versão Linux em breve!</p>
+                    <p>Por enquanto, você pode usar o app no Windows, macOS ou Android.</p>
+                </div>
+            """
+        else:
+            html_content += """
+                <div class="message">
+                    <p>Não conseguimos detectar seu sistema operacional.</p>
+                    <p>Escolha uma das opções abaixo:</p>
+                </div>
+            """
+        
+        html_content += '<div class="platforms">'
+        for plat, data in platforms.items():
+            icon = {"android": "📱", "windows": "🪟", "macos": "🍎"}.get(plat, "📦")
+            name = {"android": "Android (APK)", "windows": "Windows", "macos": "macOS"}.get(plat, plat)
+            html_content += f'<a href="{data["url"]}" class="platform-link">{icon} {name}</a>'
+        html_content += '</div>'
+        
+        html_content += """
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
+        
+    except Exception as e:
+        print(f"❌ Erro no /latest: {e}")
+        # Fallback para a página de instalação
+        return RedirectResponse(url="/install", status_code=302)
 
 # --- UPDATE OTA ---
 @app.get("/app/latest_version")

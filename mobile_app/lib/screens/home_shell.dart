@@ -51,9 +51,84 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       final updateService = ref.read(updateServiceProvider);
       final updateInfo = await updateService.checkForUpdate();
       if (updateInfo != null && mounted) {
-        // Dialog update...
+        _showUpdateDialog(updateInfo, updateService);
       }
     }
+  }
+
+  void _showUpdateDialog(UpdateInfo updateInfo, UpdateService updateService) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.system_update, color: Color(0xFFD4AF37), size: 28),
+            const SizedBox(width: 12),
+            Text(
+              'Atualização v${updateInfo.latestVersion}',
+              style: const TextStyle(color: Colors.white, fontSize: 18),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              updateInfo.releaseNotes,
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A2A),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Color(0xFFD4AF37), size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'O download será aberto no navegador.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'Depois',
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              updateService.openDownloadPage(updateInfo.downloadUrl);
+            },
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text('Baixar'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD4AF37),
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _updateColorLogic(Map<String, dynamic>? currentTrack) {

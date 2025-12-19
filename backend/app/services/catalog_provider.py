@@ -67,6 +67,18 @@ class CatalogProvider:
                         album_data = item.get('album', {})
                         album_name = album_data.get('name') if album_data else "Single"
                         
+                        # Extrai duração (YTMusic retorna em formato "3:45" ou duration_seconds)
+                        duration_seconds = item.get('duration_seconds', 0)
+                        if not duration_seconds and item.get('duration'):
+                            try:
+                                parts = str(item['duration']).split(':')
+                                if len(parts) == 2:
+                                    duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                                elif len(parts) == 3:
+                                    duration_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                            except:
+                                pass
+                        
                         normalized_results.append({
                             "type": "song",
                             "trackName": item.get('title'),
@@ -76,6 +88,8 @@ class CatalogProvider:
                             "previewUrl": None, 
                             "year": "", # Geralmente vazio em search songs
                             "videoId": item.get('videoId'),
+                            "duration": item.get('duration', ''),  # formato "3:45"
+                            "durationMs": duration_seconds * 1000,
                             "source": "YTMusic"
                         })
                 except Exception as e:

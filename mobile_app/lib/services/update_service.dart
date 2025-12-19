@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:version/version.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../providers.dart';
 
 class UpdateInfo {
@@ -22,6 +23,7 @@ class UpdateService {
   final Ref ref;
   UpdateService(this.ref);
 
+  /// Verifica se há atualização disponível
   Future<UpdateInfo?> checkForUpdate() async {
     final dio = ref.read(dioProvider);
 
@@ -77,5 +79,25 @@ class UpdateService {
     }
 
     return null; // Nenhuma atualização ou falha
+  }
+
+  /// Abre o link de download no navegador
+  Future<bool> openDownloadPage(String? url) async {
+    // Se não tem URL específica, usa a rota /latest que detecta o SO
+    final downloadUrl = url ?? 'https://orfeu.ocnaibill.dev/latest';
+    
+    try {
+      final uri = Uri.parse(downloadUrl);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return true;
+      } else {
+        print("❌ [UpdateService] Não foi possível abrir: $downloadUrl");
+        return false;
+      }
+    } catch (e) {
+      print("❌ [UpdateService] Erro ao abrir URL: $e");
+      return false;
+    }
   }
 }

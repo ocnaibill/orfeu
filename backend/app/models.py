@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, Float, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, Float, Text, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -135,3 +135,19 @@ class SavedArtist(Base):
     image_url = Column(Text)
     is_pinned = Column(Boolean, default=False)
     added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class GenreCache(Base):
+    """
+    Cache de top tracks por gênero.
+    Atualizado automaticamente a cada 24h para evitar buscas repetitivas.
+    """
+    __tablename__ = "genre_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    genre_name = Column(String, unique=True, index=True)  # Nome do gênero (lowercase)
+    tracks = Column(JSON)  # Lista de tracks em formato JSON
+    track_count = Column(Integer, default=0)
+    source = Column(String, default="ytmusic")  # Fonte dos dados
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
