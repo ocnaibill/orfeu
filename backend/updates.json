@@ -1,15 +1,16 @@
 {
-  "latest_version": "0.9.1",
-  "release_notes_pt": "Correção de bugs na inicialização do Discord RPC no macOS/Windows e melhoria na prioridade de download Tidal/Soulseek para garantir a qualidade Lossless.",
+  "latest_version": "1.5.2",
+  "release_notes_pt": "Nova versão de desenvolvimento (CI/CD) v1.5.2.",
   "platforms": {
     "android": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1.apk"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2.apk"
     },
     "windows": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1-windows.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-windows-setup.exe",
+      "portable_url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-windows-portable.zip"
     },
     "macos": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v0.9.1-macos.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-macos.zip"
     }
   }
 }

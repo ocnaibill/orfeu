@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../providers.dart';
 
 /// Handler de áudio para reprodução em segundo plano.
@@ -27,8 +29,23 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   
   // Mapa para guardar dados extras das tracks (filename, tidalId, etc.)
   final Map<String, Map<String, dynamic>> _trackDataMap = {};
+  
+  // Workaround para bug do just_audio_windows
+  // Evita auto-advance indesejado e problemas de threading
+  bool _isWindows = false;
+  bool _isPlayerReady = false;
+  DateTime? _lastSkipTime;
+  static const _minSkipInterval = Duration(milliseconds: 500);
 
   OrfeuAudioHandler({Ref? ref}) : _ref = ref {
+    // Detecta se é Windows para aplicar workarounds
+    if (!kIsWeb) {
+      try {
+        _isWindows = Platform.isWindows;
+      } catch (_) {
+        _isWindows = false;
+      }
+    }
     _init();
   }
   
@@ -40,6 +57,10 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
 
   void _init() {
     try {
+      if (_isWindows) {
+        print('🪟 Windows detectado - aplicando workarounds para just_audio_windows');
+      }
+      
       // Escuta mudanças de estado do player
       _player.playbackEventStream.listen(
         _broadcastState,
@@ -78,8 +99,25 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       // Escuta quando termina uma música
       _player.processingStateStream.listen(
         (state) {
+          // Marca quando o player está pronto para aceitar comandos
+          if (state == ProcessingState.ready) {
+            _isPlayerReady = true;
+          } else if (state == ProcessingState.loading || state == ProcessingState.buffering) {
+            _isPlayerReady = false;
+          }
+          
           if (state == ProcessingState.completed) {
             print('✅ Música completou. Index: $_currentIndex, Total: ${_mediaQueue.length}');
+            
+            // Workaround Windows: Verifica se não é um skip acidental
+            if (_isWindows && _lastSkipTime != null) {
+              final elapsed = DateTime.now().difference(_lastSkipTime!);
+              if (elapsed < _minSkipInterval) {
+                print('⚠️ Windows: Ignorando completed rápido demais (${elapsed.inMilliseconds}ms)');
+                return;
+              }
+            }
+            
             // Verifica se há próxima usando nossa própria lógica
             if (_currentIndex < _mediaQueue.length - 1) {
               print('▶️ Avançando para próxima música...');
@@ -158,10 +196,31 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   // ============ AÇÕES DE CONTROLE ============
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() async {
+    if (_isWindows) {
+      // Workaround Windows: Aguarda o player estar pronto antes de dar play
+      if (!_isPlayerReady && _player.processingState == ProcessingState.loading) {
+        print('🪟 Windows: Aguardando player ficar pronto...');
+        // Aguarda até 3 segundos pelo player ficar pronto
+        for (int i = 0; i < 30; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_isPlayerReady || _player.processingState == ProcessingState.ready) {
+            break;
+          }
+        }
+      }
+    }
+    return _player.play();
+  }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    if (_isWindows) {
+      // Workaround Windows: Pequeno delay para evitar race conditions
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    return _player.pause();
+  }
 
   @override
   Future<void> stop() async {
@@ -171,11 +230,29 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    if (_isWindows) {
+      // Workaround Windows: Aguarda player estar pronto antes de seek
+      if (_player.processingState == ProcessingState.loading) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    return _player.seek(position);
+  }
 
   @override
   Future<void> skipToNext() async {
     print('🎵 skipToNext chamado. Index atual: $_currentIndex, Total: ${_mediaQueue.length}');
+    
+    // Workaround Windows: Evita skips muito rápidos
+    if (_isWindows) {
+      final now = DateTime.now();
+      if (_lastSkipTime != null && now.difference(_lastSkipTime!) < _minSkipInterval) {
+        print('⚠️ Windows: Skip ignorado (muito rápido)');
+        return;
+      }
+      _lastSkipTime = now;
+    }
     
     if (_currentIndex >= _mediaQueue.length - 1) {
       print('⚠️ Já está na última música da fila');
@@ -198,9 +275,26 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     
     try {
       await _player.pause();
+      
+      // Workaround Windows: Pequeno delay antes do seek
+      if (_isWindows) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      
       await _player.seek(Duration.zero, index: playerIndex);
       mediaItem.add(_mediaQueue[_currentIndex]);
       _broadcastState(_player.playbackEvent);
+      
+      // Workaround Windows: Aguarda player estar pronto
+      if (_isWindows) {
+        for (int i = 0; i < 20; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_player.processingState == ProcessingState.ready) {
+            break;
+          }
+        }
+      }
+      
       await _player.play();
       print('⏭️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex, playerIndex: $playerIndex)');
       
@@ -333,6 +427,13 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       return;
     }
     
+    // Workaround Windows: Para o player antes de setar nova source
+    if (_isWindows && _player.playing) {
+      await _player.stop();
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    
+    _isPlayerReady = false;
     await _player.setAudioSource(playlist, initialIndex: targetPlayerIndex);
     _currentIndex = targetIndex;
     
@@ -340,6 +441,17 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     _mediaQueue = _fullQueue.map((track) => _createMediaItem(track)).toList();
     queue.add(_mediaQueue);
     mediaItem.add(_mediaQueue[targetIndex]);
+    
+    // Workaround Windows: Aguarda player estar pronto
+    if (_isWindows) {
+      for (int i = 0; i < 30; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (_player.processingState == ProcessingState.ready) {
+          _isPlayerReady = true;
+          break;
+        }
+      }
+    }
     
     // Toca
     await _player.play();
@@ -529,9 +641,26 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     
     try {
       await _player.pause();
+      
+      // Workaround Windows: Pequeno delay antes do seek
+      if (_isWindows) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      
       await _player.seek(Duration.zero, index: playerIndex);
       mediaItem.add(_mediaQueue[_currentIndex]);
       _broadcastState(_player.playbackEvent);
+      
+      // Workaround Windows: Aguarda player estar pronto
+      if (_isWindows) {
+        for (int i = 0; i < 20; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_player.processingState == ProcessingState.ready) {
+            break;
+          }
+        }
+      }
+      
       await _player.play();
       print('⏮️ Skip para: ${_mediaQueue[_currentIndex].title} (index: $_currentIndex)');
     } catch (e) {
@@ -561,9 +690,26 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     
     try {
       await _player.pause();
+      
+      // Workaround Windows: Pequeno delay antes do seek
+      if (_isWindows) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      
       await _player.seek(Duration.zero, index: playerIndex);
       mediaItem.add(_mediaQueue[index]);
       _broadcastState(_player.playbackEvent);
+      
+      // Workaround Windows: Aguarda player estar pronto
+      if (_isWindows) {
+        for (int i = 0; i < 20; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_player.processingState == ProcessingState.ready) {
+            break;
+          }
+        }
+      }
+      
       await _player.play();
       print('✅ Pulou para: ${_mediaQueue[index].title}');
       
@@ -660,6 +806,13 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         if (playerIndex < 0) playerIndex = 0; // Fallback para primeira
       }
 
+      // Workaround Windows: Para o player antes de setar nova source
+      if (_isWindows && _player.playing) {
+        await _player.stop();
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      
+      _isPlayerReady = false;
       await _player.setAudioSource(playlist, initialIndex: playerIndex);
       _currentIndex = initialIndex;
       
@@ -675,6 +828,19 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         mediaItem.add(_mediaQueue[initialIndex]);
       }
 
+      // Workaround Windows: Aguarda o player estar pronto antes de dar play
+      if (_isWindows) {
+        // Aguarda até 3 segundos pelo player ficar pronto
+        for (int i = 0; i < 30; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          if (_player.processingState == ProcessingState.ready) {
+            _isPlayerReady = true;
+            break;
+          }
+        }
+        print('🪟 Windows: Player pronto, iniciando reprodução...');
+      }
+      
       play();
       
       // Pré-carrega a próxima música
