@@ -47,6 +47,7 @@ jobs:
         with:
           name: android-release-apk
           path: mobile_app/Orfeu-*.apk
+          compression-level: 0  # Sem compressão extra para APK
 
   build_macos:
     needs: get_version
@@ -62,7 +63,11 @@ jobs:
           flutter pub get
           flutter build macos --release
           VERSION=${{ needs.get_version.outputs.version }}
-          zip -r "Orfeu-v$VERSION-macos.zip" build/macos/Build/Products/Release/mobile_app.app
+          # Renomear o app para Orfeu.app
+          mv build/macos/Build/Products/Release/mobile_app.app build/macos/Build/Products/Release/Orfeu.app
+          # Criar zip apenas com o .app (sem pastas aninhadas)
+          cd build/macos/Build/Products/Release
+          zip -r "../../../../../Orfeu-v$VERSION-macos.zip" Orfeu.app
       - uses: actions/upload-artifact@v4
         with:
           name: macos-release-zip
@@ -81,12 +86,64 @@ jobs:
           cd mobile_app
           flutter pub get
           flutter build windows --release
+      - name: Create Windows Installer with Inno Setup
+        working-directory: mobile_app
+        shell: pwsh
+        run: |
           $VERSION = "${{ needs.get_version.outputs.version }}"
-          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "Orfeu-v$VERSION-windows.zip"
+          
+          # Criar script Inno Setup
+          @"
+          [Setup]
+          AppName=Orfeu
+          AppVersion=$VERSION
+          AppPublisher=Orfeu
+          DefaultDirName={autopf}\Orfeu
+          DefaultGroupName=Orfeu
+          OutputDir=..
+          OutputBaseFilename=Orfeu-v$VERSION-windows-setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          UninstallDisplayIcon={app}\Orfeu.exe
+          
+          [Files]
+          Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+          
+          [Icons]
+          Name: "{group}\Orfeu"; Filename: "{app}\Orfeu.exe"
+          Name: "{autodesktop}\Orfeu"; Filename: "{app}\Orfeu.exe"; Tasks: desktopicon
+          
+          [Tasks]
+          Name: "desktopicon"; Description: "Criar ícone na área de trabalho"; GroupDescription: "Ícones adicionais:"
+          
+          [Run]
+          Filename: "{app}\Orfeu.exe"; Description: "Iniciar Orfeu"; Flags: nowait postinstall skipifsilent
+          "@ | Out-File -FilePath "installer.iss" -Encoding UTF8
+          
+          # Renomear exe para Orfeu.exe antes de criar o instalador
+          Rename-Item -Path "build\windows\x64\runner\Release\mobile_app.exe" -NewName "Orfeu.exe"
+          
+          # Instalar Inno Setup
+          choco install innosetup -y --no-progress
+          
+          # Compilar instalador
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
+      - name: Create portable ZIP
+        working-directory: mobile_app
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.get_version.outputs.version }}"
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "Orfeu-v$VERSION-windows-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-installer
+          path: Orfeu-*-windows-setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release-zip
-          path: mobile_app\Orfeu-*-windows.zip
+          path: mobile_app\Orfeu-*-windows-portable.zip
 
   deploy_to_homelab:
     needs: [get_version, build_android, build_macos, build_windows]
@@ -144,7 +201,8 @@ jobs:
                   "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION.apk"
                 },
                 "windows": {
-                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows.zip"
+                  "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows-setup.exe",
+                  "portable_url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-windows-portable.zip"
                 },
                 "macos": {
                   "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v$VERSION-macos.zip"
