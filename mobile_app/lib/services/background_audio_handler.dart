@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, File;
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -410,9 +410,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       return;
     }
     
-    // Prepara nova playlist
+    // Prepara nova playlist - prefere arquivos locais para modo offline
     final playlist = ConcatenatingAudioSource(
       children: validTracks.map((track) {
+        final localPath = track['localPath'] as String?;
+        
+        // Verifica se existe arquivo local baixado
+        if (localPath != null && File(localPath).existsSync()) {
+          print('📂 Usando arquivo local: $localPath');
+          return AudioSource.file(localPath);
+        }
+        
+        // Fallback para stream remoto
         final filename = Uri.encodeComponent(track['filename'] ?? '');
         final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
         return AudioSource.uri(Uri.parse(url));
@@ -584,8 +593,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
     try {
       final audioSource = _player.audioSource;
       if (audioSource is ConcatenatingAudioSource) {
-        final encodedFilename = Uri.encodeComponent(filename);
-        final url = '$baseUrl/stream?filename=$encodedFilename&quality=$_currentQuality';
+        final track = _fullQueue[queueIndex];
+        final localPath = track['localPath'] as String?;
+        
+        AudioSource source;
+        if (localPath != null && File(localPath).existsSync()) {
+          print('📂 Adicionando arquivo local: $localPath');
+          source = AudioSource.file(localPath);
+        } else {
+          final encodedFilename = Uri.encodeComponent(filename);
+          final url = '$baseUrl/stream?filename=$encodedFilename&quality=$_currentQuality';
+          source = AudioSource.uri(Uri.parse(url));
+        }
         
         // Encontra a posição correta na playlist
         // (após todas as tracks com índice menor que já estão na playlist)
@@ -596,7 +615,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
           }
         }
         
-        await audioSource.insert(insertPosition, AudioSource.uri(Uri.parse(url)));
+        await audioSource.insert(insertPosition, source);
         
         // Atualiza o mapeamento (precisa recalcular após inserção)
         _updatePlayerIndexMap();
@@ -785,8 +804,18 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       }
       
       // Prepara a playlist no just_audio (apenas com tracks válidas)
+      // Prefere arquivos locais para modo offline
       final playlist = ConcatenatingAudioSource(
         children: validTracks.map((track) {
+          final localPath = track['localPath'] as String?;
+          
+          // Verifica se existe arquivo local baixado
+          if (localPath != null && File(localPath).existsSync()) {
+            print('📂 Usando arquivo local: $localPath');
+            return AudioSource.file(localPath);
+          }
+          
+          // Fallback para stream remoto
           final filename = Uri.encodeComponent(track['filename'] ?? '');
           final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
           return AudioSource.uri(Uri.parse(url));
