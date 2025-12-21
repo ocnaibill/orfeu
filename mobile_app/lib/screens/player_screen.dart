@@ -5,6 +5,7 @@ import 'package:palette_generator/palette_generator.dart';
 import 'dart:ui';
 import '../providers.dart';
 import '../services/audio_service.dart';
+import '../services/download_manager.dart';
 import 'artist_screen.dart';
 import 'album_screen.dart';
 import 'lyrics_screen.dart';
@@ -661,43 +662,120 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   void _showOptionsModal(BuildContext context, Map<String, dynamic> track) {
+    final downloadManager = ref.read(downloadManagerProvider);
+    final filename = track['filename'] as String?;
+    
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.favorite_border, color: Colors.white),
-                title: Text("Adicionar às curtidas",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () {
-                  ref.read(libraryControllerProvider).toggleFavorite(track);
-                  Navigator.pop(ctx);
-                },
+        return FutureBuilder<bool>(
+          future: filename != null ? downloadManager.isDownloaded(filename) : Future.value(false),
+          builder: (context, snapshot) {
+            final isDownloaded = snapshot.data ?? false;
+            final downloadProgress = ref.watch(downloadProgressProvider);
+            final isDownloading = downloadProgress.isDownloading && 
+                downloadProgress.filename == filename;
+            
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.favorite_border, color: Colors.white),
+                    title: Text("Adicionar às curtidas",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () {
+                      ref.read(libraryControllerProvider).toggleFavorite(track);
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.playlist_add, color: Colors.white),
+                    title: Text("Adicionar a uma playlist",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _showPlaylistSelectionModal(context, track);
+                    },
+                  ),
+                  // --- DOWNLOAD OPTION ---
+                  ListTile(
+                    leading: isDownloading
+                        ? SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              value: downloadProgress.progress,
+                              strokeWidth: 2,
+                              color: const Color(0xFFD4AF37),
+                            ),
+                          )
+                        : Icon(
+                            isDownloaded ? Icons.download_done : Icons.download,
+                            color: isDownloaded ? const Color(0xFFD4AF37) : Colors.white,
+                          ),
+                    title: Text(
+                      isDownloading
+                          ? "Baixando... ${(downloadProgress.progress * 100).toInt()}%"
+                          : isDownloaded
+                              ? "Baixada para offline"
+                              : "Baixar para offline",
+                      style: GoogleFonts.firaSans(
+                        color: isDownloaded ? const Color(0xFFD4AF37) : Colors.white,
+                      ),
+                    ),
+                    onTap: isDownloading || isDownloaded
+                        ? null
+                        : () async {
+                            Navigator.pop(ctx);
+                            if (filename == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text("Música não disponível para download"),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                              return;
+                            }
+                            
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text("Iniciando download..."),
+                                backgroundColor: Color(0xFFD4AF37),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                            
+                            final result = await ref
+                                .read(downloadProgressProvider.notifier)
+                                .downloadTrack(track);
+                            
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(result != null
+                                      ? "Música baixada com sucesso!"
+                                      : "Erro ao baixar música"),
+                                  backgroundColor: result != null ? Colors.green : Colors.red,
+                                ),
+                              );
+                            }
+                          },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.share, color: Colors.white),
+                    title: Text("Compartilhar",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () => Navigator.pop(ctx),
+                  ),
+                ],
               ),
-              ListTile(
-                leading: const Icon(Icons.playlist_add, color: Colors.white),
-                title: Text("Adicionar a uma playlist",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _showPlaylistSelectionModal(context, track);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.share, color: Colors.white),
-                title: Text("Compartilhar",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );

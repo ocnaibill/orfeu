@@ -6,6 +6,7 @@ import 'playlist_detail_screen.dart';
 import 'album_screen.dart';
 import 'artist_screen.dart';
 import '../providers.dart';
+import '../services/download_manager.dart';
 
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
@@ -76,7 +77,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         "id": p['id'].toString(),
         "title": p['name'],
         "subtitle": "Playlist • ${p['tracks_count'] ?? 0} músicas",
-        "imageUrl": p['cover'] ?? "", // Pode ser null
+        "imageUrl": p['cover_url'] ?? "", // Corrigido: era 'cover'
         "isPinned": false, // Playlists não tem pin no backend ainda
       });
     }
@@ -165,14 +166,19 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             // "16px abaixo do texto Sua Biblioteca"
             Padding(
               padding: const EdgeInsets.only(left: 33),
-              child: Row(
-                children: [
-                  _buildFilterButton("Playlists"),
-                  const SizedBox(width: 24),
-                  _buildFilterButton("Álbuns"),
-                  const SizedBox(width: 24),
-                  _buildFilterButton("Artistas"),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildFilterButton("Playlists"),
+                    const SizedBox(width: 16),
+                    _buildFilterButton("Álbuns"),
+                    const SizedBox(width: 16),
+                    _buildFilterButton("Artistas"),
+                    const SizedBox(width: 16),
+                    _buildFilterButton("Downloads"),
+                  ],
+                ),
               ),
             ),
 
@@ -211,39 +217,118 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
             // --- LISTA DE CONTEÚDO ---
 
-            // 1. Músicas Curtidas (Sempre primeiro, a menos que filtrado fora)
-            // "a playlist músicas curtidas sempre estará fixada como primeiro"
-            if (_selectedFilter == null || _selectedFilter == "Playlists")
-              Padding(
-                padding: const EdgeInsets.only(bottom: 15),
-                child: _buildListItem(
-                  context,
-                  item: {
-                    "type": "playlist",
-                    "id": "favorites", // ID especial
-                    "title": "Músicas Curtidas",
-                    "subtitle": "Playlist • Fixada",
-                    "imageUrl":
-                        "https://misc.scdn.co/liked-songs/liked-songs-640.png",
-                    "isPinned": true,
-                    "vibrantColor": const Color(0xFF4A00E0) // Roxo destaque
-                  },
-                ),
-              ),
-
-            // 2. Itens Dinâmicos
-            ListView.builder(
-              padding: EdgeInsets.zero,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: allItems.length,
-              itemBuilder: (context, index) {
-                return Padding(
+            // DOWNLOADS SECTION (quando filtro Downloads está selecionado)
+            if (_selectedFilter == "Downloads")
+              Consumer(
+                builder: (context, ref, _) {
+                  final downloadsAsync = ref.watch(downloadedTracksProvider);
+                  final spaceAsync = ref.watch(downloadedSpaceProvider);
+                  
+                  return downloadsAsync.when(
+                    data: (tracks) {
+                      if (tracks.isEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.all(40),
+                          child: Column(
+                            children: [
+                              const Icon(Icons.download_outlined, 
+                                  color: Colors.white24, size: 64),
+                              const SizedBox(height: 16),
+                              Text(
+                                "Nenhuma música baixada",
+                                style: GoogleFonts.firaSans(
+                                    color: Colors.white54, fontSize: 16),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                "Baixe músicas para ouvir offline",
+                                style: GoogleFonts.firaSans(
+                                    color: Colors.white38, fontSize: 14),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+                      
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Info de espaço
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 33),
+                            child: spaceAsync.when(
+                              data: (bytes) {
+                                final mb = (bytes / (1024 * 1024)).toStringAsFixed(1);
+                                return Text(
+                                  "${tracks.length} músicas • $mb MB",
+                                  style: GoogleFonts.firaSans(
+                                      color: Colors.white54, fontSize: 14),
+                                );
+                              },
+                              loading: () => const SizedBox.shrink(),
+                              error: (_, __) => const SizedBox.shrink(),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Lista de downloads
+                          ListView.builder(
+                            padding: EdgeInsets.zero,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: tracks.length,
+                            itemBuilder: (context, index) {
+                              final track = tracks[index];
+                              return _buildDownloadItem(context, track);
+                            },
+                          ),
+                        ],
+                      );
+                    },
+                    loading: () => const Center(
+                      child: CircularProgressIndicator(color: Color(0xFFD4AF37)),
+                    ),
+                    error: (e, _) => Center(
+                      child: Text("Erro: $e", 
+                          style: const TextStyle(color: Colors.red)),
+                    ),
+                  );
+                },
+              )
+            else ...[
+              // 1. Músicas Curtidas (Sempre primeiro, a menos que filtrado fora)
+              // "a playlist músicas curtidas sempre estará fixada como primeiro"
+              if (_selectedFilter == null || _selectedFilter == "Playlists")
+                Padding(
                   padding: const EdgeInsets.only(bottom: 15),
-                  child: _buildListItem(context, item: allItems[index]),
-                );
-              },
-            ),
+                  child: _buildListItem(
+                    context,
+                    item: {
+                      "type": "playlist",
+                      "id": "favorites", // ID especial
+                      "title": "Músicas Curtidas",
+                      "subtitle": "Playlist • Fixada",
+                      "imageUrl":
+                          "https://misc.scdn.co/liked-songs/liked-songs-640.png",
+                      "isPinned": true,
+                      "vibrantColor": const Color(0xFF4A00E0) // Roxo destaque
+                    },
+                  ),
+                ),
+
+              // 2. Itens Dinâmicos
+              ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: allItems.length,
+                itemBuilder: (context, index) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 15),
+                    child: _buildListItem(context, item: allItems[index]),
+                  );
+                },
+              ),
+            ],
 
             const SizedBox(height: 100), // Espaço final para navbar
           ],
@@ -483,6 +568,127 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         });
         Navigator.pop(context);
       },
+    );
+  }
+
+  Widget _buildDownloadItem(BuildContext context, Map<String, dynamic> track) {
+    final trackName = track['trackName'] ?? 'Música';
+    final artistName = track['artistName'] ?? 'Artista';
+    final artworkUrl = track['artworkUrl'] ?? '';
+    final filename = track['filename'] as String?;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 33, vertical: 8),
+      child: Row(
+        children: [
+          // Cover
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: Colors.grey[900],
+              image: artworkUrl.isNotEmpty
+                  ? DecorationImage(
+                      image: NetworkImage(artworkUrl),
+                      fit: BoxFit.cover,
+                    )
+                  : null,
+            ),
+            child: artworkUrl.isEmpty
+                ? const Icon(Icons.music_note, color: Colors.white24)
+                : null,
+          ),
+          const SizedBox(width: 12),
+          // Info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  trackName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.firaSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    const Icon(Icons.download_done, 
+                        size: 14, color: Color(0xFFD4AF37)),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        artistName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.firaSans(
+                          fontSize: 13,
+                          color: Colors.white54,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // Actions
+          IconButton(
+            icon: const Icon(Icons.play_circle_fill, 
+                color: Color(0xFFD4AF37), size: 36),
+            onPressed: () {
+              // Play the downloaded track
+              ref.read(playerProvider.notifier).playSingle({
+                ...track,
+                'filename': filename,
+              });
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.white54),
+            onPressed: () async {
+              if (filename == null) return;
+              
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1A1A),
+                  title: Text("Remover download?",
+                      style: GoogleFonts.firaSans(color: Colors.white)),
+                  content: Text("\"$trackName\" será removida dos downloads.",
+                      style: GoogleFonts.firaSans(color: Colors.white70)),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text("Cancelar"),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text("Remover",
+                          style: TextStyle(color: Colors.red)),
+                    ),
+                  ],
+                ),
+              );
+              
+              if (confirm == true) {
+                await ref.read(downloadProgressProvider.notifier)
+                    .deleteDownload(filename);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Download removido")),
+                  );
+                }
+              }
+            },
+          ),
+        ],
+      ),
     );
   }
 }

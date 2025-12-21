@@ -1124,7 +1124,19 @@ def create_playlist(playlist: PlaylistCreate, db: Session = Depends(get_db), cur
 
 @app.get("/users/me/playlists")
 def get_playlists(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Playlist).filter(models.Playlist.user_id == current_user.id).all()
+    playlists = db.query(models.Playlist).filter(models.Playlist.user_id == current_user.id).all()
+    result = []
+    for p in playlists:
+        tracks_count = db.query(models.PlaylistItem).filter(models.PlaylistItem.playlist_id == p.id).count()
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "cover_url": p.cover_url,
+            "is_public": p.is_public,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "tracks_count": tracks_count
+        })
+    return result
 
 @app.post("/users/me/playlists/{playlist_id}/tracks")
 def add_track_to_playlist(playlist_id: int, item: PlaylistItemAdd, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

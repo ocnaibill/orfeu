@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import '../providers.dart';
 import '../services/audio_service.dart';
+import '../widgets/bottom_nav_area.dart';
 import 'player_screen.dart';
 
 /// Tela que mostra as top tracks de um gênero musical.
@@ -173,6 +174,7 @@ class _GenrePlaylistScreenState extends ConsumerState<GenrePlaylistScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
+      bottomNavigationBar: const BottomNavArea(),
       body: CustomScrollView(
         slivers: [
           // Header com gradiente

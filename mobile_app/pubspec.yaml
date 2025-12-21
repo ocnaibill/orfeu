@@ -39,6 +39,10 @@ dependencies:
   intl: ^0.20.2
   image_picker: ^1.0.7 # Seleção de imagens da galeria/câmera
   url_launcher: ^6.2.5 # Para abrir URLs externas (atualizações)
+  
+  # --- Modo Offline ---
+  path_provider: ^2.1.0 # Acesso ao diretório de downloads
+  connectivity_plus: ^5.0.0 # Detectar estado de conexão
 
 dev_dependencies:
   flutter_test:
