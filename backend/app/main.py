@@ -823,6 +823,123 @@ def upload_profile_image(
     except Exception as e:
         raise HTTPException(500, f"Erro ao salvar imagem: {str(e)}")
 
+# ===================================================================
+# LAST.FM SCROBBLING
+# ===================================================================
+
+class LastfmAuthRequest(BaseModel):
+    username: str
+    password: str
+
+class LastfmScrobbleRequest(BaseModel):
+    artist: str
+    track: str
+    album: Optional[str] = None
+    timestamp: Optional[int] = None
+    duration: Optional[int] = None
+
+@app.post("/lastfm/auth")
+def lastfm_authenticate(
+    req: LastfmAuthRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Autentica o usuário no Last.fm e salva a session key.
+    O usuário precisa fornecer seu username e senha do Last.fm.
+    """
+    from app.services.lastfm_provider import LastfmProvider
+    
+    result = LastfmProvider.get_mobile_session(req.username, req.password)
+    
+    if not result or not result.get("session_key"):
+        raise HTTPException(401, "Falha na autenticação do Last.fm. Verifique seu username e senha.")
+    
+    # Salva a session key no perfil do usuário
+    current_user.lastfm_session_key = result["session_key"]
+    current_user.lastfm_username = result.get("username", req.username)
+    db.commit()
+    
+    return {
+        "status": "connected",
+        "lastfm_username": current_user.lastfm_username,
+        "message": "Last.fm conectado com sucesso! Seus plays serão enviados automaticamente."
+    }
+
+@app.delete("/lastfm/auth")
+def lastfm_disconnect(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Desconecta o Last.fm do usuário."""
+    current_user.lastfm_session_key = None
+    current_user.lastfm_username = None
+    db.commit()
+    
+    return {"status": "disconnected", "message": "Last.fm desconectado."}
+
+@app.get("/users/me/lastfm")
+def get_lastfm_status(current_user: models.User = Depends(get_current_user)):
+    """Retorna o status da conexão com o Last.fm."""
+    return {
+        "connected": current_user.lastfm_session_key is not None,
+        "username": current_user.lastfm_username
+    }
+
+@app.post("/lastfm/scrobble")
+async def lastfm_scrobble(
+    req: LastfmScrobbleRequest,
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Envia um scrobble para o Last.fm.
+    Chamado quando uma música é ouvida por mais de 50% ou 4 minutos.
+    """
+    from app.services.lastfm_provider import LastfmProvider
+    
+    if not current_user.lastfm_session_key:
+        return {"status": "skipped", "reason": "Last.fm não conectado"}
+    
+    success = await run_in_threadpool(
+        LastfmProvider.scrobble_track,
+        req.artist,
+        req.track,
+        current_user.lastfm_session_key,
+        req.album,
+        req.timestamp,
+        req.duration
+    )
+    
+    if success:
+        return {"status": "scrobbled", "artist": req.artist, "track": req.track}
+    else:
+        return {"status": "failed", "message": "Falha ao enviar scrobble"}
+
+@app.post("/lastfm/now-playing")
+async def lastfm_update_now_playing(
+    req: LastfmScrobbleRequest,
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Atualiza o 'Now Playing' no Last.fm.
+    Chamado quando uma música começa a tocar.
+    """
+    from app.services.lastfm_provider import LastfmProvider
+    
+    if not current_user.lastfm_session_key:
+        return {"status": "skipped", "reason": "Last.fm não conectado"}
+    
+    success = await run_in_threadpool(
+        LastfmProvider.update_now_playing,
+        req.artist,
+        req.track,
+        current_user.lastfm_session_key,
+        req.album,
+        req.duration
+    )
+    
+    return {"status": "updated" if success else "failed"}
+
 # Favoritos
 @app.post("/users/me/favorites")
 def toggle_favorite(req: FavoriteRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -1186,63 +1303,171 @@ def get_trajectory(db: Session = Depends(get_db), current_user: models.User = De
 async def get_discover_weekly(limit: int = 10, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
     Descobertas da Semana - Artistas que você ainda não ouviu mas pode gostar.
-    Baseado em artistas similares aos seus favoritos.
+    Usa Last.fm para encontrar artistas genuinamente similares aos favoritos do usuário.
     """
+    from app.services.lastfm_provider import LastfmProvider
+    
     try:
-        # 1. Top 5 artistas do usuário
-        top_artists = db.query(models.Track.artist, func.count(models.ListenHistory.id).label('count'))\
-            .join(models.ListenHistory)\
-            .filter(models.ListenHistory.user_id == current_user.id)\
-            .group_by(models.Track.artist)\
-            .order_by(desc('count'))\
-            .limit(5)\
-            .all()
-        
-        known_artists = {a[0].lower() for a in top_artists if a[0]}
         discoveries = []
         seen_artists = set()
         
-        if not top_artists:
-            # Usuário novo - mostra artistas populares variados
-            search_terms = ["indie pop", "alternative", "r&b soul", "electronic"]
-        else:
-            # Busca "artista similar" ou "fans also like"
-            search_terms = [f"{a[0]} similar artists" for a in top_artists[:3]]
+        # 1. Busca os artistas mais ouvidos do usuário
+        top_artists_query = db.query(
+            models.Track.artist, 
+            func.count(models.ListenHistory.id).label('count')
+        ).join(models.ListenHistory).filter(
+            models.ListenHistory.user_id == current_user.id,
+            models.Track.artist.isnot(None),
+            models.Track.artist != "",
+            models.Track.artist != "Desconhecido"
+        ).group_by(models.Track.artist).order_by(desc('count')).limit(10).all()
         
-        for search_term in search_terms:
-            try:
-                results = await run_in_threadpool(TidalProvider.search_catalog, search_term, 10, "album")
+        # Set de artistas que o usuário já conhece (para não recomendar)
+        known_artists = {a[0].lower() for a in top_artists_query if a[0]}
+        
+        # Também adiciona artistas salvos na biblioteca
+        saved_artists_db = db.query(models.SavedArtist.name).filter(
+            models.SavedArtist.user_id == current_user.id
+        ).all()
+        for sa in saved_artists_db:
+            if sa[0]:
+                known_artists.add(sa[0].lower())
+        
+        print(f"🔍 Discover para {current_user.username}: {len(known_artists)} artistas conhecidos")
+        
+        # 2. CASO: Usuário tem histórico - usa Last.fm para artistas similares
+        if top_artists_query:
+            top_artist_names = [a[0] for a in top_artists_query[:5]]  # Top 5
+            
+            for base_artist in top_artist_names:
+                if len(discoveries) >= limit:
+                    break
                 
-                for item in results:
-                    artist_lower = item.get('artistName', '').lower()
+                # Busca artistas similares via Last.fm
+                similar_artists = await run_in_threadpool(
+                    LastfmProvider.get_similar_artists, 
+                    base_artist, 
+                    8  # 8 similares por artista base
+                )
+                
+                if not similar_artists:
+                    continue
+                
+                # Ordena por match score (maior similaridade primeiro)
+                similar_artists.sort(key=lambda x: x.get('match', 0), reverse=True)
+                
+                for similar in similar_artists:
+                    artist_name = similar.get('name', '')
+                    artist_lower = artist_name.lower()
                     
-                    # Pula artistas já conhecidos ou já adicionados
+                    # Pula se já conhece ou já foi adicionado
                     if artist_lower in known_artists or artist_lower in seen_artists:
                         continue
                     
-                    seen_artists.add(artist_lower)
-                    discoveries.append({
-                        "title": item['collectionName'],
-                        "artist": item['artistName'],
-                        "imageUrl": item['artworkUrl'],
-                        "type": "album",
-                        "id": item['collectionId'],
-                        "reason": "Descoberta para você"
-                    })
+                    # Pula se match muito baixo
+                    if similar.get('match', 0) < 0.1:
+                        continue
                     
-                    if len(discoveries) >= limit:
-                        break
+                    seen_artists.add(artist_lower)
+                    
+                    # Busca o álbum mais recente desse artista no Tidal
+                    try:
+                        albums = await run_in_threadpool(
+                            TidalProvider.search_catalog,
+                            artist_name,
+                            3,
+                            "album"
+                        )
                         
-            except Exception as e:
-                continue
-            
-            if len(discoveries) >= limit:
-                break
+                        # Filtra álbuns do artista correto
+                        artist_albums = [
+                            a for a in albums 
+                            if a.get('artistName', '').lower() == artist_lower
+                        ]
+                        
+                        if artist_albums:
+                            album = artist_albums[0]
+                            discoveries.append({
+                                "title": album['collectionName'],
+                                "artist": album['artistName'],
+                                "imageUrl": album.get('artworkUrl', similar.get('image', '')),
+                                "type": "album",
+                                "id": album['collectionId'],
+                                "reason": f"Porque você curte {base_artist}",
+                                "matchScore": similar.get('match', 0)
+                            })
+                            
+                            if len(discoveries) >= limit:
+                                break
+                    except Exception as e:
+                        print(f"⚠️ Erro buscando álbum de {artist_name}: {e}")
+                        continue
         
+        # 3. FALLBACK: Usuário novo sem histórico - usa gêneros populares
+        if len(discoveries) < limit:
+            fallback_tags = ["indie", "alternative", "pop", "electronic", "rock"]
+            
+            for tag in fallback_tags:
+                if len(discoveries) >= limit:
+                    break
+                
+                try:
+                    tag_artists = await run_in_threadpool(
+                        LastfmProvider.get_top_artists_by_tag,
+                        tag,
+                        5
+                    )
+                    
+                    for artist in tag_artists:
+                        artist_name = artist.get('name', '')
+                        artist_lower = artist_name.lower()
+                        
+                        if artist_lower in known_artists or artist_lower in seen_artists:
+                            continue
+                        
+                        seen_artists.add(artist_lower)
+                        
+                        # Busca álbum via Tidal
+                        albums = await run_in_threadpool(
+                            TidalProvider.search_catalog,
+                            artist_name,
+                            1,
+                            "album"
+                        )
+                        
+                        if albums:
+                            album = albums[0]
+                            discoveries.append({
+                                "title": album['collectionName'],
+                                "artist": album['artistName'],
+                                "imageUrl": album.get('artworkUrl', ''),
+                                "type": "album",
+                                "id": album['collectionId'],
+                                "reason": f"Popular em {tag.capitalize()}"
+                            })
+                            
+                            if len(discoveries) >= limit:
+                                break
+                except:
+                    continue
+        
+        # 4. Ordena por match score (se disponível) e embaralha um pouco
+        import random
+        if len(discoveries) > 3:
+            # Mantém os top 3 por match score, embaralha o resto
+            discoveries.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
+            top_picks = discoveries[:3]
+            rest = discoveries[3:]
+            random.shuffle(rest)
+            discoveries = top_picks + rest
+        
+        print(f"✅ Discover: {len(discoveries)} descobertas para {current_user.username}")
         return discoveries[:limit]
         
     except Exception as e:
         print(f"❌ Erro em discover: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 @app.get("/home/recommendations")
@@ -2300,18 +2525,74 @@ async def get_artist_details(artist_id: str):
     """
     Retorna detalhes completos do artista (Bio, Álbuns, Singles, Top Tracks).
     Suporta TIDAL (IDs numéricos) e YTMusic (IDs alfanuméricos/UC...).
+    Enriquece com dados do Last.fm (artistas similares, bio, tags).
     """
+    from app.services.lastfm_provider import LastfmProvider
+    
     try:
         # Lógica de roteamento baseada no formato do ID
         if artist_id.isdigit():
              # TIDAL
              print(f"🎤 Buscando artista no TIDAL: {artist_id}")
-             return await run_in_threadpool(TidalProvider.get_artist_details, artist_id)
+             result = await run_in_threadpool(TidalProvider.get_artist_details, artist_id)
         else:
              # YTMUSIC (IDs geralmente começam com 'UC' ou 'U' ou hash longo)
              print(f"🎤 Buscando artista no YTMusic: {artist_id}")
-             return await run_in_threadpool(CatalogProvider.get_artist_details, artist_id)
+             result = await run_in_threadpool(CatalogProvider.get_artist_details, artist_id)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Artista não encontrado")
+        
+        # Enriquece com Last.fm
+        artist_name = result.get("artist", {}).get("artistName", "")
+        if not artist_name:
+            artist_name = result.get("artist", {}).get("name", "")
+        
+        if artist_name:
+            print(f"🎵 Enriquecendo '{artist_name}' com Last.fm...")
+            
+            # 1. Artistas similares do Last.fm (melhor qualidade)
+            lastfm_similar = await run_in_threadpool(
+                LastfmProvider.get_similar_artists, artist_name, 10
+            )
+            
+            if lastfm_similar:
+                # Formata para o padrão esperado pelo app
+                similar_artists = []
+                for sim in lastfm_similar:
+                    similar_artists.append({
+                        "name": sim.get("name", ""),
+                        "image": sim.get("image", ""),
+                        "match": sim.get("match", 0),
+                        "artistId": None,  # Last.fm não tem IDs do Tidal
+                        "source": "LastFM"
+                    })
+                result["similarArtists"] = similar_artists
+                print(f"   ✅ {len(similar_artists)} artistas similares via Last.fm")
+            
+            # 2. Informações extras do artista (bio, tags, listeners)
+            lastfm_info = await run_in_threadpool(
+                LastfmProvider.get_artist_info, artist_name
+            )
+            
+            if lastfm_info:
+                # Adiciona ou enriquece info do artista
+                if not result.get("artist"):
+                    result["artist"] = {}
+                
+                result["artist"]["bio"] = lastfm_info.get("bio", "")
+                result["artist"]["tags"] = lastfm_info.get("tags", [])
+                result["artist"]["listeners"] = lastfm_info.get("listeners", 0)
+                result["artist"]["playcount"] = lastfm_info.get("playcount", 0)
+                
+                # Usa imagem do Last.fm se não tiver
+                if not result["artist"].get("artworkUrl") and lastfm_info.get("image"):
+                    result["artist"]["artworkUrl"] = lastfm_info["image"]
+        
+        return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Erro detalhes artista: {e}")
         raise HTTPException(status_code=500, detail=str(e))

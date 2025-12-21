@@ -1,5 +1,34 @@
 from ytmusicapi import YTMusic
 import traceback
+import re
+
+def _get_high_res_thumbnail(url: str) -> str:
+    """
+    Converte URL de thumbnail do YouTube Music para alta resolução.
+    YT Music usa parâmetros como w60-h60, w120-h120, etc.
+    Modificamos para w800-h800 para máxima qualidade.
+    """
+    if not url:
+        return ""
+    
+    # Padrão: substitui wXXX-hXXX por w800-h800
+    # Exemplos de URLs:
+    # https://lh3.googleusercontent.com/...=w60-h60-l90-rj
+    # https://lh3.googleusercontent.com/...=w120-h120-l90-rj
+    # https://lh3.googleusercontent.com/...=w226-h226-l90-rj
+    
+    # Substitui padrões de tamanho
+    high_res_url = re.sub(r'=w\d+-h\d+', '=w800-h800', url)
+    
+    # Se não tinha parâmetro, tenta adicionar
+    if high_res_url == url and 'lh3.googleusercontent.com' in url:
+        if '=' in url:
+            # Adiciona no final dos parâmetros existentes
+            high_res_url = re.sub(r'(=.*)$', r'\1-w800-h800', url)
+        else:
+            high_res_url = url + '=w800-h800'
+    
+    return high_res_url
 
 class CatalogProvider:
     # Inicializa sem autenticação (apenas busca pública)
@@ -27,7 +56,8 @@ class CatalogProvider:
             for item in raw_results:
                 try:
                     thumbnails = item.get('thumbnails', [])
-                    artwork_url = thumbnails[-1]['url'] if thumbnails else ""
+                    raw_url = thumbnails[-1]['url'] if thumbnails else ""
+                    artwork_url = _get_high_res_thumbnail(raw_url)
                     
                     # --- ARTISTA ---
                     if type == "artist" and item.get('resultType') == 'artist':
@@ -110,6 +140,10 @@ class CatalogProvider:
         try:
             album = CatalogProvider.yt.get_album(browse_id)
             
+            # Artwork em alta resolução (antes do loop de tracks)
+            raw_artwork = album['thumbnails'][-1]['url'] if album.get('thumbnails') else ""
+            high_res_artwork = _get_high_res_thumbnail(raw_artwork)
+            
             tracks = []
             # Enumera a partir de 1 para trackNumber
             for i, track in enumerate(album.get('tracks', []), start=1):
@@ -128,7 +162,7 @@ class CatalogProvider:
                     "collectionName": album.get('title'),
                     "durationMs": int(duration_sec) * 1000, 
                     "previewUrl": None,
-                    "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else ""
+                    "artworkUrl": high_res_artwork
                 })
             
             year = str(album.get('year') or '')
@@ -137,7 +171,7 @@ class CatalogProvider:
                 "collectionId": browse_id,
                 "collectionName": album.get('title'),
                 "artistName": album['artists'][0]['name'] if album.get('artists') else "Vários",
-                "artworkUrl": album['thumbnails'][-1]['url'] if album.get('thumbnails') else "",
+                "artworkUrl": high_res_artwork,
                 "year": year,
                 "releaseDate": year,
                 "tracks": tracks
@@ -158,7 +192,8 @@ class CatalogProvider:
             
             # 1. Info Básica
             thumbnails = artist.get('thumbnails', [])
-            artwork_url = thumbnails[-1]['url'] if thumbnails else ""
+            raw_url = thumbnails[-1]['url'] if thumbnails else ""
+            artwork_url = _get_high_res_thumbnail(raw_url)
             
             artist_info = {
                 "artistId": artist_id,
@@ -174,7 +209,8 @@ class CatalogProvider:
             if 'albums' in artist and 'results' in artist['albums']:
                 for item in artist['albums']['results']:
                     thumb = item.get('thumbnails', [])
-                    cover = thumb[-1]['url'] if thumb else ""
+                    raw_cover = thumb[-1]['url'] if thumb else ""
+                    cover = _get_high_res_thumbnail(raw_cover)
                     year = str(item.get('year') or '')
                     
                     albums.append({
@@ -194,7 +230,8 @@ class CatalogProvider:
             if 'singles' in artist and 'results' in artist['singles']:
                 for item in artist['singles']['results']:
                     thumb = item.get('thumbnails', [])
-                    cover = thumb[-1]['url'] if thumb else ""
+                    raw_cover = thumb[-1]['url'] if thumb else ""
+                    cover = _get_high_res_thumbnail(raw_cover)
                     year = str(item.get('year') or '')
                     
                     singles.append({
@@ -213,7 +250,8 @@ class CatalogProvider:
             if 'songs' in artist and 'results' in artist['songs']:
                 for item in artist['songs']['results']:
                     thumb = item.get('thumbnails', [])
-                    cover = thumb[-1]['url'] if thumb else ""
+                    raw_cover = thumb[-1]['url'] if thumb else ""
+                    cover = _get_high_res_thumbnail(raw_cover)
                     
                     # Tenta pegar info do álbum se disponível na listagem (raro no top songs do YT)
                     album_name = "Single"

@@ -13,6 +13,9 @@ class User(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     profile_image_url = Column(Text, nullable=True)  # URL ou base64 da imagem de perfil
+    # Last.fm scrobbling
+    lastfm_session_key = Column(String, nullable=True)
+    lastfm_username = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     history = relationship("ListenHistory", back_populates="user")

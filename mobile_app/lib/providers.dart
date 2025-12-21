@@ -1050,3 +1050,61 @@ final userProfileProvider =
     StateNotifierProvider<UserProfileNotifier, UserProfile>((ref) {
   return UserProfileNotifier(ref);
 });
+
+// ===================================================================
+// LAST.FM INTEGRATION PROVIDERS
+// ===================================================================
+
+/// Provider para verificar status da conexão Last.fm
+final lastfmStatusProvider = FutureProvider<Map<String, dynamic>>((ref) async {
+  try {
+    final dio = ref.read(dioProvider);
+    final response = await dio.get('/users/me/lastfm');
+    return response.data as Map<String, dynamic>;
+  } catch (e) {
+    return {'connected': false, 'username': null};
+  }
+});
+
+/// Provider para autenticar no Last.fm
+class LastfmAuthNotifier extends StateNotifier<AsyncValue<bool>> {
+  final Ref ref;
+  
+  LastfmAuthNotifier(this.ref) : super(const AsyncValue.data(false));
+  
+  Future<Map<String, dynamic>?> authenticate(String username, String password) async {
+    state = const AsyncValue.loading();
+    try {
+      final dio = ref.read(dioProvider);
+      final response = await dio.post('/lastfm/auth', data: {
+        'username': username,
+        'password': password,
+      });
+      
+      state = const AsyncValue.data(true);
+      // Invalida o status para recarregar
+      ref.invalidate(lastfmStatusProvider);
+      return response.data as Map<String, dynamic>;
+    } catch (e) {
+      state = AsyncValue.error(e, StackTrace.current);
+      return null;
+    }
+  }
+  
+  Future<bool> disconnect() async {
+    try {
+      final dio = ref.read(dioProvider);
+      await dio.delete('/lastfm/auth');
+      state = const AsyncValue.data(false);
+      ref.invalidate(lastfmStatusProvider);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+}
+
+final lastfmAuthProvider = StateNotifierProvider<LastfmAuthNotifier, AsyncValue<bool>>((ref) {
+  return LastfmAuthNotifier(ref);
+});
+

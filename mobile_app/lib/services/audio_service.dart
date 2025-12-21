@@ -489,9 +489,32 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
       if (response.statusCode == 200) {
         print(
             '📊 Histórico registrado: ${track['title']} ($durationListened s)');
+        
+        // --- LAST.FM SCROBBLING ---
+        // Envia scrobble para o Last.fm se conectado
+        if (catalogArtist != null && catalogTitle != null) {
+          _sendScrobble(catalogArtist, catalogTitle, catalogAlbum, durationListened);
+        }
       }
     } catch (e) {
       print('⚠️ Erro ao registrar histórico: $e');
+    }
+  }
+
+  /// Envia scrobble para o Last.fm
+  Future<void> _sendScrobble(String artist, String track, String? album, int duration) async {
+    try {
+      final dio = ref.read(dioProvider);
+      await dio.post('/lastfm/scrobble', data: {
+        'artist': artist,
+        'track': track,
+        if (album != null) 'album': album,
+        'duration': duration,
+      });
+      print('🎵 Scrobble enviado: $artist - $track');
+    } catch (e) {
+      // Silently fail - scrobble is best-effort
+      print('⚠️ Erro ao enviar scrobble (não crítico): $e');
     }
   }
 

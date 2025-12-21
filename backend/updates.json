@@ -1,16 +1,16 @@
 {
-  "latest_version": "1.5.2",
-  "release_notes_pt": "Nova versão de desenvolvimento (CI/CD) v1.5.2.",
+  "latest_version": "1.5.3",
+  "release_notes_pt": "Nova versão de desenvolvimento (CI/CD) v1.5.3.",
   "platforms": {
     "android": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2.apk"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.3.apk"
     },
     "windows": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-windows-setup.exe",
-      "portable_url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-windows-portable.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.3-windows-setup.exe",
+      "portable_url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.3-windows-portable.zip"
     },
     "macos": {
-      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.2-macos.zip"
+      "url": "https://orfeu.ocnaibill.dev/downloads/Orfeu-v1.5.3-macos.zip"
     }
   }
 }

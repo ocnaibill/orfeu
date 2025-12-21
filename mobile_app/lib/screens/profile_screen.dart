@@ -204,6 +204,23 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     label: "Downloads",
                     onTap: () => _showDownloadsModal(context),
                   ),
+                  const SizedBox(height: 15),
+                  // Last.fm Integration
+                  Consumer(
+                    builder: (context, ref, _) {
+                      final lastfmStatus = ref.watch(lastfmStatusProvider);
+                      return _buildSettingsTile(
+                        label: lastfmStatus.when(
+                          data: (status) => status['connected'] == true 
+                              ? "Last.fm ✓ ${status['username']}"
+                              : "Conectar Last.fm",
+                          loading: () => "Last.fm...",
+                          error: (_, __) => "Conectar Last.fm",
+                        ),
+                        onTap: () => _showLastfmModal(context, ref),
+                      );
+                    },
+                  ),
                 ],
               ),
             ),
@@ -745,6 +762,228 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               ),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  void _showLastfmModal(BuildContext context, WidgetRef ref) {
+    final usernameCtrl = TextEditingController();
+    final passwordCtrl = TextEditingController();
+    bool isLoading = false;
+    String? errorMessage;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final lastfmStatus = ref.watch(lastfmStatusProvider);
+            
+            return Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
+                  left: 20,
+                  right: 20,
+                  top: 20),
+              child: lastfmStatus.when(
+                data: (status) {
+                  // Se já conectado, mostra opção de desconectar
+                  if (status['connected'] == true) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 50,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFD51007),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(Icons.music_note, color: Colors.white, size: 30),
+                            ),
+                            const SizedBox(width: 15),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text("Last.fm Conectado",
+                                      style: GoogleFonts.firaSans(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white)),
+                                  Text("@${status['username']}",
+                                      style: GoogleFonts.firaSans(
+                                          fontSize: 14,
+                                          color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          "Suas músicas serão enviadas automaticamente para o Last.fm enquanto você ouve.",
+                          style: GoogleFonts.firaSans(color: Colors.white70),
+                        ),
+                        const SizedBox(height: 25),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red[900],
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed: isLoading ? null : () async {
+                              setModalState(() => isLoading = true);
+                              final success = await ref.read(lastfmAuthProvider.notifier).disconnect();
+                              if (success) {
+                                Navigator.pop(context);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text("Last.fm desconectado")),
+                                );
+                              }
+                              setModalState(() => isLoading = false);
+                            },
+                            child: isLoading
+                                ? const SizedBox(
+                                    height: 20, width: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Text("Desconectar"),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    );
+                  }
+                  
+                  // Formulário de login
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 50,
+                            height: 50,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFD51007),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.music_note, color: Colors.white, size: 30),
+                          ),
+                          const SizedBox(width: 15),
+                          Text("Conectar Last.fm",
+                              style: GoogleFonts.firaSans(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white)),
+                        ],
+                      ),
+                      const SizedBox(height: 15),
+                      Text(
+                        "Envie automaticamente suas músicas para o Last.fm e acompanhe seu histórico de scrobbles.",
+                        style: GoogleFonts.firaSans(color: Colors.white70),
+                      ),
+                      const SizedBox(height: 20),
+                      if (errorMessage != null)
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          margin: const EdgeInsets.only(bottom: 15),
+                          decoration: BoxDecoration(
+                            color: Colors.red[900]!.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(errorMessage!, style: GoogleFonts.firaSans(color: Colors.red[200])),
+                        ),
+                      TextField(
+                        controller: usernameCtrl,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: const InputDecoration(
+                          labelText: "Usuário Last.fm",
+                          labelStyle: TextStyle(color: Colors.white54),
+                          enabledBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Colors.white24)),
+                          focusedBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFFD51007))),
+                        ),
+                      ),
+                      const SizedBox(height: 15),
+                      TextField(
+                        controller: passwordCtrl,
+                        obscureText: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: const InputDecoration(
+                          labelText: "Senha",
+                          labelStyle: TextStyle(color: Colors.white54),
+                          enabledBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Colors.white24)),
+                          focusedBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFFD51007))),
+                        ),
+                      ),
+                      const SizedBox(height: 25),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFD51007),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: isLoading ? null : () async {
+                            if (usernameCtrl.text.isEmpty || passwordCtrl.text.isEmpty) {
+                              setModalState(() => errorMessage = "Preencha todos os campos");
+                              return;
+                            }
+                            
+                            setModalState(() {
+                              isLoading = true;
+                              errorMessage = null;
+                            });
+                            
+                            final result = await ref.read(lastfmAuthProvider.notifier)
+                                .authenticate(usernameCtrl.text, passwordCtrl.text);
+                            
+                            if (result != null) {
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(result['message'] ?? "Last.fm conectado!")),
+                              );
+                            } else {
+                              setModalState(() {
+                                isLoading = false;
+                                errorMessage = "Usuário ou senha inválidos";
+                              });
+                            }
+                          },
+                          child: isLoading
+                              ? const SizedBox(
+                                  height: 20, width: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Text("Conectar"),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+                  );
+                },
+                loading: () => const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(40),
+                    child: CircularProgressIndicator(color: Color(0xFFD51007)),
+                  ),
+                ),
+                error: (_, __) => const Text("Erro ao carregar status", style: TextStyle(color: Colors.red)),
+              ),
+            );
+          },
         );
       },
     );
