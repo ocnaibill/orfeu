@@ -6,6 +6,7 @@ import 'playlist_detail_screen.dart';
 import 'album_screen.dart';
 import 'artist_screen.dart';
 import '../providers.dart';
+import '../services/audio_service.dart';
 import '../services/download_manager.dart';
 
 class LibraryScreen extends ConsumerStatefulWidget {
