@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:dio/dio.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../providers.dart';
 
 /// Gerencia downloads de músicas para uso offline.
@@ -212,6 +213,48 @@ class DownloadManager {
       print('❌ Erro ao limpar downloads: $e');
     }
   }
+  
+  /// Baixa múltiplas tracks (álbum ou playlist)
+  /// Retorna o número de tracks baixadas com sucesso
+  Future<int> downloadMultipleTracks(
+    List<Map<String, dynamic>> tracks, {
+    void Function(int current, int total, double trackProgress)? onProgress,
+  }) async {
+    int successCount = 0;
+    final total = tracks.length;
+    
+    for (int i = 0; i < total; i++) {
+      final track = tracks[i];
+      final filename = track['filename'] as String?;
+      
+      if (filename == null || filename.isEmpty) {
+        print('⚠️ Track ${i + 1}/$total sem filename, pulando...');
+        continue;
+      }
+      
+      // Verifica se já baixada
+      final existingPath = await getLocalPath(filename);
+      if (existingPath != null) {
+        successCount++;
+        onProgress?.call(i + 1, total, 1.0);
+        continue;
+      }
+      
+      // Baixa a track
+      final result = await downloadTrack(
+        track,
+        onProgress: (progress) {
+          onProgress?.call(i + 1, total, progress);
+        },
+      );
+      
+      if (result != null) {
+        successCount++;
+      }
+    }
+    
+    return successCount;
+  }
 }
 
 // ===================================================================
@@ -238,20 +281,38 @@ final downloadedSpaceProvider = FutureProvider<int>((ref) async {
 /// State para progresso de download atual
 class DownloadProgress {
   final String? filename;
+  final String? batchName; // Nome do álbum/playlist
   final double progress;
   final bool isDownloading;
+  final int currentTrack;
+  final int totalTracks;
   
   const DownloadProgress({
     this.filename,
+    this.batchName,
     this.progress = 0,
     this.isDownloading = false,
+    this.currentTrack = 0,
+    this.totalTracks = 0,
   });
   
-  DownloadProgress copyWith({String? filename, double? progress, bool? isDownloading}) {
+  bool get isBatchDownload => totalTracks > 1;
+  
+  DownloadProgress copyWith({
+    String? filename,
+    String? batchName,
+    double? progress,
+    bool? isDownloading,
+    int? currentTrack,
+    int? totalTracks,
+  }) {
     return DownloadProgress(
       filename: filename ?? this.filename,
+      batchName: batchName ?? this.batchName,
       progress: progress ?? this.progress,
       isDownloading: isDownloading ?? this.isDownloading,
+      currentTrack: currentTrack ?? this.currentTrack,
+      totalTracks: totalTracks ?? this.totalTracks,
     );
   }
 }
@@ -269,6 +330,8 @@ class DownloadProgressNotifier extends StateNotifier<DownloadProgress> {
       filename: filename,
       progress: 0,
       isDownloading: true,
+      currentTrack: 1,
+      totalTracks: 1,
     );
     
     final manager = ref.read(downloadManagerProvider);
@@ -282,6 +345,66 @@ class DownloadProgressNotifier extends StateNotifier<DownloadProgress> {
     state = const DownloadProgress(); // Reset
     
     // Invalida a lista de downloads para recarregar
+    ref.invalidate(downloadedTracksProvider);
+    ref.invalidate(downloadedSpaceProvider);
+    
+    return result;
+  }
+  
+  /// Download de álbum completo
+  Future<int> downloadAlbum(String albumName, List<Map<String, dynamic>> tracks) async {
+    state = DownloadProgress(
+      batchName: albumName,
+      isDownloading: true,
+      currentTrack: 0,
+      totalTracks: tracks.length,
+    );
+    
+    final manager = ref.read(downloadManagerProvider);
+    final result = await manager.downloadMultipleTracks(
+      tracks,
+      onProgress: (current, total, trackProgress) {
+        state = state.copyWith(
+          currentTrack: current,
+          totalTracks: total,
+          progress: trackProgress,
+          filename: tracks[current - 1]['trackName'] ?? 'Baixando...',
+        );
+      },
+    );
+    
+    state = const DownloadProgress(); // Reset
+    
+    ref.invalidate(downloadedTracksProvider);
+    ref.invalidate(downloadedSpaceProvider);
+    
+    return result;
+  }
+  
+  /// Download de playlist completa
+  Future<int> downloadPlaylist(String playlistName, List<Map<String, dynamic>> tracks) async {
+    state = DownloadProgress(
+      batchName: playlistName,
+      isDownloading: true,
+      currentTrack: 0,
+      totalTracks: tracks.length,
+    );
+    
+    final manager = ref.read(downloadManagerProvider);
+    final result = await manager.downloadMultipleTracks(
+      tracks,
+      onProgress: (current, total, trackProgress) {
+        state = state.copyWith(
+          currentTrack: current,
+          totalTracks: total,
+          progress: trackProgress,
+          filename: tracks[current - 1]['trackName'] ?? 'Baixando...',
+        );
+      },
+    );
+    
+    state = const DownloadProgress(); // Reset
+    
     ref.invalidate(downloadedTracksProvider);
     ref.invalidate(downloadedSpaceProvider);
     
@@ -305,3 +428,35 @@ class DownloadProgressNotifier extends StateNotifier<DownloadProgress> {
 final downloadProgressProvider = StateNotifierProvider<DownloadProgressNotifier, DownloadProgress>((ref) {
   return DownloadProgressNotifier(ref);
 });
+
+// ===================================================================
+// CONNECTIVITY / OFFLINE MODE
+// ===================================================================
+
+/// Stream de status de conectividade
+final connectivityStreamProvider = StreamProvider<List<ConnectivityResult>>((ref) {
+  return Connectivity().onConnectivityChanged;
+});
+
+/// Provider simples que indica se está offline
+final isOfflineProvider = Provider<bool>((ref) {
+  final connectivityAsync = ref.watch(connectivityStreamProvider);
+  return connectivityAsync.maybeWhen(
+    data: (results) => results.isEmpty || results.contains(ConnectivityResult.none),
+    orElse: () => false,
+  );
+});
+
+/// Provider para verificar se uma track específica está disponível offline
+final trackOfflineStatusProvider = FutureProvider.family<bool, String>((ref, filename) async {
+  final manager = ref.read(downloadManagerProvider);
+  return manager.isDownloaded(filename);
+});
+
+/// Provider que retorna o caminho local de uma track se existir
+final localTrackPathProvider = FutureProvider.family<String?, String>((ref, filename) async {
+  final manager = ref.read(downloadManagerProvider);
+  return manager.getLocalPath(filename);
+});
+
+

@@ -5,6 +5,7 @@ import 'package:palette_generator/palette_generator.dart';
 import 'dart:ui';
 import '../providers.dart';
 import '../services/audio_service.dart';
+import '../services/download_manager.dart';
 import '../widgets/bottom_nav_area.dart'; // <--- Import restaurado
 
 // Provider para carregar os detalhes do álbum
@@ -543,42 +544,115 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: Icon(Icons.playlist_add, color: _vibrantColor),
-                title: Text("Adicionar álbum a uma playlist",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _showPlaylistSelectionModal(albumData, tracks);
-                },
+        return Consumer(
+          builder: (context, ref, _) {
+            final downloadProgress = ref.watch(downloadProgressProvider);
+            final isDownloading = downloadProgress.isDownloading && 
+                downloadProgress.batchName == albumData['collectionName'];
+            
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // --- DOWNLOAD ALBUM ---
+                  ListTile(
+                    leading: isDownloading
+                        ? SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _vibrantColor,
+                            ),
+                          )
+                        : Icon(Icons.download, color: _vibrantColor),
+                    title: Text(
+                      isDownloading
+                          ? "Baixando ${downloadProgress.currentTrack}/${downloadProgress.totalTracks}..."
+                          : "Baixar álbum para offline",
+                      style: GoogleFonts.firaSans(color: Colors.white),
+                    ),
+                    subtitle: isDownloading
+                        ? LinearProgressIndicator(
+                            value: (downloadProgress.currentTrack - 1 + downloadProgress.progress) / 
+                                   downloadProgress.totalTracks,
+                            backgroundColor: Colors.white12,
+                            valueColor: AlwaysStoppedAnimation(_vibrantColor),
+                          )
+                        : Text("${tracks.length} músicas",
+                            style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)),
+                    onTap: isDownloading
+                        ? null
+                        : () async {
+                            Navigator.pop(ctx);
+                            
+                            // Prepara as tracks com metadados
+                            final preparedTracks = tracks.map((t) {
+                              return {
+                                ...t,
+                                'artworkUrl': t['artworkUrl'] ?? albumData['artworkUrl'],
+                                'collectionName': albumData['collectionName'],
+                              };
+                            }).toList();
+                            
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text("Baixando ${tracks.length} músicas..."),
+                                backgroundColor: const Color(0xFFD4AF37),
+                              ),
+                            );
+                            
+                            final count = await ref
+                                .read(downloadProgressProvider.notifier)
+                                .downloadAlbum(
+                                  albumData['collectionName'] ?? 'Álbum',
+                                  preparedTracks,
+                                );
+                            
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("$count músicas baixadas!"),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            }
+                          },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.playlist_add, color: _vibrantColor),
+                    title: Text("Adicionar álbum a uma playlist",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _showPlaylistSelectionModal(albumData, tracks);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(
+                        _isLibraryAdded == true ? Icons.check : Icons.add,
+                        color: _vibrantColor),
+                    title: Text(
+                        _isLibraryAdded == true
+                            ? "Remover da biblioteca"
+                            : "Adicionar à biblioteca",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _toggleLibrary(albumData);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.share, color: _vibrantColor),
+                    title: Text("Compartilhar",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () => Navigator.pop(ctx),
+                  ),
+                ],
               ),
-              ListTile(
-                leading: Icon(
-                    _isLibraryAdded == true ? Icons.check : Icons.add,
-                    color: _vibrantColor),
-                title: Text(
-                    _isLibraryAdded == true
-                        ? "Remover da biblioteca"
-                        : "Adicionar à biblioteca",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _toggleLibrary(albumData);
-                },
-              ),
-              ListTile(
-                leading: Icon(Icons.share, color: _vibrantColor),
-                title: Text("Compartilhar",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );

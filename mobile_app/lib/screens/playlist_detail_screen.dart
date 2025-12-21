@@ -3,11 +3,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:palette_generator/palette_generator.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:ui';
 import 'dart:typed_data';
 import '../providers.dart';
 import '../services/audio_service.dart';
+import '../services/download_manager.dart';
 import '../widgets/bottom_nav_area.dart';
 
 // Provider para carregar os detalhes da playlist
@@ -685,6 +687,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
 
   void _showPlaylistOptionsModal(Map<String, dynamic> playlistData, List<Map<String, dynamic>> tracks) {
     final isFavorites = widget.playlistId == 'favorites' || widget.playlistId.isEmpty;
+    final playlistName = playlistData['name'] ?? 'Playlist';
     
     showModalBottomSheet(
       context: context,
@@ -692,39 +695,100 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (!isFavorites) ...[
-                ListTile(
-                  leading: Icon(Icons.image, color: _vibrantColor),
-                  title: Text("Alterar capa da playlist",
-                      style: GoogleFonts.firaSans(color: Colors.white)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _showChangeCoverModal(playlistData);
-                  },
-                ),
-                ListTile(
-                  leading: Icon(Icons.edit, color: _vibrantColor),
-                  title: Text("Renomear playlist",
-                      style: GoogleFonts.firaSans(color: Colors.white)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _showRenameModal(playlistData);
-                  },
-                ),
-              ],
-              ListTile(
-                leading: Icon(Icons.share, color: _vibrantColor),
-                title: Text("Compartilhar",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx),
+        return Consumer(
+          builder: (context, ref, _) {
+            final downloadProgress = ref.watch(downloadProgressProvider);
+            final isDownloading = downloadProgress.isDownloading && 
+                downloadProgress.batchName == playlistName;
+            
+            return Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // --- DOWNLOAD PLAYLIST ---
+                  ListTile(
+                    leading: isDownloading
+                        ? SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _vibrantColor,
+                            ),
+                          )
+                        : Icon(Icons.download, color: _vibrantColor),
+                    title: Text(
+                      isDownloading
+                          ? "Baixando ${downloadProgress.currentTrack}/${downloadProgress.totalTracks}..."
+                          : "Baixar playlist para offline",
+                      style: GoogleFonts.firaSans(color: Colors.white),
+                    ),
+                    subtitle: isDownloading
+                        ? LinearProgressIndicator(
+                            value: (downloadProgress.currentTrack - 1 + downloadProgress.progress) / 
+                                   downloadProgress.totalTracks,
+                            backgroundColor: Colors.white12,
+                            valueColor: AlwaysStoppedAnimation(_vibrantColor),
+                          )
+                        : Text("${tracks.length} músicas",
+                            style: GoogleFonts.firaSans(color: Colors.white54, fontSize: 12)),
+                    onTap: isDownloading
+                        ? null
+                        : () async {
+                            Navigator.pop(ctx);
+                            
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text("Baixando ${tracks.length} músicas..."),
+                                backgroundColor: const Color(0xFFD4AF37),
+                              ),
+                            );
+                            
+                            final count = await ref
+                                .read(downloadProgressProvider.notifier)
+                                .downloadPlaylist(playlistName, tracks);
+                            
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("$count músicas baixadas!"),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            }
+                          },
+                  ),
+                  if (!isFavorites) ...[
+                    ListTile(
+                      leading: Icon(Icons.image, color: _vibrantColor),
+                      title: Text("Alterar capa da playlist",
+                          style: GoogleFonts.firaSans(color: Colors.white)),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showChangeCoverModal(playlistData);
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.edit, color: _vibrantColor),
+                      title: Text("Renomear playlist",
+                          style: GoogleFonts.firaSans(color: Colors.white)),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showRenameModal(playlistData);
+                      },
+                    ),
+                  ],
+                  ListTile(
+                    leading: Icon(Icons.share, color: _vibrantColor),
+                    title: Text("Compartilhar",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    onTap: () => Navigator.pop(ctx),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
