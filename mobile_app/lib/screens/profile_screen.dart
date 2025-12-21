@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 import '../providers.dart';
+import '../services/download_manager.dart';
 import 'vibe_musical_screen.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
