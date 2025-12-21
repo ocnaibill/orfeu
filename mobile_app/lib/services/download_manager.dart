@@ -434,7 +434,7 @@ final downloadProgressProvider = StateNotifierProvider<DownloadProgressNotifier,
 // ===================================================================
 
 /// Stream de status de conectividade
-final connectivityStreamProvider = StreamProvider<List<ConnectivityResult>>((ref) {
+final connectivityStreamProvider = StreamProvider<ConnectivityResult>((ref) {
   return Connectivity().onConnectivityChanged;
 });
 
@@ -442,7 +442,7 @@ final connectivityStreamProvider = StreamProvider<List<ConnectivityResult>>((ref
 final isOfflineProvider = Provider<bool>((ref) {
   final connectivityAsync = ref.watch(connectivityStreamProvider);
   return connectivityAsync.maybeWhen(
-    data: (results) => results.isEmpty || results.contains(ConnectivityResult.none),
+    data: (result) => result == ConnectivityResult.none,
     orElse: () => false,
   );
 });
