@@ -726,42 +726,92 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("Downloads",
-                  style: GoogleFonts.firaSans(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white)),
-              const SizedBox(height: 20),
-              ListTile(
-                leading: const Icon(Icons.sd_storage, color: Colors.white),
-                title: Text("Armazenamento Usado",
-                    style: GoogleFonts.firaSans(color: Colors.white)),
-                trailing: Text("1.2 GB",
-                    style: GoogleFonts.firaSans(color: Colors.white54)),
+        return Consumer(
+          builder: (context, ref, _) {
+            final spaceAsync = ref.watch(downloadedSpaceProvider);
+            final tracksAsync = ref.watch(downloadedTracksProvider);
+            
+            String formatBytes(int bytes) {
+              if (bytes < 1024) return '$bytes B';
+              if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+              if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+              return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+            }
+            
+            return Container(
+              padding: const EdgeInsets.all(20),
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.6,
               ),
-              ListTile(
-                leading:
-                    const Icon(Icons.delete_outline, color: Colors.redAccent),
-                title: Text("Apagar todos os downloads",
-                    style: GoogleFonts.firaSans(color: Colors.redAccent)),
-                onTap: () {
-                  // Lógica futura de limpeza
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text("Downloads limpos (Simulação)")));
-                },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Downloads",
+                      style: GoogleFonts.firaSans(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                  const SizedBox(height: 20),
+                  ListTile(
+                    leading: const Icon(Icons.sd_storage, color: Colors.white),
+                    title: Text("Armazenamento Usado",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    trailing: spaceAsync.when(
+                      data: (bytes) => Text(formatBytes(bytes),
+                          style: GoogleFonts.firaSans(color: Colors.white54)),
+                      loading: () => const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFD4AF37)),
+                      ),
+                      error: (_, __) => Text("Erro",
+                          style: GoogleFonts.firaSans(color: Colors.redAccent)),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.music_note, color: Colors.white),
+                    title: Text("Músicas Baixadas",
+                        style: GoogleFonts.firaSans(color: Colors.white)),
+                    trailing: tracksAsync.when(
+                      data: (tracks) => Text("${tracks.length}",
+                          style: GoogleFonts.firaSans(color: Colors.white54)),
+                      loading: () => const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFD4AF37)),
+                      ),
+                      error: (_, __) => Text("0",
+                          style: GoogleFonts.firaSans(color: Colors.white54)),
+                    ),
+                  ),
+                  const Divider(color: Colors.white24),
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    title: Text("Apagar todos os downloads",
+                        style: GoogleFonts.firaSans(color: Colors.redAccent)),
+                    onTap: () async {
+                      Navigator.pop(context);
+                      final downloadManager = ref.read(downloadManagerProvider);
+                      await downloadManager.clearAllDownloads();
+                      ref.invalidate(downloadedTracksProvider);
+                      ref.invalidate(downloadedSpaceProvider);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text("Downloads limpos!"),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );

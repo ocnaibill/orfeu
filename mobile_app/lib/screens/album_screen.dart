@@ -361,11 +361,84 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                                       ),
                                     ),
 
-                                    // Botão Download
-                                    Padding(
-                                      padding: const EdgeInsets.only(right: 20),
-                                      child: Icon(Icons.download_rounded,
-                                          color: _vibrantColor, size: 24),
+                                    // Botão Download - Reativo
+                                    Consumer(
+                                      builder: (context, ref, _) {
+                                        final downloadManager = ref.read(downloadManagerProvider);
+                                        final filename = track['filename'] as String?;
+                                        final downloadProgress = ref.watch(downloadProgressProvider);
+                                        final isDownloading = downloadProgress.isDownloading && 
+                                            downloadProgress.filename == filename;
+                                        
+                                        return FutureBuilder<bool>(
+                                          future: filename != null 
+                                              ? downloadManager.isDownloaded(filename) 
+                                              : Future.value(false),
+                                          builder: (context, snapshot) {
+                                            final isDownloaded = snapshot.data ?? false;
+                                            
+                                            return GestureDetector(
+                                              onTap: (isDownloading || isDownloaded)
+                                                  ? null
+                                                  : () async {
+                                                      final trackWithMeta = {
+                                                        ...track,
+                                                        'artworkUrl': track['artworkUrl'] ?? artworkUrl,
+                                                        'collectionName': albumData['collectionName'],
+                                                      };
+                                                      
+                                                      ScaffoldMessenger.of(context).showSnackBar(
+                                                        SnackBar(
+                                                          content: Text("Baixando ${track['trackName']}..."),
+                                                          backgroundColor: const Color(0xFFD4AF37),
+                                                          duration: const Duration(seconds: 1),
+                                                        ),
+                                                      );
+                                                      
+                                                      // Get filename via smartDownload first
+                                                      final searchCtrl = ref.read(searchControllerProvider);
+                                                      final fname = await searchCtrl.smartDownload(trackWithMeta);
+                                                      
+                                                      if (fname != null) {
+                                                        trackWithMeta['filename'] = fname;
+                                                        final result = await ref
+                                                            .read(downloadProgressProvider.notifier)
+                                                            .downloadTrack(trackWithMeta);
+                                                        
+                                                        if (context.mounted) {
+                                                          ScaffoldMessenger.of(context).showSnackBar(
+                                                            SnackBar(
+                                                              content: Text(result != null
+                                                                  ? "Música baixada!"
+                                                                  : "Erro ao baixar"),
+                                                              backgroundColor: result != null ? Colors.green : Colors.red,
+                                                            ),
+                                                          );
+                                                        }
+                                                      }
+                                                    },
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(right: 20),
+                                                child: isDownloading
+                                                    ? SizedBox(
+                                                        width: 24,
+                                                        height: 24,
+                                                        child: CircularProgressIndicator(
+                                                          value: downloadProgress.progress,
+                                                          strokeWidth: 2,
+                                                          color: _vibrantColor,
+                                                        ),
+                                                      )
+                                                    : Icon(
+                                                        isDownloaded ? Icons.download_done : Icons.download_rounded,
+                                                        color: isDownloaded ? Colors.green : _vibrantColor,
+                                                        size: 24,
+                                                      ),
+                                              ),
+                                            );
+                                          },
+                                        );
+                                      },
                                     ),
                                   ],
                                 ),
@@ -587,33 +660,57 @@ class _AlbumScreenState extends ConsumerState<AlbumScreen>
                         : () async {
                             Navigator.pop(ctx);
                             
-                            // Prepara as tracks com metadados
-                            final preparedTracks = tracks.map((t) {
-                              return {
-                                ...t,
-                                'artworkUrl': t['artworkUrl'] ?? albumData['artworkUrl'],
-                                'collectionName': albumData['collectionName'],
-                              };
-                            }).toList();
+                            final searchCtrl = ref.read(searchControllerProvider);
+                            final downloadNotifier = ref.read(downloadProgressProvider.notifier);
                             
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text("Baixando ${tracks.length} músicas..."),
+                                content: Text("Preparando ${tracks.length} músicas para download..."),
                                 backgroundColor: const Color(0xFFD4AF37),
                               ),
                             );
                             
-                            final count = await ref
-                                .read(downloadProgressProvider.notifier)
-                                .downloadAlbum(
-                                  albumData['collectionName'] ?? 'Álbum',
-                                  preparedTracks,
+                            // Prepara tracks obtendo filename via smartDownload
+                            final preparedTracks = <Map<String, dynamic>>[];
+                            for (final t in tracks) {
+                              final track = {
+                                ...t,
+                                'artworkUrl': t['artworkUrl'] ?? albumData['artworkUrl'],
+                                'collectionName': albumData['collectionName'],
+                              };
+                              try {
+                                final filename = await searchCtrl.smartDownload(track);
+                                if (filename != null) {
+                                  track['filename'] = filename;
+                                  preparedTracks.add(track);
+                                }
+                              } catch (e) {
+                                print('⚠️ Erro ao preparar track ${t['trackName']}: $e');
+                              }
+                            }
+                            
+                            if (preparedTracks.isEmpty) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Nenhuma música pôde ser preparada para download"),
+                                    backgroundColor: Colors.red,
+                                  ),
                                 );
+                              }
+                              return;
+                            }
+                            
+                            // Agora baixa para armazenamento offline
+                            final count = await downloadNotifier.downloadAlbum(
+                              albumData['collectionName'] ?? 'Álbum',
+                              preparedTracks,
+                            );
                             
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text("$count músicas baixadas!"),
+                                  content: Text("$count músicas baixadas para offline!"),
                                   backgroundColor: Colors.green,
                                 ),
                               );

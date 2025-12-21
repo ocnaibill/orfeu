@@ -235,7 +235,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen>
     }
 
     final artworkUrl =
-        playlistData['artworkUrl'] ?? playlistData['imageUrl'] ?? '';
+        playlistData['cover_url'] ?? playlistData['artworkUrl'] ?? playlistData['imageUrl'] ?? '';
     final tracks =
         List<Map<String, dynamic>>.from(playlistData['tracks'] ?? []);
     final isFavoritesPlaylist = playlistData['isFavorites'] == true;

@@ -55,7 +55,9 @@ ALGORITHM = "HS256"
 
 # --- Configuração de Arquivos Estáticos (OTA Updates) ---
 os.makedirs("/downloads_public", exist_ok=True)
-app.mount("/downloads", StaticFiles(directory="/downloads_public"), name="downloads")
+# NOTE: Removed StaticFiles mount - using custom route download_file_with_headers() instead
+# to set proper Content-Type and Content-Disposition headers for APK files
+# app.mount("/downloads", StaticFiles(directory="/downloads_public"), name="downloads")
 
 # --- Configuração de Capas de Playlist ---
 PLAYLIST_COVERS_DIR = "/downloads_public/playlist_covers"
@@ -335,6 +337,45 @@ def get_short_cover_url(filename: str) -> str:
     }
     # Substitua pelo seu domínio real em produção se necessário, ou use relativa
     return f"https://orfeu.ocnaibill.dev/cover/short/{short_hash}"
+
+# --- ROTA CUSTOMIZADA PARA APK (Fix .zip extension on Android Chrome) ---
+from fastapi.responses import FileResponse
+
+@app.get("/downloads/{filename:path}")
+async def download_file_with_headers(filename: str):
+    """
+    Serve arquivos de download com headers corretos.
+    APK files need explicit Content-Type and Content-Disposition to prevent
+    browsers from adding .zip extension.
+    """
+    file_path = os.path.join("/downloads_public", filename)
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Detecta content-type pelo nome do arquivo
+    content_type = "application/octet-stream"
+    if filename.endswith(".apk"):
+        content_type = "application/vnd.android.package-archive"
+    elif filename.endswith(".exe"):
+        content_type = "application/x-msdownload"
+    elif filename.endswith(".zip"):
+        content_type = "application/zip"
+    elif filename.endswith(".dmg"):
+        content_type = "application/x-apple-diskimage"
+    
+    # Extrai apenas o nome do arquivo para o Content-Disposition
+    base_filename = os.path.basename(filename)
+    
+    return FileResponse(
+        file_path,
+        media_type=content_type,
+        filename=base_filename,
+        headers={
+            "Content-Disposition": f'attachment; filename="{base_filename}"',
+            "Cache-Control": "no-cache"
+        }
+    )
 
 def get_update_config() -> dict:
     config_path = "/app/updates.json" 

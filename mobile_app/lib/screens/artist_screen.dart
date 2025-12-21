@@ -481,16 +481,25 @@ class _ArtistScreenState extends ConsumerState<ArtistScreen> {
     if (count == 0 && item['type'] == 'song') count = 1;
     final trackCountStr = count > 0 ? "$count músicas" : "";
 
-    String formattedDate = "DATA DESCONHECIDA";
+    String formattedDate = "";
     try {
-      if (rawDate.length >= 4) {
-        final date = DateTime.tryParse(rawDate);
+      if (rawDate.toString().isNotEmpty) {
+        final rawStr = rawDate.toString();
+        // Try full date parse first
+        final date = DateTime.tryParse(rawStr);
         if (date != null) {
           formattedDate = DateFormat("d 'DE' MMM. 'DE' y", "pt_BR")
               .format(date)
               .toUpperCase();
+        } else if (rawStr.length == 4 && int.tryParse(rawStr) != null) {
+          // Just a year like "2024"
+          formattedDate = rawStr;
+        } else if (rawStr.length >= 4) {
+          // Try to extract year from beginning
+          final yearMatch = RegExp(r'^\d{4}').firstMatch(rawStr);
+          formattedDate = yearMatch?.group(0) ?? rawStr;
         } else {
-          formattedDate = rawDate;
+          formattedDate = rawStr;
         }
       }
     } catch (_) {}
@@ -707,28 +716,55 @@ class _ArtistScreenState extends ConsumerState<ArtistScreen> {
   }
 
   Widget _buildRelatedArtistCard(Map<String, dynamic> artist) {
-    return Column(
-      children: [
-        Container(
-          width: 100,
-          height: 100,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(65),
-            image: artist['image'] != null
-                ? DecorationImage(
-                    image: NetworkImage(artist['image']), fit: BoxFit.cover)
-                : null,
-            color: Colors.grey[800],
+    final imageUrl = artist['image'] ?? artist['imageUrl'] ?? artist['artworkUrl'] ?? '';
+    final hasImage = imageUrl.isNotEmpty;
+    
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ArtistScreen(
+              artist: {
+                'artistName': artist['name'],
+                'artistId': artist['artistId'],
+                'artworkUrl': imageUrl,
+              },
+            ),
           ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          artist['name'] ?? '',
-          textAlign: TextAlign.center,
-          style: GoogleFonts.firaSans(
-              fontSize: 14, fontWeight: FontWeight.w400, color: Colors.white),
-        ),
-      ],
+        );
+      },
+      child: Column(
+        children: [
+          Container(
+            width: 100,
+            height: 100,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(65),
+              image: hasImage
+                  ? DecorationImage(
+                      image: NetworkImage(imageUrl), fit: BoxFit.cover)
+                  : null,
+              color: Colors.grey[800],
+            ),
+            child: !hasImage
+                ? const Icon(Icons.person, size: 40, color: Colors.white24)
+                : null,
+          ),
+          const SizedBox(height: 2),
+          SizedBox(
+            width: 100,
+            child: Text(
+              artist['name'] ?? '',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.firaSans(
+                  fontSize: 14, fontWeight: FontWeight.w400, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

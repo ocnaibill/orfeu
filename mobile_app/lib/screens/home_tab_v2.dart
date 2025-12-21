@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import '../providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/home_cards.dart';
+import '../services/download_manager.dart';
 import 'album_screen.dart';
 import 'player_screen.dart';
 import 'playlist_detail_screen.dart';
@@ -28,11 +29,14 @@ class HomeTabV2 extends ConsumerWidget {
     ref.invalidate(homeRecommendationsProvider);
     ref.invalidate(homeDiscoverProvider);
     ref.invalidate(homeTrajectoryProvider);
+    ref.invalidate(downloadedTracksProvider);
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final username = ref.watch(authProvider).username ?? "Visitante";
+    final isOffline = ref.watch(isOfflineProvider);
+    final downloadedTracks = ref.watch(downloadedTracksProvider);
 
     final newReleases = ref.watch(homeNewReleasesProvider);
     final continueListening = ref.watch(homeContinueListeningProvider);
@@ -109,12 +113,13 @@ class HomeTabV2 extends ConsumerWidget {
                 ),
               ),
 
-              // --- SEÇÃO 1: NOVIDADES (Personalizadas) ---
+              // --- SEÇÃO 1: NOVIDADES / BAIXADOS ---
               const SizedBox(height: 36),
-              const Padding(
-                  padding: EdgeInsets.only(left: 33),
-                  child: Text("Novidades dos seus favoritos :)",
-                      style: TextStyle(
+              Padding(
+                  padding: const EdgeInsets.only(left: 33),
+                  child: Text(
+                      isOffline ? "Baixados dos seus favoritos" : "Novidades dos seus favoritos :)",
+                      style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                           color: Colors.white))),
@@ -122,48 +127,87 @@ class HomeTabV2 extends ConsumerWidget {
 
               SizedBox(
                 height: 230,
-                child: newReleases.when(
-                  data: (data) {
-                    if (data.isEmpty)
-                      return const Center(
-                          child: Text("Sem novidades.",
-                              style: TextStyle(color: Colors.white38)));
-                    return ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 33),
-                      itemCount: data.length,
-                      separatorBuilder: (ctx, i) => const SizedBox(width: 20),
-                      itemBuilder: (ctx, i) {
-                        final item = data[i];
-                        // Parsing da cor hexadecimal (string) para Color
-                        Color vibrantColor = const Color(0xFF4A00E0);
-                        if (item['vibrantColorHex'] != null) {
-                          try {
-                            vibrantColor = Color(int.parse(
-                                item['vibrantColorHex']
-                                    .replaceFirst('#', '0xFF')));
-                          } catch (_) {}
-                        }
+                child: isOffline
+                    ? downloadedTracks.when(
+                        data: (tracks) {
+                          if (tracks.isEmpty) {
+                            return const Center(
+                                child: Text("Nenhuma música baixada.",
+                                    style: TextStyle(color: Colors.white38)));
+                          }
+                          return ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 33),
+                            itemCount: tracks.length > 10 ? 10 : tracks.length,
+                            separatorBuilder: (ctx, i) => const SizedBox(width: 20),
+                            itemBuilder: (ctx, i) {
+                              final item = tracks[i];
+                              return GestureDetector(
+                                onTap: () => _openContent(context, {
+                                  'type': 'song',
+                                  'title': item['title'] ?? item['trackName'],
+                                  'artist': item['artist'] ?? item['artistName'],
+                                  'imageUrl': item['artworkUrl'] ?? item['imageUrl'],
+                                  'filename': item['filename'],
+                                }, ref),
+                                child: FeatureAlbumCard(
+                                  title: item['title'] ?? item['trackName'] ?? 'Sem Título',
+                                  artist: item['artist'] ?? item['artistName'] ?? 'Desconhecido',
+                                  imageUrl: item['artworkUrl'] ?? item['imageUrl'] ?? '',
+                                  vibrantColor: const Color(0xFF4A00E0),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                        loading: () => const Center(
+                            child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
+                        error: (_, __) => const Center(
+                            child: Text("Erro ao carregar downloads",
+                                style: TextStyle(color: Colors.white38))),
+                      )
+                    : newReleases.when(
+                        data: (data) {
+                          if (data.isEmpty)
+                            return const Center(
+                                child: Text("Sem novidades.",
+                                    style: TextStyle(color: Colors.white38)));
+                          return ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 33),
+                            itemCount: data.length,
+                            separatorBuilder: (ctx, i) => const SizedBox(width: 20),
+                            itemBuilder: (ctx, i) {
+                              final item = data[i];
+                              // Parsing da cor hexadecimal (string) para Color
+                              Color vibrantColor = const Color(0xFF4A00E0);
+                              if (item['vibrantColorHex'] != null) {
+                                try {
+                                  vibrantColor = Color(int.parse(
+                                      item['vibrantColorHex']
+                                          .replaceFirst('#', '0xFF')));
+                                } catch (_) {}
+                              }
 
-                        return GestureDetector(
-                          onTap: () => _openContent(context, item, ref),
-                          child: FeatureAlbumCard(
-                            title: item['title'] ?? 'Sem Título',
-                            artist: item['artist'] ?? 'Desconhecido',
-                            imageUrl: item['imageUrl'] ?? '',
-                            vibrantColor: vibrantColor,
-                          ),
-                        );
-                      },
-                    );
-                  },
-                  loading: () => const Center(
-                      child:
-                          CircularProgressIndicator(color: Color(0xFFD4AF37))),
-                  error: (_, __) => const Center(
-                      child: Text("Erro",
-                          style: TextStyle(color: Colors.white38))),
-                ),
+                              return GestureDetector(
+                                onTap: () => _openContent(context, item, ref),
+                                child: FeatureAlbumCard(
+                                  title: item['title'] ?? 'Sem Título',
+                                  artist: item['artist'] ?? 'Desconhecido',
+                                  imageUrl: item['imageUrl'] ?? '',
+                                  vibrantColor: vibrantColor,
+                                ),
+                              );
+                            },
+                          );
+                        },
+                        loading: () => const Center(
+                            child:
+                                CircularProgressIndicator(color: Color(0xFFD4AF37))),
+                        error: (_, __) => const Center(
+                            child: Text("Erro",
+                                style: TextStyle(color: Colors.white38))),
+                      ),
               ),
 
               // --- SEÇÃO 2: CONTINUE ESCUTANDO ---
@@ -250,102 +294,106 @@ class HomeTabV2 extends ConsumerWidget {
                 ),
               ),
 
-              // --- SEÇÃO: DESCOBERTAS ---
-              const SizedBox(height: 24),
-              const Padding(
-                  padding: EdgeInsets.only(left: 33),
-                  child: Text("Descobertas da semana",
-                      style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white))),
-              const SizedBox(height: 6),
-              const Padding(
-                  padding: EdgeInsets.only(left: 33),
-                  child: Text("Artistas novos para você",
-                      style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.white54))),
-              const SizedBox(height: 18),
+              // --- SEÇÃO: DESCOBERTAS (hidden when offline) ---
+              if (!isOffline) ...[
+                const SizedBox(height: 24),
+                const Padding(
+                    padding: EdgeInsets.only(left: 33),
+                    child: Text("Descobertas da semana",
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white))),
+                const SizedBox(height: 6),
+                const Padding(
+                    padding: EdgeInsets.only(left: 33),
+                    child: Text("Artistas novos para você",
+                        style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.white54))),
+                const SizedBox(height: 18),
 
-              SizedBox(
-                height: 210,
-                child: discover.when(
-                  data: (data) {
-                    if (data.isEmpty) {
-                      return const Center(
-                          child: Text("Ouça mais músicas para personalizarmos",
-                              style: TextStyle(color: Colors.white38)));
-                    }
-                    return ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 33),
-                      itemCount: data.length,
-                      separatorBuilder: (ctx, i) => const SizedBox(width: 12),
-                      itemBuilder: (ctx, i) {
-                        final item = data[i];
-                        return GestureDetector(
-                          onTap: () => _openContent(context, item, ref),
-                          child: StandardAlbumCard(
-                            title: item['title'],
-                            artist: item['artist'],
-                            imageUrl: item['imageUrl'],
-                          ),
-                        );
-                      },
-                    );
-                  },
-                  loading: () => const Center(
-                      child:
-                          CircularProgressIndicator(color: Color(0xFFD4AF37))),
-                  error: (_, __) => const SizedBox(),
+                SizedBox(
+                  height: 210,
+                  child: discover.when(
+                    data: (data) {
+                      if (data.isEmpty) {
+                        return const Center(
+                            child: Text("Ouça mais músicas para personalizarmos",
+                                style: TextStyle(color: Colors.white38)));
+                      }
+                      return ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 33),
+                        itemCount: data.length,
+                        separatorBuilder: (ctx, i) => const SizedBox(width: 12),
+                        itemBuilder: (ctx, i) {
+                          final item = data[i];
+                          return GestureDetector(
+                            onTap: () => _openContent(context, item, ref),
+                            child: StandardAlbumCard(
+                              title: item['title'],
+                              artist: item['artist'],
+                              imageUrl: item['imageUrl'],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                    loading: () => const Center(
+                        child:
+                            CircularProgressIndicator(color: Color(0xFFD4AF37))),
+                    error: (_, __) => const SizedBox(),
+                  ),
                 ),
-              ),
+              ],
 
-              // --- SEÇÃO 4: TRAJETÓRIA ---
-              const SizedBox(height: 24),
-              const Padding(
-                  padding: EdgeInsets.only(left: 33),
-                  child: Text("Sua trajetória",
-                      style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white))),
-              const SizedBox(height: 18),
+              // --- SEÇÃO 4: TRAJETÓRIA (hidden when offline) ---
+              if (!isOffline) ...[
+                const SizedBox(height: 24),
+                const Padding(
+                    padding: EdgeInsets.only(left: 33),
+                    child: Text("Sua trajetória",
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white))),
+                const SizedBox(height: 18),
 
-              SizedBox(
-                height: 210,
-                child: trajectory.when(
-                  data: (data) {
-                    if (data.isEmpty)
-                      return const Center(
-                          child: Text("Ouça mais para gerar sua trajetória.",
-                              style: TextStyle(color: Colors.white38)));
-                    return ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 33),
-                      itemCount: data.length,
-                      separatorBuilder: (ctx, i) => const SizedBox(width: 12),
-                      itemBuilder: (ctx, i) {
-                        final item = data[i];
-                        return GestureDetector(
-                          onTap: () => _openPlaylist(
-                              context, item['id'], item['title'], ref),
-                          child: StandardAlbumCard(
-                            title: item['title'],
-                            artist: item['artist'],
-                            imageUrl: item['imageUrl'],
-                          ),
-                        );
-                      },
-                    );
-                  },
-                  loading: () => const Center(
-                      child:
-                          CircularProgressIndicator(color: Color(0xFFD4AF37))),
-                  error: (_, __) => const SizedBox(),
+                SizedBox(
+                  height: 210,
+                  child: trajectory.when(
+                    data: (data) {
+                      if (data.isEmpty)
+                        return const Center(
+                            child: Text("Ouça mais para gerar sua trajetória.",
+                                style: TextStyle(color: Colors.white38)));
+                      return ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 33),
+                        itemCount: data.length,
+                        separatorBuilder: (ctx, i) => const SizedBox(width: 12),
+                        itemBuilder: (ctx, i) {
+                          final item = data[i];
+                          return GestureDetector(
+                            onTap: () => _openPlaylist(
+                                context, item['id'], item['title'], ref),
+                            child: StandardAlbumCard(
+                              title: item['title'],
+                              artist: item['artist'],
+                              imageUrl: item['imageUrl'],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                    loading: () => const Center(
+                        child:
+                            CircularProgressIndicator(color: Color(0xFFD4AF37))),
+                    error: (_, __) => const SizedBox(),
+                  ),
                 ),
-              ),
+              ],
 
               const SizedBox(height: 40),
             ],
