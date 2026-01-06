@@ -33,13 +33,14 @@ Este software foi desenvolvido estritamente para fins **educacionais e de pesqui
 O desenvolvedor não incentiva a pirataria. O uso da rede Soulseek e o download de materiais protegidos por direitos autorais são de inteira responsabilidade do usuário final.
 
 ## 🗺️ Roadmap
-- [ ] Configuração do Ambiente Docker (Backend Base)
-- [ ] Integração com API do Soulseek
-- [ ] Streaming de Áudio Hi-Res (FLAC)
+- [x] Configuração do Ambiente Docker (Backend Base)
+- [x] Integração com API do Soulseek
+- [x] Streaming de Áudio Hi-Res (FLAC)
 - [ ] App Mobile MVP (Busca e Play)
 - [ ] Transcoding em Tempo Real (Quality Selector)
 - [ ] Suporte Offline e Lyrics (Karaoke Mode)
 - [ ] Recomendação via IA
 
 ## 📄 Licença
+
 Distribuído sob a licença MIT. Veja `LICENSE` para mais informações.
