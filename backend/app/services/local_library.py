@@ -10,8 +10,6 @@ from app import models
 from app.core import config
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
-from app.services.catalog_provider import CatalogProvider
-from app.services.tidal_provider import TidalProvider
 from app.services.metadata_provider import MetadataProvider
 
 
@@ -261,6 +259,7 @@ def sync_files_to_db(db: Session = None):
             db.close()
 
 async def process_library_auto_tagging():
+    from app.sources.registry import get_sources  # import tardio: app.sources depende deste módulo
     base_path = config.MUSIC_DIR
     count = 0
     for root, dirs, files in os.walk(base_path):
@@ -271,8 +270,10 @@ async def process_library_auto_tagging():
                     current_tags = AudioManager.get_audio_tags(full_path)
                     if not current_tags.get('artist') or not current_tags.get('title') or current_tags.get('artist') == 'Desconhecido':
                         clean_name = normalize_text(os.path.splitext(file)[0].replace("_", " "))
-                        results = await run_in_threadpool(TidalProvider.search_catalog, clean_name, 1)
-                        if not results: results = await run_in_threadpool(CatalogProvider.search_catalog, clean_name, "song", 1)
+                        results = []
+                        for source in get_sources().catalog.sources:
+                            results = await source.search(clean_name, "song", 1)
+                            if results: break
                         
                         if results:
                             best_match = results[0]

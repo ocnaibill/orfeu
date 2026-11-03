@@ -1,11 +1,10 @@
 import asyncio
 import time
 from typing import Optional, Dict
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app import models
-from app.services.catalog_provider import CatalogProvider
+from app.sources.registry import get_sources
 
 # =====================================================
 # CACHE DE GÊNEROS - Sistema de atualização automática
@@ -79,12 +78,7 @@ async def fetch_genre_tracks_from_api(genre_name: str, limit: int = 100) -> list
     
     print(f"🎵 [API] Buscando tracks do gênero '{genre_name}' com query: '{search_query}'")
     
-    results = await run_in_threadpool(
-        CatalogProvider.search_catalog, 
-        search_query, 
-        "song", 
-        limit
-    )
+    results = await get_sources().catalog.get("ytmusic").search(search_query, "song", limit)
     
     if not results:
         return []

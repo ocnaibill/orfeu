@@ -5,8 +5,7 @@ from unidecode import unidecode
 import random
 
 from app.services.release_date_provider import ReleaseDateProvider
-from app.services.catalog_provider import CatalogProvider
-from app.services.tidal_provider import TidalProvider
+from app.sources.registry import get_sources
 
 def normalize_text(text: str) -> str:
     """Helper local para normalização"""
@@ -47,8 +46,8 @@ class MusicRecommender:
         
         for artist in artists:
             try:
-                # 1. Busca no CatalogProvider (YTMusic)
-                results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
+                # 1. Busca no catálogo YTMusic
+                results = await get_sources().catalog.get("ytmusic").search(artist, "album", 10)
                 if not results: continue
 
                 # 2. Filtra por nome (STRICT MATCH)

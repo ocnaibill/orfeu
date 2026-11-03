@@ -12,7 +12,7 @@ from app.deps import get_current_user
 from app.services.analytics_service import AnalyticsService
 from app.services.local_library import normalize_text
 from app.services.recommendation_service import MusicRecommender
-from app.services.tidal_provider import TidalProvider
+from app.sources.registry import get_sources
 
 router = APIRouter(tags=["home"])
 
@@ -109,12 +109,7 @@ async def get_discover_weekly(limit: int = 10, db: Session = Depends(get_db), cu
                     
                     # Busca o álbum mais recente desse artista no Tidal
                     try:
-                        albums = await run_in_threadpool(
-                            TidalProvider.search_catalog,
-                            artist_name,
-                            3,
-                            "album"
-                        )
+                        albums = await get_sources().catalog.primary.search(artist_name, "album", 3)
                         
                         # Filtra álbuns do artista correto
                         artist_albums = [
@@ -165,12 +160,7 @@ async def get_discover_weekly(limit: int = 10, db: Session = Depends(get_db), cu
                         seen_artists.add(artist_lower)
                         
                         # Busca álbum via Tidal
-                        albums = await run_in_threadpool(
-                            TidalProvider.search_catalog,
-                            artist_name,
-                            1,
-                            "album"
-                        )
+                        albums = await get_sources().catalog.primary.search(artist_name, "album", 1)
                         
                         if albums:
                             album = albums[0]
@@ -282,9 +272,7 @@ async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), cu
                     
                 try:
                     # Busca o artista no Tidal para pegar o ID
-                    artist_search = await run_in_threadpool(
-                        TidalProvider.search_catalog, artist, 1, "artist"
-                    )
+                    artist_search = await get_sources().catalog.primary.search(artist, "artist", 1)
                     
                     if not artist_search:
                         continue
@@ -302,9 +290,7 @@ async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), cu
                         continue
                     
                     # Busca detalhes do artista (inclui álbuns)
-                    artist_details = await run_in_threadpool(
-                        TidalProvider.get_artist_details, artist_id
-                    )
+                    artist_details = await get_sources().catalog.primary.artist_details(artist_id)
                     
                     if not artist_details:
                         continue
@@ -357,9 +343,7 @@ async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), cu
                 try:
                     # Busca artistas específicos do gênero (não genérico)
                     # Usa o gênero + "artist" para buscar artistas reais
-                    genre_artists = await run_in_threadpool(
-                        TidalProvider.search_catalog, f"{genre}", 10, "artist"
-                    )
+                    genre_artists = await get_sources().catalog.primary.search(f"{genre}", "artist", 10)
                     
                     if not genre_artists:
                         continue
@@ -381,9 +365,7 @@ async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), cu
                         try:
                             artist_id = genre_artist.get('artistId')
                             if artist_id:
-                                artist_details = await run_in_threadpool(
-                                    TidalProvider.get_artist_details, artist_id
-                                )
+                                artist_details = await get_sources().catalog.primary.artist_details(artist_id)
                                 
                                 if artist_details and artist_details.get('albums'):
                                     top_album = artist_details['albums'][0]
@@ -424,16 +406,12 @@ async def get_recommendations(limit: int = 10, db: Session = Depends(get_db), cu
                     break
                 
                 try:
-                    artist_search = await run_in_threadpool(
-                        TidalProvider.search_catalog, saved_artist, 1, "artist"
-                    )
+                    artist_search = await get_sources().catalog.primary.search(saved_artist, "artist", 1)
                     
                     if artist_search:
                         artist_id = artist_search[0].get('artistId')
                         if artist_id:
-                            artist_details = await run_in_threadpool(
-                                TidalProvider.get_artist_details, artist_id
-                            )
+                            artist_details = await get_sources().catalog.primary.artist_details(artist_id)
                             
                             if artist_details and artist_details.get('albums'):
                                 for album in artist_details['albums'][:2]:
@@ -513,7 +491,7 @@ async def get_new_releases(limit: int = 10, db: Session = Depends(get_db), curre
         print("📢 Usuário sem histórico suficiente, buscando novidades gerais...")
         try:
             # Busca álbuns populares/novos
-            results = await run_in_threadpool(TidalProvider.search_catalog, "new releases 2024", limit, "album")
+            results = await get_sources().catalog.primary.search("new releases 2024", "album", limit)
             
             if results:
                 return [{
