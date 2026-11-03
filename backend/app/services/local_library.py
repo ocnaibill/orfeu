@@ -203,47 +203,62 @@ async def download_file_background(url: str, dest_path: str, metadata: dict, cov
         print(f"❌ Erro download background: {e}")
         if os.path.exists(temp_path): os.remove(temp_path)
 
-async def sync_files_to_db(db: Session):
-    print("🔄 Sincronizando arquivos do disco para o DB...")
-    base_path = config.MUSIC_DIR
-    for root, dirs, files in os.walk(base_path):
-        for file in files:
-            if file.lower().endswith(('.flac', '.mp3', '.m4a')):
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, base_path)
+def sync_files_to_db(db: Session = None):
+    """Indexa os arquivos do disco no banco.
+
+    Roda como background task (def síncrona = threadpool, não trava o event loop)
+    e abre a PRÓPRIA sessão: a sessão da request já está fechada quando a task executa.
+    """
+    own_session = db is None
+    if own_session:
+        db = get_db_session()
+    try:
+        print("🔄 Sincronizando arquivos do disco para o DB...")
+        base_path = config.MUSIC_DIR
+        for root, dirs, files in os.walk(base_path):
+            for file in files:
+                if file.lower().endswith(('.flac', '.mp3', '.m4a')):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, base_path)
                 
-                # Verifica se já existe no banco
-                exists = db.query(models.Track).filter(models.Track.filename == rel_path).first()
-                if not exists:
-                    try:
-                        # Lê metadados
-                        from app.services.audio_manager import AudioManager
-                        tags = AudioManager.get_audio_tags(full_path)
-                        meta = AudioManager.get_audio_metadata(full_path)
+                    # Verifica se já existe no banco
+                    exists = db.query(models.Track).filter(models.Track.filename == rel_path).first()
+                    if not exists:
+                        try:
+                            # Lê metadados
+                            from app.services.audio_manager import AudioManager
+                            tags = AudioManager.get_audio_tags(full_path)
+                            meta = AudioManager.get_audio_metadata(full_path)
                         
-                        # Se não tem gênero nos metadados, busca online
-                        genre = tags.get('genre')
-                        if not genre or genre == "" or genre == "Desconhecido":
-                            artist = tags.get('artist') or "Desconhecido"
-                            album = tags.get('album')
-                            title = tags.get('title') or file
-                            genre = fetch_and_assign_genre(artist, album, title)
+                            # Se não tem gênero nos metadados, busca online
+                            genre = tags.get('genre')
+                            if not genre or genre == "" or genre == "Desconhecido":
+                                artist = tags.get('artist') or "Desconhecido"
+                                album = tags.get('album')
+                                title = tags.get('title') or file
+                                genre = fetch_and_assign_genre(artist, album, title)
                         
-                        track = models.Track(
-                            filename=rel_path,
-                            title=tags.get('title') or file,
-                            artist=tags.get('artist') or "Desconhecido",
-                            album=tags.get('album'),
-                            genre=genre,
-                            duration=meta.get('duration', 0),
-                            format=meta.get('format'),
-                            bitrate=meta.get('bitrate')
-                        )
-                        db.add(track)
-                    except Exception as e:
-                        print(f"Erro ao indexar {file}: {e}")
-    db.commit()
-    print("✅ Sincronização concluída.")
+                            track = models.Track(
+                                filename=rel_path,
+                                title=tags.get('title') or file,
+                                artist=tags.get('artist') or "Desconhecido",
+                                album=tags.get('album'),
+                                genre=genre,
+                                duration=meta.get('duration', 0),
+                                format=meta.get('format'),
+                                bitrate=meta.get('bitrate')
+                            )
+                            db.add(track)
+                        except Exception as e:
+                            print(f"Erro ao indexar {file}: {e}")
+        db.commit()
+        print("✅ Sincronização concluída.")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Erro na sincronização da biblioteca: {e}")
+    finally:
+        if own_session:
+            db.close()
 
 async def process_library_auto_tagging():
     base_path = config.MUSIC_DIR

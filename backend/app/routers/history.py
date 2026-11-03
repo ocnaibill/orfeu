@@ -51,6 +51,7 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
             db.refresh(track)
         except Exception as e:
             print(f"⚠️ Erro ao criar track no histórico: {e}")
+            db.rollback()
             return {"status": "error", "message": "Track não encontrada"}
     else:
         # Se track existe, atualiza com metadados do catálogo se disponíveis

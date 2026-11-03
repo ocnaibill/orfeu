@@ -210,4 +210,6 @@ async def check_download_status(filename: str):
 
 @router.post("/download/auto", dependencies=[Depends(get_current_user)])
 async def auto_download_best(request: AutoDownloadRequest):
-    return await smart_download(SmartDownloadRequest(artist="", track="")) 
+    # Endpoint legado: nunca foi implementado (ignorava o search_id e baixava
+    # artista/faixa vazios). Falha de forma explícita em vez de baixar lixo.
+    raise HTTPException(status_code=501, detail="Endpoint legado sem implementação. Use POST /download/smart.")

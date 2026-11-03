@@ -19,7 +19,7 @@ def get_my_top_tracks(limit: int = 10, days: int = 30, db: Session = Depends(get
     return AnalyticsService.get_top_tracks(db, current_user.id, limit, days)
 
 
-@router.get("/analytics/rankings")
+@router.get("/analytics/rankings", dependencies=[Depends(get_current_user)])
 def get_global_rankings(db: Session = Depends(get_db)):
     """
     Retorna o ranking global de usuários (quem ouviu mais).

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app import models
+from app import auth_utils, models
 from app.core import config
 from app.database import get_db
 from app.deps import get_current_user
@@ -76,10 +76,10 @@ def update_profile(profile: ProfileUpdate, db: Session = Depends(get_db), curren
         if not profile.current_password:
             raise HTTPException(400, "Senha atual é obrigatória")
         # Verifica senha atual
-        if not verify_password(profile.current_password, current_user.password_hash):
+        if not auth_utils.verify_password(profile.current_password, current_user.hashed_password):
             raise HTTPException(400, "Senha atual incorreta")
         # Atualiza para nova senha
-        current_user.password_hash = hash_password(profile.new_password)
+        current_user.hashed_password = auth_utils.get_password_hash(profile.new_password)
     
     db.commit()
     db.refresh(current_user)
@@ -151,5 +151,7 @@ def upload_profile_image(
         
     except base64.binascii.Error:
         raise HTTPException(400, "Dados de imagem inválidos (não é base64 válido)")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Erro ao salvar imagem: {str(e)}")

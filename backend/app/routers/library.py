@@ -14,11 +14,11 @@ from app.services.local_library import sync_files_to_db, process_library_auto_ta
 router = APIRouter(tags=["library"])
 
 @router.post("/library/scan", dependencies=[Depends(get_current_user)])
-async def scan_library_db(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def scan_library_db(background_tasks: BackgroundTasks):
     """
     Força uma varredura no disco e atualiza o Banco de Dados.
     """
-    background_tasks.add_task(sync_files_to_db, db)
+    background_tasks.add_task(sync_files_to_db)
     return {"status": "started", "message": "Indexação iniciada."}
 
 @router.get("/library", dependencies=[Depends(get_current_user)])
@@ -48,7 +48,7 @@ async def organize_library(background_tasks: BackgroundTasks):
     return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
 
 @router.get("/library/legacy", dependencies=[Depends(get_current_user)])
-async def get_library_legacy():
+def get_library_legacy():
     """
     Rota legada - varre o disco diretamente (mais lento).
     Use /library para a versão via banco de dados.

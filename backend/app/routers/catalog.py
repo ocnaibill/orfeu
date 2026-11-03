@@ -225,7 +225,7 @@ async def get_artist_details(artist_id: str):
         raise
     except Exception as e:
         print(f"❌ Erro detalhes artista: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro ao buscar detalhes do artista")
 
 @router.get("/catalog/album/{collection_id}")
 async def get_album_details(collection_id: str):
