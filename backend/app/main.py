@@ -50,8 +50,6 @@ app = FastAPI(title="Orfeu API", version="2.4.0")
 
 # Esquema de Segurança
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-SECRET_KEY = os.getenv("SECRET_KEY", "uma_chave_super_secreta")
-ALGORITHM = "HS256"
 
 # --- Configuração de Arquivos Estáticos (OTA Updates) ---
 os.makedirs("/downloads_public", exist_ok=True)
@@ -348,9 +346,9 @@ async def download_file_with_headers(filename: str):
     APK files need explicit Content-Type and Content-Disposition to prevent
     browsers from adding .zip extension.
     """
-    file_path = os.path.join("/downloads_public", filename)
-    
-    if not os.path.exists(file_path):
+    file_path = AudioManager._safe_join("/downloads_public", filename)
+
+    if not file_path or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
     # Detecta content-type pelo nome do arquivo
@@ -677,6 +675,8 @@ def read_root(request: Request):
 
 @app.post("/auth/register", response_model=Token)
 def register(user: UserCreate, db: Session = Depends(get_db)):
+    if os.getenv("ALLOW_REGISTRATION", "false").lower() != "true":
+        raise HTTPException(status_code=403, detail="Cadastro desativado neste servidor")
     # Verifica se existe
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
     if db_user:
@@ -2042,7 +2042,7 @@ async def get_genre_top_tracks(
     
     return {"genre": genre_name, "source": "error", "cached": False, "tracks": []}
 
-@app.post("/genres/refresh-cache")
+@app.post("/genres/refresh-cache", dependencies=[Depends(get_current_user)])
 async def refresh_genres_cache(
     genre: Optional[str] = None,
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -2220,7 +2220,7 @@ async def sync_files_to_db(db: Session):
     db.commit()
     print("✅ Sincronização concluída.")
 
-@app.post("/library/scan")
+@app.post("/library/scan", dependencies=[Depends(get_current_user)])
 async def scan_library_db(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Força uma varredura no disco e atualiza o Banco de Dados.
@@ -2229,7 +2229,7 @@ async def scan_library_db(background_tasks: BackgroundTasks, db: Session = Depen
     return {"status": "started", "message": "Indexação iniciada."}
 
 # --- NOVA ROTA DE BIBLIOTECA (VIA DB) ---
-@app.get("/library")
+@app.get("/library", dependencies=[Depends(get_current_user)])
 def get_library_db(db: Session = Depends(get_db)):
     """
     Retorna a biblioteca consultando o SQL (Muito mais rápido que os.walk).
@@ -2678,7 +2678,7 @@ class UpdateAlbumGenreRequest(BaseModel):
     album_id: str
     genre: str
 
-@app.post("/catalog/album/update-genre")
+@app.post("/catalog/album/update-genre", dependencies=[Depends(get_current_user)])
 def update_album_tracks_genre(req: UpdateAlbumGenreRequest, db: Session = Depends(get_db)):
     """
     Atualiza o gênero de todas as tracks que pertencem a um álbum específico.
@@ -2699,7 +2699,7 @@ def update_album_tracks_genre(req: UpdateAlbumGenreRequest, db: Session = Depend
     return {"status": "updated", "tracks_updated": updated, "genre": req.genre}
 
 # --- SMART DOWNLOAD (CORE LOGIC) ---
-@app.post("/download/smart")
+@app.post("/download/smart", dependencies=[Depends(get_current_user)])
 async def smart_download(request: SmartDownloadRequest, background_tasks: BackgroundTasks):
     print(f"🤖 Smart Download: {request.artist} - {request.track}")
     
@@ -2864,13 +2864,13 @@ async def smart_download(request: SmartDownloadRequest, background_tasks: Backgr
     return await download_slskd(best_candidate['username'], best_candidate['filename'], best_candidate['size'])
 
 # --- Demais Rotas ---
-@app.post("/search/{query}")
+@app.post("/search/{query}", dependencies=[Depends(get_current_user)])
 async def start_search_legacy(query: str): return await search_slskd(query)
 
-@app.get("/results/{search_id}")
+@app.get("/results/{search_id}", dependencies=[Depends(get_current_user)])
 async def view_results(search_id: str): return await get_search_results(search_id) 
 
-@app.post("/download")
+@app.post("/download", dependencies=[Depends(get_current_user)])
 async def queue_download(request: DownloadRequest):
     try:
         path = AudioManager.find_local_file(request.filename)
@@ -2879,7 +2879,7 @@ async def queue_download(request: DownloadRequest):
     except HTTPException: pass
     return await download_slskd(request.username, request.filename, request.size)
 
-@app.get("/download/status")
+@app.get("/download/status", dependencies=[Depends(get_current_user)])
 async def check_download_status(filename: str):
     try:
         path = AudioManager.find_local_file(filename)
@@ -2893,7 +2893,7 @@ async def check_download_status(filename: str):
     if status: return status
     return {"state": "Unknown", "progress": 0.0, "message": "Iniciando"}
 
-@app.post("/download/auto")
+@app.post("/download/auto", dependencies=[Depends(get_current_user)])
 async def auto_download_best(request: AutoDownloadRequest):
     return await smart_download(SmartDownloadRequest(artist="", track="")) 
 
@@ -2993,7 +2993,7 @@ async def list_lyrics_providers():
     }
 
 
-@app.get("/lyrics/providers/test")
+@app.get("/lyrics/providers/test", dependencies=[Depends(get_current_user)])
 async def test_lyrics_providers():
     """Testa se os providers de letras estão funcionando."""
     musixmatch_status = await test_musixmatch_connection()
@@ -3004,7 +3004,7 @@ async def test_lyrics_providers():
     }
 
 
-@app.post("/lyrics/providers/musixmatch/reset")
+@app.post("/lyrics/providers/musixmatch/reset", dependencies=[Depends(get_current_user)])
 async def reset_musixmatch():
     """
     Reseta o token do Musixmatch.
@@ -3058,7 +3058,7 @@ async def stream_music(request: Request, filename: str, quality: str = Query("lo
         with open(full_path, "rb") as f: yield from f
     return StreamingResponse(iterfile(), headers=headers)
 
-@app.post("/library/organize")
+@app.post("/library/organize", dependencies=[Depends(get_current_user)])
 async def organize_library(background_tasks: BackgroundTasks):
     background_tasks.add_task(process_library_auto_tagging)
     return {"status": "started", "message": "O processo de organização iniciou em segundo plano."}
@@ -3095,7 +3095,7 @@ async def process_library_auto_tagging():
                 except: pass
     print(f"✨ Auto-Tagging concluído. {count} arquivos atualizados.")
 
-@app.get("/library/legacy")
+@app.get("/library/legacy", dependencies=[Depends(get_current_user)])
 async def get_library_legacy():
     """
     Rota legada - varre o disco diretamente (mais lento).

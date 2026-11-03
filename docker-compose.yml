@@ -15,7 +15,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     networks:
       - orfeu_network
 
@@ -30,7 +30,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     depends_on:
       - db
     networks:
@@ -70,7 +70,7 @@ services:
     container_name: orfeu_backend
     restart: always
     # Comando para rodar em desenvolvimento
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./backend:/app
       - ./downloads:/downloads
@@ -84,6 +84,9 @@ services:
       SLSKD_API_URL: http://slskd:5030/api/v0
       # O Python vai ler a chave do .env
       SLSKD_API_KEY: ${SLSKD_API_KEY}
+      SECRET_KEY: ${SECRET_KEY:?defina SECRET_KEY no .env (openssl rand -hex 32)}
+      ACCESS_TOKEN_EXPIRE_DAYS: ${ACCESS_TOKEN_EXPIRE_DAYS:-90}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
       # Last.fm API para recomendações
       LASTFM_API_KEY: ${LASTFM_API_KEY}
       LASTFM_API_SECRET: ${LASTFM_API_SECRET}

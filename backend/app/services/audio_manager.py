@@ -19,37 +19,44 @@ class AudioManager:
     BASE_PATH = "/downloads"
 
     @staticmethod
+    def _safe_join(base: str, relative: str):
+        """Junta base + relative e devolve None se o resultado escapar de base (../, symlinks)."""
+        base_real = os.path.realpath(base)
+        candidate = os.path.realpath(os.path.join(base_real, relative))
+        if candidate == base_real or not candidate.startswith(base_real + os.sep):
+            return None
+        return candidate
+
+    @staticmethod
     def find_local_file(filename: str) -> str:
-        # Limpeza de segurança
         sanitized_filename = filename.replace("\\", "/").lstrip("/")
-        
-        # PRIMEIRO: Tenta o caminho completo (mais preciso)
-        full_path = os.path.join(AudioManager.BASE_PATH, sanitized_filename)
-        if os.path.isfile(full_path):
+
+        # PRIMEIRO: caminho completo, confinado a BASE_PATH
+        full_path = AudioManager._safe_join(AudioManager.BASE_PATH, sanitized_filename)
+        if full_path and os.path.isfile(full_path):
             return full_path
-        
-        # SEGUNDO: Busca por nome de arquivo (fallback para compatibilidade)
-        # Só usa se o caminho completo não existir
+
+        # SEGUNDO: busca por nome de arquivo (fallback de compatibilidade)
         target_file_name = os.path.basename(sanitized_filename)
-        
-        # Varredura - mas agora priorizamos matches com caminho similar
+        if not target_file_name or target_file_name in (".", ".."):
+            raise HTTPException(status_code=404, detail="Ficheiro não encontrado.")
+
+        base_real = os.path.realpath(AudioManager.BASE_PATH)
         matches = []
-        for root, dirs, files in os.walk(AudioManager.BASE_PATH):
+        for root, dirs, files in os.walk(base_real):
             if target_file_name in files:
                 found_path = os.path.join(root, target_file_name)
-                # Calcula similaridade do caminho
-                rel_path = os.path.relpath(found_path, AudioManager.BASE_PATH)
+                rel_path = os.path.relpath(found_path, base_real)
                 if rel_path.lower() == sanitized_filename.lower():
-                    return found_path  # Match exato (case insensitive)
+                    return found_path
                 matches.append(found_path)
-        
-        # Se encontrou algum match, retorna o primeiro (comportamento antigo)
+
         if matches:
             if len(matches) > 1:
                 print(f"⚠️ Múltiplos arquivos encontrados para '{target_file_name}': {matches}")
             return matches[0]
-                
-        raise HTTPException(status_code=404, detail=f"Ficheiro '{sanitized_filename}' não encontrado.")
+
+        raise HTTPException(status_code=404, detail="Ficheiro não encontrado.")
 
     @staticmethod
     def get_audio_tags(file_path: str) -> dict:
