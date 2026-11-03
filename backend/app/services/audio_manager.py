@@ -6,6 +6,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TYER
 from mutagen.mp4 import MP4, MP4Cover
 from fastapi import HTTPException
+from app.core import config
 
 # Constantes
 TIERS = {
@@ -16,7 +17,7 @@ TIERS = {
 }
 
 class AudioManager:
-    BASE_PATH = "/downloads"
+    BASE_PATH = config.MUSIC_DIR
 
     @staticmethod
     def _safe_join(base: str, relative: str):

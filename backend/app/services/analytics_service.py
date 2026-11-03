@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta
 from app import models
+from app.core import config
 import urllib.parse
 import httpx
 
@@ -122,7 +123,7 @@ class AnalyticsService:
                 "artist": t.artist,
                 "plays": count,
                 # Codifica o filename para a URL ser válida
-                "coverProxyUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}" if t.filename else None
+                "coverProxyUrl": f"{config.PUBLIC_BASE_URL}/cover?filename={urllib.parse.quote(t.filename)}" if t.filename else None
             }
             for t, count in results
         ]
@@ -273,7 +274,7 @@ class AnalyticsService:
                     "id": t.album_id,
                     "title": album_title,
                     "artist": album_artist,
-                    "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
+                    "imageUrl": f"{config.PUBLIC_BASE_URL}/cover?filename={urllib.parse.quote(t.filename)}",
                     "played_at": played_at
                 })
             else:
@@ -282,7 +283,7 @@ class AnalyticsService:
                     "type": "album_search", 
                     "title": t.album,
                     "artist": t.artist,
-                    "imageUrl": f"https://orfeu.ocnaibill.dev/cover?filename={urllib.parse.quote(t.filename)}",
+                    "imageUrl": f"{config.PUBLIC_BASE_URL}/cover?filename={urllib.parse.quote(t.filename)}",
                     "search_query": f"{t.artist} {t.album}",
                     "played_at": played_at
                 })
