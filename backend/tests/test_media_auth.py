@@ -74,3 +74,31 @@ def test_cover_short_stays_public_and_does_not_redirect_to_protected_route(clien
     # Serve direto (200 ou 404 da própria lógica de capa): nunca 401 nem redirect para /cover.
     assert r.status_code in (200, 404)
     assert "location" not in r.headers
+
+
+def test_analytics_cover_urls_are_the_public_short_ones(client, auth):
+    """Respostas que a UI mostra como imagem não podem apontar para /cover (exige login)."""
+    from app import models
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter_by(username="bia").first()
+        track = db.query(models.Track).filter_by(filename="Artist/song.flac").first()
+        if track is None:
+            track = models.Track(filename="Artist/song.flac", title="Song", artist="Artist", album="Album",
+                                 duration=10.0)
+            db.add(track)
+        track.album_id = "alb1"
+        db.commit()
+        db.add(models.ListenHistory(user_id=user.id, track_id=track.id, duration_listened=10.0))
+        db.commit()
+    finally:
+        db.close()
+
+    top = client.get("/users/me/analytics/top-tracks", headers=auth).json()
+    assert top and "/cover/short/" in top[0]["coverProxyUrl"]
+
+    recent = client.get("/home/continue-listening", headers=auth).json()
+    assert recent and all("/cover?" not in item["imageUrl"] for item in recent)
+    assert all("/cover/short/" in item["imageUrl"] for item in recent)
