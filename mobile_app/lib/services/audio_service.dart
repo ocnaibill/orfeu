@@ -398,8 +398,7 @@ class AudioPlayerNotifier extends StateNotifier<PlayerState> {
     String? coverUrl = track['imageUrl'] ?? track['artworkUrl'];
 
     if ((coverUrl == null || coverUrl.isEmpty) && track['filename'] != null) {
-      final encoded = Uri.encodeComponent(track['filename']);
-      coverUrl = '$baseUrl/cover?filename=$encoded';
+      coverUrl = ref.read(mediaAccessProvider).coverUrl(track['filename']);
     }
 
     _discord.updateActivity(

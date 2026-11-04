@@ -39,8 +39,7 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
     String coverUrl =
         currentTrack['imageUrl'] ?? currentTrack['artworkUrl'] ?? '';
     if (coverUrl.isEmpty && currentTrack['filename'] != null) {
-      final encoded = Uri.encodeComponent(currentTrack['filename']);
-      coverUrl = '$baseUrl/cover?filename=$encoded';
+      coverUrl = ref.read(mediaAccessProvider).coverUrl(currentTrack['filename']);
     }
 
     if (coverUrl.isEmpty) return;
@@ -53,7 +52,7 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
 
   Future<void> _extractPalette(String url) async {
     try {
-      final provider = NetworkImage(url);
+      final provider = ref.read(mediaAccessProvider).imageProvider(url);
       final palette = await PaletteGenerator.fromImageProvider(
         provider,
         maximumColorCount: 20,
@@ -115,8 +114,7 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
 
     String coverUrl = track['imageUrl'] ?? track['artworkUrl'] ?? '';
     if (coverUrl.isEmpty && track['filename'] != null) {
-      final encoded = Uri.encodeComponent(track['filename']);
-      coverUrl = '$baseUrl/cover?filename=$encoded';
+      coverUrl = ref.read(mediaAccessProvider).coverUrl(track['filename']);
     }
 
     return GestureDetector(
@@ -147,7 +145,7 @@ class _BottomNavAreaState extends ConsumerState<BottomNavArea> {
                   borderRadius: BorderRadius.circular(4),
                   image: coverUrl.isNotEmpty
                       ? DecorationImage(
-                          image: NetworkImage(coverUrl), fit: BoxFit.cover)
+                          image: ref.read(mediaAccessProvider).imageProvider(coverUrl), fit: BoxFit.cover)
                       : null,
                   color: Colors.grey[800],
                 ),

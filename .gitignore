@@ -29,6 +29,9 @@ downloads/
 public_downloads/
 music/
 data/
+# ...mas o código do app Flutter tem diretórios chamados data (camada de dados)
+!mobile_app/lib/data/
+!mobile_app/test/data/
 *.flac
 *.mp3
 *.log

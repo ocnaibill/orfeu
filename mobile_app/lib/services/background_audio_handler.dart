@@ -50,6 +50,20 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
   }
   
   /// Define o Ref para permitir downloads sob demanda
+  /// Fonte de streaming remoto (autenticada). O token vai no header, só para o
+  /// nosso servidor.
+  AudioSource _remoteSource(String filename) {
+    final media = _ref?.read(mediaAccessProvider);
+    if (media == null) {
+      // Sem ref ainda (handler criado antes do app): comportamento antigo.
+      final fallback =
+          '$baseUrl/stream?filename=${Uri.encodeComponent(filename)}&quality=$_currentQuality';
+      return AudioSource.uri(Uri.parse(fallback));
+    }
+    final url = media.streamUrl(filename, quality: _currentQuality);
+    return AudioSource.uri(Uri.parse(url), headers: media.headersFor(url));
+  }
+
   void setRef(Ref ref) {
     _ref = ref;
     print('✅ Ref configurado no AudioHandler');
@@ -422,9 +436,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
         }
         
         // Fallback para stream remoto
-        final filename = Uri.encodeComponent(track['filename'] ?? '');
-        final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-        return AudioSource.uri(Uri.parse(url));
+        return _remoteSource(track['filename'] ?? '');
       }).toList(),
     );
     
@@ -601,9 +613,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
           print('📂 Adicionando arquivo local: $localPath');
           source = AudioSource.file(localPath);
         } else {
-          final encodedFilename = Uri.encodeComponent(filename);
-          final url = '$baseUrl/stream?filename=$encodedFilename&quality=$_currentQuality';
-          source = AudioSource.uri(Uri.parse(url));
+          source = _remoteSource(filename);
         }
         
         // Encontra a posição correta na playlist
@@ -816,9 +826,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
           }
           
           // Fallback para stream remoto
-          final filename = Uri.encodeComponent(track['filename'] ?? '');
-          final url = '$baseUrl/stream?filename=$filename&quality=$_currentQuality';
-          return AudioSource.uri(Uri.parse(url));
+          return _remoteSource(track['filename'] ?? '');
         }).toList(),
       );
 
@@ -900,9 +908,10 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
                   'Álbum';
     
     String? artUri = track['imageUrl'] ?? track['artworkUrl'];
+    final media = _ref?.read(mediaAccessProvider);
     if ((artUri == null || artUri.isEmpty) && filename != null) {
-      final encoded = Uri.encodeComponent(filename);
-      artUri = '$baseUrl/cover?filename=$encoded';
+      artUri = media?.coverUrl(filename) ??
+          '$baseUrl/cover?filename=${Uri.encodeComponent(filename)}';
     }
     
     // Extrai duração em milissegundos (se disponível)
@@ -925,6 +934,7 @@ class OrfeuAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler 
       album: album,
       duration: duration,
       artUri: artUri != null ? Uri.parse(artUri) : null,
+      artHeaders: artUri != null ? media?.headersFor(artUri) : null,
       extras: {'filename': filename, 'tidalId': track['tidalId']},
     );
   }

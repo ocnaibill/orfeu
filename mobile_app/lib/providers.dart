@@ -1,167 +1,20 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'dart:typed_data';
 
+import 'data/api/server_config.dart';
+import 'data/core_providers.dart';
+
+// Sessão, cliente HTTP e acesso à mídia agora vivem em lib/data/.
+// Reexportados aqui para as telas atuais continuarem importando só este arquivo.
+export 'data/core_providers.dart';
+
 // --- Configuração de Rede ---
-const String serverIp = '127.0.0.1';
-const String baseUrl = 'https://orfeu.ocnaibill.dev';
+const String baseUrl = ServerConfig.defaultBaseUrl;
 
-// --- Armazenamento Seguro ---
-const _storage = FlutterSecureStorage(
-  aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  mOptions: MacOsOptions(
-    accessibility: KeychainAccessibility.first_unlock,
-  ),
-);
-
-// --- ESTADO DE AUTENTICAÇÃO ---
-class AuthState {
-  final bool isAuthenticated;
-  final bool isLoading;
-  final String? token;
-  final String? username;
-  final String? error;
-
-  AuthState({
-    this.isAuthenticated = false,
-    this.isLoading = true,
-    this.token,
-    this.username,
-    this.error,
-  });
-
-  AuthState copyWith(
-      {bool? isAuthenticated,
-      bool? isLoading,
-      String? token,
-      String? username,
-      String? error}) {
-    return AuthState(
-      isAuthenticated: isAuthenticated ?? this.isAuthenticated,
-      isLoading: isLoading ?? this.isLoading,
-      token: token ?? this.token,
-      username: username ?? this.username,
-      error: error ?? this.error,
-    );
-  }
-}
-
-class AuthController extends StateNotifier<AuthState> {
-  AuthController() : super(AuthState()) {
-    _checkToken();
-  }
-
-  Future<void> _checkToken() async {
-    try {
-      final token = await _storage.read(key: 'jwt_token');
-      final username = await _storage.read(key: 'username');
-
-      if (token != null) {
-        state = AuthState(
-            isAuthenticated: true,
-            isLoading: false,
-            token: token,
-            username: username);
-      } else {
-        state = AuthState(isAuthenticated: false, isLoading: false);
-      }
-    } catch (e) {
-      print("⚠️ Erro ao ler token do disco: $e");
-      state = AuthState(isAuthenticated: false, isLoading: false);
-    }
-  }
-
-  Future<bool> login(String username, String password) async {
-    state = state.copyWith(isLoading: true, error: null);
-
-    try {
-      final dio = Dio(BaseOptions(
-          baseUrl: baseUrl, connectTimeout: const Duration(seconds: 10)));
-
-      final response = await dio.post('/token',
-          data: FormData.fromMap({
-            'username': username,
-            'password': password,
-          }));
-
-      final token = response.data['access_token'];
-
-      try {
-        await _storage.write(key: 'jwt_token', value: token);
-        await _storage.write(key: 'username', value: username);
-      } catch (e) {
-        print("⚠️ Falha de Persistência (Login segue em memória): $e");
-      }
-
-      state = AuthState(
-          isAuthenticated: true,
-          isLoading: false,
-          token: token,
-          username: username);
-      return true;
-    } on DioException catch (e) {
-      final msg = e.response?.data['detail'] ?? "Erro de conexão: ${e.message}";
-      state = state.copyWith(isLoading: false, error: msg.toString());
-      return false;
-    } catch (e) {
-      print("❌ Erro inesperado no login: $e");
-      state = state.copyWith(isLoading: false, error: "Erro inesperado: $e");
-      return false;
-    }
-  }
-
-  Future<bool> register(
-      String username, String email, String password, String fullName) async {
-    state = state.copyWith(isLoading: true, error: null);
-    try {
-      final dio = Dio(BaseOptions(baseUrl: baseUrl));
-      await dio.post('/auth/register', data: {
-        "username": username,
-        "email": email,
-        "password": password,
-        "full_name": fullName
-      });
-
-      return await login(username, password);
-    } on DioException catch (e) {
-      final msg = e.response?.data['detail'] ?? "Erro no registro";
-      state = state.copyWith(isLoading: false, error: msg.toString());
-      return false;
-    }
-  }
-
-  Future<void> logout() async {
-    try {
-      await _storage.delete(key: 'jwt_token');
-      await _storage.delete(key: 'username');
-    } catch (e) {
-      print("⚠️ Erro ao limpar token: $e");
-    }
-    state = AuthState(isAuthenticated: false, isLoading: false);
-  }
-}
-
-final authProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
-  return AuthController();
-});
-
-// --- Cliente HTTP (Autenticado) ---
-final dioProvider = Provider((ref) {
-  final authState = ref.watch(authProvider);
-
-  final dio = Dio(BaseOptions(
-    baseUrl: baseUrl,
-    connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 60),
-  ));
-
-  if (authState.token != null) {
-    dio.options.headers['Authorization'] = 'Bearer ${authState.token}';
-  }
-
-  return dio;
-});
+// --- Cliente HTTP (legado) ---
+// Mesmo Dio do ApiClient: o token é lido a cada chamada e um 401 desloga.
+final dioProvider = Provider<Dio>((ref) => ref.watch(apiClientProvider).dio);
 
 // --- Estados Globais (App) ---
 final searchResultsProvider = StateProvider<List<dynamic>>((ref) => []);
