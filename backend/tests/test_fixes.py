@@ -35,48 +35,48 @@ def test_rankings_ok_with_token(client, auth):
 
 
 # --- /stream: Range ------------------------------------------------------
-def _stream(client, rng=None):
-    headers = {"range": rng} if rng else {}
+def _stream(client, auth, rng=None):
+    headers = {**auth, **({"range": rng} if rng else {})}
     return client.get("/stream", params={"filename": "Artist/song.flac"}, headers=headers)
 
 
-def test_stream_full_and_content_type(client, music_file):
-    r = _stream(client)
+def test_stream_full_and_content_type(client, auth, music_file):
+    r = _stream(client, auth)
     assert r.status_code == 200 and r.headers["content-type"] == "audio/flac"
     assert r.headers["accept-ranges"] == "bytes" and len(r.content) == 104
 
 
-def test_stream_range_start_end(client, music_file):
-    r = _stream(client, "bytes=0-3")
+def test_stream_range_start_end(client, auth, music_file):
+    r = _stream(client, auth, "bytes=0-3")
     assert r.status_code == 206 and r.content == b"fLaC"
     assert r.headers["content-range"] == "bytes 0-3/104"
 
 
-def test_stream_range_open_ended(client, music_file):
-    r = _stream(client, "bytes=100-")
+def test_stream_range_open_ended(client, auth, music_file):
+    r = _stream(client, auth, "bytes=100-")
     assert r.status_code == 206 and len(r.content) == 4
     assert r.headers["content-range"] == "bytes 100-103/104"
 
 
-def test_stream_range_suffix(client, music_file):
-    r = _stream(client, "bytes=-4")
+def test_stream_range_suffix(client, auth, music_file):
+    r = _stream(client, auth, "bytes=-4")
     assert r.status_code == 206 and r.content == b"fLaC"[:0] + bytes(range(100))[-4:]
     assert r.headers["content-range"] == "bytes 100-103/104"
 
 
-def test_stream_range_end_is_clamped(client, music_file):
-    r = _stream(client, "bytes=100-9999")
+def test_stream_range_end_is_clamped(client, auth, music_file):
+    r = _stream(client, auth, "bytes=100-9999")
     assert r.status_code == 206 and r.headers["content-range"] == "bytes 100-103/104"
 
 
-def test_stream_range_unsatisfiable(client, music_file):
-    r = _stream(client, "bytes=500-")
+def test_stream_range_unsatisfiable(client, auth, music_file):
+    r = _stream(client, auth, "bytes=500-")
     assert r.status_code == 416 and r.headers["content-range"] == "bytes */104"
 
 
-def test_stream_range_malformed_serves_full_file(client, music_file):
+def test_stream_range_malformed_serves_full_file(client, auth, music_file):
     for bad in ["bytes=abc", "bytes", "items=0-3", "bytes=0-1,5-6", "bytes=5-2", "bytes=-0"]:
-        r = _stream(client, bad)
+        r = _stream(client, auth, bad)
         assert r.status_code == 200 and len(r.content) == 104, bad
 
 

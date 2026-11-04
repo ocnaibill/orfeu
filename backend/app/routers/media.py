@@ -2,9 +2,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
 import os
 import time
-from urllib.parse import quote
+
+from fastapi import Depends
 
 from app.core import config
+from app.deps import get_media_user
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.cover_proxy import SHORT_URL_MAP, get_short_cover_url
@@ -54,18 +56,21 @@ async def proxy_cover_art(hash_id: str):
     if time.time() > item["expires"]:
         del SHORT_URL_MAP[hash_id]
         raise HTTPException(404, "Cover hash expirado.")
-    filename = item["filename"]
-    return RedirectResponse(f"/cover?filename={quote(filename)}", status_code=302)
+    # Serve a capa diretamente: redirecionar para /cover (protegida) quebraria o Discord.
+    return await _cover_response(item["filename"])
 
-@router.get("/metadata")
+@router.get("/metadata", dependencies=[Depends(get_media_user)])
 async def get_track_details(filename: str):
     full_path = AudioManager.find_local_file(filename)
     meta = AudioManager.get_audio_metadata(full_path)
     meta['coverProxyUrl'] = get_short_cover_url(filename) # PROXY PÚBLICO
     return meta
 
-@router.get("/cover")
+@router.get("/cover", dependencies=[Depends(get_media_user)])
 async def get_cover_art(filename: str):
+    return await _cover_response(filename)
+
+async def _cover_response(filename: str):
     full_path = AudioManager.find_local_file(filename)
     try:
         if AudioManager.extract_cover_stream(full_path): 
@@ -118,7 +123,7 @@ def _iter_file_range(path: str, start: int, length: int, chunk: int = 64 * 1024)
             remaining -= len(data)
             yield data
 
-@router.get("/stream")
+@router.get("/stream", dependencies=[Depends(get_media_user)])
 async def stream_music(request: Request, filename: str, quality: str = Query("lossless")):
     full_path = AudioManager.find_local_file(filename)
     print(f"🎵 Stream: '{filename}' -> '{full_path}'")  # Debug log

@@ -25,8 +25,8 @@ def test_requires_login(client, method, path):
 
 
 @pytest.mark.parametrize("evil", ["../secret.txt", "Artist/../../secret.txt", "/etc/passwd", ".."])
-def test_stream_path_traversal_blocked(client, music_file, evil):
-    r = client.get("/stream", params={"filename": evil})
+def test_stream_path_traversal_blocked(client, auth, music_file, evil):
+    r = client.get("/stream", params={"filename": evil}, headers=auth)
     assert r.status_code == 404
     assert b"TOP SECRET" not in r.content
 

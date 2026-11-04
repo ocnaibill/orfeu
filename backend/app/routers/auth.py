@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app import auth_utils, models
 from app.database import get_db
+from app.deps import get_current_user
 from app.schemas import Token, UserCreate
 
 router = APIRouter(tags=["auth"])
@@ -48,3 +49,12 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     
     access_token = auth_utils.create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/auth/media-token")
+def media_token(current_user: models.User = Depends(get_current_user)):
+    """Token de curta duração e escopo restrito para URLs de mídia (?mt=), sem expor o token da conta."""
+    return {
+        "token": auth_utils.create_media_token(current_user.username),
+        "expires_in": auth_utils.MEDIA_TOKEN_EXPIRE_HOURS * 3600,
+    }

@@ -12,6 +12,10 @@ if not SECRET_KEY or len(SECRET_KEY) < 32:
     )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("ACCESS_TOKEN_EXPIRE_DAYS", "90"))
+# Token de mídia: escopo restrito, aceito só em ?mt= das rotas de mídia (stream/capa/letra).
+# Existe para clientes que não conseguem mandar header (player HTML5 da web).
+MEDIA_TOKEN_EXPIRE_HOURS = int(os.getenv("MEDIA_TOKEN_EXPIRE_HOURS", "12"))
+MEDIA_SCOPE = "media"
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
@@ -26,3 +30,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS))
     to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_media_token(username: str) -> str:
+    return create_access_token(
+        data={"sub": username, "scope": MEDIA_SCOPE},
+        expires_delta=timedelta(hours=MEDIA_TOKEN_EXPIRE_HOURS),
+    )

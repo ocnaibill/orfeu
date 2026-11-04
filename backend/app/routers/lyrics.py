@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 
-from app.deps import get_current_user
+from app.deps import get_current_user, get_media_user
 from app.services.audio_manager import AudioManager
 from app.services.lyrics_provider import LyricsProvider
 from app.services.synced_lyrics_provider import (
@@ -15,14 +15,14 @@ from app.services.synced_lyrics_provider import (
 
 router = APIRouter(tags=["lyrics"])
 
-@router.get("/lyrics")
+@router.get("/lyrics", dependencies=[Depends(get_media_user)])
 async def get_lyrics(filename: str):
     full_path = AudioManager.find_local_file(filename)
     lyrics = await LyricsProvider.get_lyrics(full_path)
     if not lyrics: raise HTTPException(404, "Letra não encontrada")
     return lyrics
 
-@router.get("/lyrics/synced")
+@router.get("/lyrics/synced", dependencies=[Depends(get_media_user)])
 async def get_synced_lyrics(
     track: str,
     artist: str,
@@ -105,7 +105,7 @@ async def reset_musixmatch():
         "token_status": get_musixmatch_token_status(),
     }
 
-@router.get("/lyrics/plain")
+@router.get("/lyrics/plain", dependencies=[Depends(get_media_user)])
 async def get_plain_lyrics(filename: str):
     """Busca letras (pode ser sincronizadas ou não) para um arquivo local."""
     full_path = AudioManager.find_local_file(filename)
