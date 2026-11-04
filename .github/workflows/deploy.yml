@@ -24,6 +24,12 @@ jobs:
             cd ~/orfeu
             git pull origin main
 
+            # Valida o compose e o .env ANTES de derrubar o que está no ar: se faltar
+            # uma variável obrigatória (ex.: SECRET_KEY), o deploy para aqui e o site
+            # continua de pé em vez de ficar sem containers.
+            echo "🔎 Validando docker-compose e .env..."
+            docker compose config -q || { echo "❌ Configuração inválida (veja o erro acima). Nada foi derrubado."; exit 1; }
+
             echo "🧹 Limpeza preventiva..."
             docker rm -f orfeu_backend orfeu_slskd orfeu_db orfeu_pgadmin orfeu_tunnel || true
 
