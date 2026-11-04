@@ -87,6 +87,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:?defina SECRET_KEY no .env (openssl rand -hex 32)}
       ACCESS_TOKEN_EXPIRE_DAYS: ${ACCESS_TOKEN_EXPIRE_DAYS:-90}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      MEDIA_AUTH_REQUIRED: ${MEDIA_AUTH_REQUIRED:-true}
       # Last.fm API para recomendações
       LASTFM_API_KEY: ${LASTFM_API_KEY}
       LASTFM_API_SECRET: ${LASTFM_API_SECRET}

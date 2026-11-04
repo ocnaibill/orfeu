@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app import models
+from app import auth_utils, models
 from app.core import config
 from app.database import engine
 from app.routers import (
@@ -23,6 +23,9 @@ models.Base.metadata.create_all(bind=engine)
 
 # Diretórios públicos (OTA updates, capas de playlist)
 config.ensure_dirs()
+
+if not auth_utils.media_auth_required():
+    print("⚠️  MEDIA_AUTH_REQUIRED=false: stream/capa/letra estão ABERTOS. Use só na transição.")
 
 
 @asynccontextmanager

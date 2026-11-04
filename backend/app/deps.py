@@ -49,4 +49,6 @@ async def get_media_user(
         return _user_from_token(token, db, media=False)
     if mt:
         return _user_from_token(mt, db, media=True)
+    if not auth_utils.media_auth_required():
+        return None  # transição: cliente antigo sem token (token inválido continua dando 401)
     raise HTTPException(status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"})

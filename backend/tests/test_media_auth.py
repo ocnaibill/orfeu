@@ -102,3 +102,26 @@ def test_analytics_cover_urls_are_the_public_short_ones(client, auth):
     recent = client.get("/home/continue-listening", headers=auth).json()
     assert recent and all("/cover?" not in item["imageUrl"] for item in recent)
     assert all("/cover/short/" in item["imageUrl"] for item in recent)
+
+
+# --- chave de transição: MEDIA_AUTH_REQUIRED ---------------------------------------
+def test_media_auth_can_be_relaxed_for_old_clients_during_rollout(client, music_file, monkeypatch):
+    monkeypatch.setenv("MEDIA_AUTH_REQUIRED", "false")
+    assert client.get("/stream", params={"filename": "Artist/song.flac"}).status_code == 200
+    assert client.get("/metadata", params={"filename": "Artist/song.flac"}).status_code in (200, 404)
+    # mesmo relaxada, credencial inválida continua sendo recusada
+    r = client.get("/stream", params={"filename": "Artist/song.flac", "mt": "lixo"})
+    assert r.status_code == 401
+    r = client.get("/stream", params={"filename": "Artist/song.flac"}, headers={"Authorization": "Bearer lixo"})
+    assert r.status_code == 401
+    # e a chave não afeta as rotas que nunca foram de mídia
+    assert client.get("/library").status_code == 401
+    assert client.get("/users/me").status_code == 401
+
+
+def test_media_auth_is_required_by_default_and_for_any_other_value(client, music_file, monkeypatch):
+    monkeypatch.delenv("MEDIA_AUTH_REQUIRED", raising=False)
+    assert client.get("/stream", params={"filename": "Artist/song.flac"}).status_code == 401
+    for value in ("true", "1", "yes", "", "talvez"):
+        monkeypatch.setenv("MEDIA_AUTH_REQUIRED", value)
+        assert client.get("/stream", params={"filename": "Artist/song.flac"}).status_code == 401, value

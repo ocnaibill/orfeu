@@ -17,6 +17,13 @@ ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("ACCESS_TOKEN_EXPIRE_DAYS", "90"))
 MEDIA_TOKEN_EXPIRE_HOURS = int(os.getenv("MEDIA_TOKEN_EXPIRE_HOURS", "12"))
 MEDIA_SCOPE = "media"
 
+
+def media_auth_required() -> bool:
+    """MEDIA_AUTH_REQUIRED=false deixa stream/capa/letra abertos (SÓ para a transição:
+    servidor novo no ar enquanto os apps antigos, que não mandam token, não atualizaram).
+    Lido a cada requisição, então dá para virar a chave sem recompilar."""
+    return os.getenv("MEDIA_AUTH_REQUIRED", "true").strip().lower() != "false"
+
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
