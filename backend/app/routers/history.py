@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app import models
@@ -52,7 +52,7 @@ def log_history(req: HistoryRequest, db: Session = Depends(get_db), current_user
         except Exception as e:
             print(f"⚠️ Erro ao criar track no histórico: {e}")
             db.rollback()
-            return {"status": "error", "message": "Track não encontrada"}
+            raise HTTPException(status_code=404, detail="Track não encontrada")
     else:
         # Se track existe, atualiza com metadados do catálogo se disponíveis
         updated = False

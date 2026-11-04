@@ -162,7 +162,8 @@ class CatalogProvider:
                     "collectionName": album.get('title'),
                     "durationMs": int(duration_sec) * 1000, 
                     "previewUrl": None,
-                    "artworkUrl": high_res_artwork
+                    "artworkUrl": high_res_artwork,
+                    "videoId": track.get('videoId')
                 })
             
             year = str(album.get('year') or '')

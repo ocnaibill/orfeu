@@ -47,6 +47,16 @@ def find_local_match_by_tidal_id(tidal_id: int) -> Optional[str]:
     
     return None
 
+def is_registered_download(local_path: str) -> bool:
+    """O download desse arquivo foi pedido (linha em downloaded_tracks)? Só o Tidal registra."""
+    db = get_db_session()
+    try:
+        return db.query(models.DownloadedTrack.id).filter(
+            models.DownloadedTrack.local_path == local_path
+        ).first() is not None
+    finally:
+        db.close()
+
 def find_local_match(artist: str, track: str, album: str = None, tidal_id: int = None) -> Optional[str]:
     """
     Busca arquivo local. Prioridade:

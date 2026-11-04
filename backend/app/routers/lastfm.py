@@ -85,7 +85,7 @@ async def lastfm_scrobble(
     if success:
         return {"status": "scrobbled", "artist": req.artist, "track": req.track}
     else:
-        return {"status": "failed", "message": "Falha ao enviar scrobble"}
+        raise HTTPException(status_code=502, detail="Falha ao enviar scrobble ao Last.fm")
 
 @router.post("/lastfm/now-playing")
 async def lastfm_update_now_playing(
@@ -110,4 +110,6 @@ async def lastfm_update_now_playing(
         req.duration
     )
     
-    return {"status": "updated" if success else "failed"}
+    if not success:
+        raise HTTPException(status_code=502, detail="Falha ao atualizar o Now Playing no Last.fm")
+    return {"status": "updated"}

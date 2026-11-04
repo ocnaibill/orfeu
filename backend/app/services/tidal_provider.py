@@ -186,7 +186,13 @@ class TidalProvider:
                 # A API /album/ retorna as tracks diretamente
                 album_url = f"{TidalProvider.BASE_API}/album/"
                 resp = client.get(album_url, params={"id": collection_id}, headers=headers, timeout=15.0)
-                
+
+                if resp.status_code == 404:
+                    return None  # o Tidal não conhece esse álbum
+                if resp.status_code != 200:
+                    # Falha do provedor: não pode virar um álbum vazio "válido"
+                    raise RuntimeError(f"Tidal respondeu HTTP {resp.status_code} ao buscar o álbum")
+
                 if resp.status_code == 200:
                     response_data = resp.json()
                     items_data = response_data.get('data', {})
@@ -199,7 +205,7 @@ class TidalProvider:
                         track_id = track_data.get('id')
                         track_title = track_data.get('title', '')
                         track_num = track_data.get('trackNumber', idx + 1)
-                        duration = track_data.get('duration', 0) * 1000
+                        duration = (track_data.get('duration') or 0) * 1000
                         
                         # Artista da track
                         artist_obj = track_data.get('artist', {})
@@ -243,6 +249,9 @@ class TidalProvider:
                 print(f"🌍 Buscando gênero externo para: {album_artist} - {album_title}")
                 album_genre = MetadataProvider.get_genre(album_artist, album_title)
             
+            if not tracks and not album_title:
+                return None  # resposta 200 mas sem nada: álbum inexistente
+
             print(f"✅ Álbum {album_title}: {len(tracks)} faixas")
             
             return {
@@ -338,7 +347,7 @@ class TidalProvider:
                                 "artworkUrl": f"{TidalProvider.CDN_URL}/{album_cover.replace('-', '/')}/640x640.jpg" if album_cover else "",
                                 "tidalId": track_data.get('id'),
                                 "isLossless": track_data.get('audioQuality') in ['LOSSLESS', 'HI_RES', 'HI_RES_LOSSLESS'],
-                                "durationMs": track_data.get('duration', 0) * 1000,
+                                "durationMs": (track_data.get('duration') or 0) * 1000,
                                 "source": "Tidal"
                             })
                 except Exception as e:

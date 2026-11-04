@@ -248,8 +248,11 @@ def test_album_routes_by_id_and_enriches_ytmusic_genre(client, tidal, yt, genre_
     assert genre_lookup.calls == []
 
 
-def test_album_any_error_is_404(client, tidal, yt):
+def test_album_provider_failure_is_502_and_unknown_album_is_404(client, tidal, yt):
     tidal.raises = True
+    r = client.get("/catalog/album/1")
+    assert r.status_code == 502 and r.json()["detail"] == "Falha ao consultar o catálogo"
+    tidal.raises = False  # provedor ok, mas sem esse álbum
     r = client.get("/catalog/album/1")
     assert r.status_code == 404 and r.json()["detail"] == "Album not found"
 
@@ -350,12 +353,12 @@ def test_smart_download_local_cache_short_circuits(client, auth, tidal, slskd, b
 # --------------------------------------------------------------------------
 # rotas legadas do Soulseek
 # --------------------------------------------------------------------------
-def test_download_status_uses_slskd_then_unknown(client, auth, slskd):
+def test_download_status_uses_slskd_then_not_found(client, auth, slskd):
     slskd.status = {"state": "Downloading", "percent": 42.0}
     assert client.get("/download/status", headers=auth, params={"filename": "nao/existe.flac"}).json() == slskd.status
     slskd.status = None
     assert client.get("/download/status", headers=auth, params={"filename": "nao/existe.flac"}).json() == {
-        "state": "Unknown", "progress": 0.0, "message": "Iniciando"}
+        "state": "NotFound", "progress": 0.0, "speed": 0, "message": "Download não encontrado"}
 
 
 def test_legacy_soulseek_routes(client, auth, slskd):

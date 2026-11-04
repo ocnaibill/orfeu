@@ -3,6 +3,7 @@ from sqlalchemy import desc
 from rapidfuzz import fuzz
 from unidecode import unidecode
 import random
+import zlib
 
 from app.services.release_date_provider import ReleaseDateProvider
 from app.sources.registry import get_sources
@@ -102,7 +103,7 @@ class MusicRecommender:
         return results_list
 
     def _format_item(self, winner: dict, is_global: bool = False, is_fallback: bool = False) -> dict:
-        color = "#4A00E0" if is_global else f"#{hash(winner['artistName']) & 0xFFFFFF:06x}"
+        color = "#4A00E0" if is_global else f"#{zlib.crc32(winner['artistName'].encode('utf-8')) & 0xFFFFFF:06x}"
         return {
             "title": winner['collectionName'],
             "artist": winner['artistName'],

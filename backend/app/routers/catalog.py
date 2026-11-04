@@ -144,11 +144,14 @@ async def get_album_details(collection_id: str):
     Agora enriquece com GÊNERO via iTunes.
     """
     try:
-        return await get_sources().catalog.album_details(collection_id)
-
+        result = await get_sources().catalog.album_details(collection_id)
     except Exception as e:
         print(f"❌ Erro rota album: {e}")
+        raise HTTPException(status_code=502, detail="Falha ao consultar o catálogo")
+
+    if not result:
         raise HTTPException(status_code=404, detail="Album not found")
+    return result
 
 @router.post("/catalog/album/update-genre", dependencies=[Depends(get_current_user)])
 def update_album_tracks_genre(req: UpdateAlbumGenreRequest, db: Session = Depends(get_db)):
