@@ -56,7 +56,10 @@ class SoulseekDownloader:
                 if 'files' in response:
                     for file in response['files']:
                         fname = file['filename']
-                        fclean = normalize_text(os.path.basename(fname.replace("\\", "/")))
+                        # Compara só o nome, sem a extensão: ".flac" no fim derrubava a nota
+                        # de títulos curtos abaixo do corte (ex.: "Adele - Hello.flac" = 74).
+                        base_name = os.path.splitext(os.path.basename(fname.replace("\\", "/")))[0]
+                        fclean = normalize_text(base_name)
                         sim = fuzz.partial_token_sort_ratio(target_clean, fclean)
                         if sim < 75: continue
                         if '.' not in fname: continue
