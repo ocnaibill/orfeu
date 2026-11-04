@@ -237,7 +237,8 @@ enum LastfmActionStatus {
   /// o usuário não tem Last.fm conectado (o servidor responde 200 com isso)
   skipped,
 
-  /// o Last.fm recusou (o servidor responde 200 com isso)
+  /// o Last.fm recusou. O servidor agora responde 502 (vira `ApiException`);
+  /// o valor continua aceito no parse por compatibilidade com servidores antigos.
   failed,
   unknown;
 

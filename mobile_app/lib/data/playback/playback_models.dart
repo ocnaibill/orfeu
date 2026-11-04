@@ -41,8 +41,9 @@ class HistoryRequest {
       };
 }
 
-/// Resposta de `POST /users/me/history`: `{"status": "logged"}`. Se a faixa
-/// não existir, o servidor responde 200 com `{"status": "error", "message": ...}`.
+/// Resposta de `POST /users/me/history`: `{"status": "logged"}`. Se a faixa não
+/// puder ser registrada o servidor responde 404 (vira `ApiException`); o parse
+/// de `{"status": "error"}` continua tolerante a servidores antigos.
 @immutable
 class HistoryResult {
   const HistoryResult({required this.status, this.message});
@@ -161,14 +162,18 @@ enum DownloadState {
   downloading,
   queued,
   failed,
+
+  /// o servidor não conhece esse download (nem arquivo, nem em andamento, nem pedido)
+  notFound,
   unknown;
 
   /// Aceita os estados que o backend já traduz ("Completed", "Downloading",
-  /// "Queued", "Failed", "Unknown") e também os crus do slskd
+  /// "Queued", "Failed", "NotFound", "Unknown") e também os crus do slskd
   /// ("Completed, Succeeded", "InProgress", "Completed, Errored"...).
   static DownloadState parse(String? raw) {
     final s = (raw ?? '').toLowerCase();
     if (s.isEmpty) return unknown;
+    if (s.contains('notfound') || s.contains('not found')) return notFound;
     if (s.contains('succeeded')) return completed;
     const failures = ['fail', 'rejected', 'cancelled', 'errored', 'timedout', 'aborted'];
     if (failures.any(s.contains)) return failed;
@@ -185,7 +190,9 @@ enum DownloadState {
 /// - arquivo já na biblioteca: `{state, progress, speed, message}`;
 /// - transferência no slskd: `{state, raw_state, bytes_transferred,
 ///   total_bytes, speed, percent, username}`;
-/// - nada encontrado: `{state: "Unknown", progress: 0.0, message: "Iniciando"}`.
+/// - download do Tidal em andamento: `{state: "Downloading", bytes_transferred, ...}`;
+/// - pedido registrado que ainda não começou: `{state: "Unknown", message: "Iniciando"}`;
+/// - nada encontrado: `{state: "NotFound", message: "Download não encontrado"}`.
 @immutable
 class DownloadStatus {
   const DownloadStatus({

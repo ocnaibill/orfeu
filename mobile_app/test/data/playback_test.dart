@@ -170,7 +170,27 @@ void main() {
       expect(raw('Completed'), DownloadState.completed);
       expect(raw('Banana'), DownloadState.unknown);
       expect(raw(''), DownloadState.unknown);
+      expect(DownloadState.parse('NotFound'), DownloadState.notFound);
+      expect(DownloadState.parse('not found'), DownloadState.notFound);
       expect(DownloadState.parse(null), DownloadState.unknown);
+    });
+
+    test('download do Tidal em andamento: Downloading com bytes', () {
+      final s = DownloadStatus.fromJson({
+        'state': 'Downloading', 'progress': 0.0, 'speed': 0,
+        'message': 'Baixando do Tidal', 'bytes_transferred': 2048,
+      });
+      expect(s.state, DownloadState.downloading);
+      expect(s.bytesTransferred, 2048);
+      expect(s.isFinished, isFalse);
+    });
+
+    test('desconhecido pelo servidor: NotFound', () {
+      final s = DownloadStatus.fromJson({
+        'state': 'NotFound', 'progress': 0.0, 'speed': 0, 'message': 'Download não encontrado',
+      });
+      expect(s.state, DownloadState.notFound);
+      expect(s.message, 'Download não encontrado');
     });
 
     test('ainda sem info: Unknown / Iniciando', () {
