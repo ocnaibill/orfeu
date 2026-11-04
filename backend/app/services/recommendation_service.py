@@ -3,10 +3,10 @@ from sqlalchemy import desc
 from rapidfuzz import fuzz
 from unidecode import unidecode
 import random
+import zlib
 
 from app.services.release_date_provider import ReleaseDateProvider
-from app.services.catalog_provider import CatalogProvider
-from app.services.tidal_provider import TidalProvider
+from app.sources.registry import get_sources
 
 def normalize_text(text: str) -> str:
     """Helper local para normalização"""
@@ -47,8 +47,8 @@ class MusicRecommender:
         
         for artist in artists:
             try:
-                # 1. Busca no CatalogProvider (YTMusic)
-                results = await run_in_threadpool(CatalogProvider.search_catalog, artist, "album", 10)
+                # 1. Busca no catálogo YTMusic
+                results = await get_sources().catalog.get("ytmusic").search(artist, "album", 10)
                 if not results: continue
 
                 # 2. Filtra por nome (STRICT MATCH)
@@ -103,7 +103,7 @@ class MusicRecommender:
         return results_list
 
     def _format_item(self, winner: dict, is_global: bool = False, is_fallback: bool = False) -> dict:
-        color = "#4A00E0" if is_global else f"#{hash(winner['artistName']) & 0xFFFFFF:06x}"
+        color = "#4A00E0" if is_global else f"#{zlib.crc32(winner['artistName'].encode('utf-8')) & 0xFFFFFF:06x}"
         return {
             "title": winner['collectionName'],
             "artist": winner['artistName'],
